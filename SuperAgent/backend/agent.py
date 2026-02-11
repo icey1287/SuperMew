@@ -190,30 +190,7 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     messages.append(AIMessage(content=response_content))
 
     rag_context = get_last_rag_context(clear=True)
-    rag_trace = None
-    if rag_context:
-        retrieved_chunks = []
-        seen = set()
-        for item in rag_context.get("results", []):
-            key = (item.get("filename"), item.get("page_number"), item.get("text"))
-            if key in seen:
-                continue
-            seen.add(key)
-            retrieved_chunks.append({
-                "filename": item.get("filename", "Unknown"),
-                "page_number": item.get("page_number", "N/A"),
-                "text": item.get("text", "") or "",
-            })
-
-        rag_trace = {
-            "tool_used": bool(rag_context.get("tool_used")),
-            "tool_name": "search_knowledge_base",
-            "query": rag_context.get("query", ""),
-            "expanded_query": rag_context.get("expanded_query", ""),
-            "step_back_question": rag_context.get("step_back_question", ""),
-            "step_back_answer": rag_context.get("step_back_answer", ""),
-            "retrieved_chunks": retrieved_chunks,
-        }
+    rag_trace = rag_context.get("rag_trace") if rag_context else None
 
     extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
     storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)

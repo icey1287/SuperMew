@@ -6,4 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "rich>=14.2.0",
+    "langchain>=0.2.14",
+    "langchain-core>=0.2.37",
+    "langgraph>=0.2.31",
 ]

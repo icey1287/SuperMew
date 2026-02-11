@@ -21,7 +21,17 @@ class RagTrace(BaseModel):
     expanded_query: Optional[str] = None
     step_back_question: Optional[str] = None
     step_back_answer: Optional[str] = None
+    expansion_type: Optional[str] = None
+    hypothetical_doc: Optional[str] = None
+    retrieval_stage: Optional[str] = None
+    grade_score: Optional[str] = None
+    grade_route: Optional[str] = None
+    rewrite_needed: Optional[bool] = None
+    rewrite_strategy: Optional[str] = None
+    rewrite_query: Optional[str] = None
     retrieved_chunks: Optional[List[RetrievedChunk]] = None
+    initial_retrieved_chunks: Optional[List[RetrievedChunk]] = None
+    expanded_retrieved_chunks: Optional[List[RetrievedChunk]] = None
 
 
 class ChatResponse(BaseModel):

@@ -190,13 +190,61 @@
                                 <div class="trace-line">
                                     工具：{{ msg.ragTrace.tool_used ? msg.ragTrace.tool_name : '未使用' }}
                                 </div>
+                                <div v-if="msg.ragTrace.retrieval_stage" class="trace-line">
+                                    检索阶段：{{ msg.ragTrace.retrieval_stage }}
+                                </div>
+                                <div v-if="msg.ragTrace.grade_score" class="trace-line">
+                                    相关性评分：{{ msg.ragTrace.grade_score }}
+                                </div>
+                                <div v-if="msg.ragTrace.grade_route" class="trace-line">
+                                    评分决策：{{ msg.ragTrace.grade_route }}
+                                </div>
+                                <div v-if="msg.ragTrace.rewrite_needed !== null && msg.ragTrace.rewrite_needed !== undefined" class="trace-line">
+                                    是否需要重写：{{ msg.ragTrace.rewrite_needed ? '是' : '否' }}
+                                </div>
+                                <div v-if="msg.ragTrace.rewrite_strategy" class="trace-line">
+                                    重写策略：{{ msg.ragTrace.rewrite_strategy }}
+                                </div>
+                                <div v-if="msg.ragTrace.rewrite_query" class="trace-line">
+                                    重写查询：{{ msg.ragTrace.rewrite_query }}
+                                </div>
+                                <div v-if="msg.ragTrace.expansion_type" class="trace-line">
+                                    扩展策略：{{ msg.ragTrace.expansion_type }}
+                                </div>
                                 <div v-if="msg.ragTrace.step_back_question" class="trace-line">
                                     退步问题：{{ msg.ragTrace.step_back_question }}
                                 </div>
                                 <div v-if="msg.ragTrace.expanded_query" class="trace-line">
                                     扩展查询：{{ msg.ragTrace.expanded_query }}
                                 </div>
-                                <div v-if="msg.ragTrace.retrieved_chunks && msg.ragTrace.retrieved_chunks.length" class="sources">
+                                <div v-if="msg.ragTrace.hypothetical_doc" class="trace-line">
+                                    HyDE 文档：{{ msg.ragTrace.hypothetical_doc }}
+                                </div>
+                                <div v-if="msg.ragTrace.initial_retrieved_chunks && msg.ragTrace.initial_retrieved_chunks.length" class="sources">
+                                    <div class="sources-title">初次检索结果</div>
+                                    <ul class="sources-list">
+                                        <li v-for="(chunk, sIndex) in msg.ragTrace.initial_retrieved_chunks" :key="sIndex" class="source-item">
+                                            <div class="source-title-line">
+                                                <span class="source-file">{{ chunk.filename }}</span>
+                                                <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                            </div>
+                                            <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
+                                        </li>
+                                    </ul>
+                                </div>
+                                <div v-if="msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length" class="sources">
+                                    <div class="sources-title">重写后检索结果</div>
+                                    <ul class="sources-list">
+                                        <li v-for="(chunk, sIndex) in msg.ragTrace.expanded_retrieved_chunks" :key="sIndex" class="source-item">
+                                            <div class="source-title-line">
+                                                <span class="source-file">{{ chunk.filename }}</span>
+                                                <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                            </div>
+                                            <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
+                                        </li>
+                                    </ul>
+                                </div>
+                                <div v-if="msg.ragTrace.retrieved_chunks && msg.ragTrace.retrieved_chunks.length && !(msg.ragTrace.initial_retrieved_chunks && msg.ragTrace.initial_retrieved_chunks.length) && !(msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length)" class="sources">
                                     <div class="sources-title">向量检索结果</div>
                                     <ul class="sources-list">
                                         <li v-for="(chunk, sIndex) in msg.ragTrace.retrieved_chunks" :key="sIndex" class="source-item">
