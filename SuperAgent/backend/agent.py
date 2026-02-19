@@ -287,10 +287,20 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
             if event is None:
                 break
             yield f"data: {json.dumps(event)}\n\n"
+    except GeneratorExit:
+        # 客户端断开连接（AbortController）时，FastAPI 会向此生成器抛出 GeneratorExit
+        # 我们必须在此处取消后台任务
+        agent_task.cancel()
+        try:
+            await agent_task
+        except asyncio.CancelledError:
+            pass  # 任务已成功取消
+        raise  # 重新抛出 GeneratorExit 以便 FastAPI 正确处理关闭
     finally:
-        # 确保 agent 任务完成
-        await agent_task
+        # 正常结束或异常退出时清理
         set_rag_step_queue(None)
+        if not agent_task.done():
+             agent_task.cancel()
 
     # 获取 RAG trace
     rag_context = get_last_rag_context(clear=True)

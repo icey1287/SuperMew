@@ -288,8 +288,11 @@ StreamingResponse(
 - 捕获 `AbortError`，在气泡中显示"(已终止回答)"。
 
 #### 后端
-- FastAPI 的 `StreamingResponse` 在客户端断开时自动停止迭代异步生成器。
-- Agent 后台任务随之取消，不会继续消耗 token。
+- FastAPI 的 `StreamingResponse` 在客户端断开连接（如浏览器触发 `abort()` 或关闭标签页）时，会检测到 socket 断开。
+- Python 的生成器协议会向响应生成器抛出 `GeneratorExit` 异常。
+- **实现细节**：采用**主动防御式编程**，显式捕获 `GeneratorExit` 并执行 `agent_task.cancel()`。
+- **为什么不依赖框架自动取消？**：虽然 Starlette/FastAPI 拥有基于 `BaseHTTPMiddleware` 的级联取消机制（Cascading Cancellation），但在复杂的后台任务结构或特定中间件配置下，取消信号可能延迟或在传递链中丢失。显式调用 `.cancel()` 提供了**确定性的资源回收**保证。
+- **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
 
 ## 更新日志
 
