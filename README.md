@@ -1,6 +1,6 @@
 # SuperMew 项目说明
 
-> **Chasen's Repo for Learning & Improvement**: [github.com/Chasen00/SuperMew](https://github.com/Chasen00/SuperMew)
+> **Chasen's Repo for Learning & Improvement**: [https://github.com/Chasen-Liao/SuperMew](https://github.com/Chasen-Liao/SuperMew)
 
 Agent的项目记录，方便后续持续更新与展示。
 
