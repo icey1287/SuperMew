@@ -1,18 +1,15 @@
 """Milvus 客户端 - 支持密集向量+稀疏向量混合检索"""
-import os
-from dotenv import load_dotenv
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
-
-load_dotenv()
+from config import MILVUS_HOST, MILVUS_PORT, MILVUS_COLLECTION
 
 
 class MilvusManager:
     """Milvus 连接和集合管理 - 支持混合检索"""
 
-    def __init__(self):
-        self.host = os.getenv("MILVUS_HOST", "localhost")
-        self.port = os.getenv("MILVUS_PORT", "19530")
-        self.collection_name = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
+    def __init__(self, host: str = None, port: int = None, collection_name: str = None):
+        self.host = host or MILVUS_HOST
+        self.port = port or MILVUS_PORT
+        self.collection_name = collection_name or MILVUS_COLLECTION
         self.client = MilvusClient(uri=f"http://{self.host}:{self.port}")
 
     def init_collection(self, dense_dim: int = 2560):

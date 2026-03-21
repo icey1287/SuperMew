@@ -16,3 +16,6 @@ volumes/
 # OS files
 .DS_Store
 data/
+
+# cc
+.claude/

@@ -1,19 +1,11 @@
 from typing import Literal, TypedDict, List, Optional
-import os
-from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
 from rag_utils import retrieve_documents, step_back_expand, generate_hypothetical_document
 from tools import emit_rag_step
-
-load_dotenv()
-
-API_KEY = os.getenv("ARK_API_KEY")
-MODEL = os.getenv("MODEL")
-BASE_URL = os.getenv("BASE_URL")
-GRADE_MODEL = os.getenv("GRADE_MODEL", "gpt-4.1")
+from config import API_KEY, MODEL, BASE_URL, GRADE_MODEL
 
 _grader_model = None
 _router_model = None

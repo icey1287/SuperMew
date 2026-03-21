@@ -203,6 +203,17 @@
                     </div>
                     <!-- 正常回复内容 -->
                     <div v-else class="message-content" v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text)"></div>
+                    <!-- RAG 步骤（在 streaming 结束后仍然显示） -->
+                    <div v-if="!msg.isUser && msg.ragSteps && msg.ragSteps.length" class="rag-steps-container">
+                        <div class="rag-steps-header">检索过程</div>
+                        <div class="thinking-trace-lines">
+                            <div v-for="(step, sIdx) in msg.ragSteps" :key="sIdx" class="thinking-trace-line">
+                                <span class="thinking-trace-icon">{{ step.icon || '▶' }}</span>
+                                <span class="thinking-trace-label">{{ step.label }}</span>
+                                <span v-if="step.detail" class="thinking-trace-detail">{{ step.detail }}</span>
+                            </div>
+                        </div>
+                    </div>
                     <div v-if="!msg.isUser && msg.ragTrace" class="message-meta">
                         <details class="reasoning-details">
                             <summary>检索过程</summary>

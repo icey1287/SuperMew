@@ -1,69 +1,23 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field
+from typing import Optional
 
 
 class ChatRequest(BaseModel):
     message: str
-    user_id: Optional[str] = "default_user"
-    session_id: Optional[str] = "default_session"
-
-
-class RetrievedChunk(BaseModel):
-    filename: str
-    page_number: Optional[str | int] = None
-    text: Optional[str] = None
-    score: Optional[float] = None
-    rrf_rank: Optional[int] = None
-    rerank_score: Optional[float] = None
-
-
-class RagTrace(BaseModel):
-    tool_used: bool
-    tool_name: str
-    query: Optional[str] = None
-    expanded_query: Optional[str] = None
-    step_back_question: Optional[str] = None
-    step_back_answer: Optional[str] = None
-    expansion_type: Optional[str] = None
-    hypothetical_doc: Optional[str] = None
-    retrieval_stage: Optional[str] = None
-    grade_score: Optional[str] = None
-    grade_route: Optional[str] = None
-    rewrite_needed: Optional[bool] = None
-    rewrite_strategy: Optional[str] = None
-    rewrite_query: Optional[str] = None
-    rerank_enabled: Optional[bool] = None
-    rerank_applied: Optional[bool] = None
-    rerank_model: Optional[str] = None
-    rerank_endpoint: Optional[str] = None
-    rerank_error: Optional[str] = None
-    retrieval_mode: Optional[str] = None
-    candidate_k: Optional[int] = None
-    leaf_retrieve_level: Optional[int] = None
-    auto_merge_enabled: Optional[bool] = None
-    auto_merge_applied: Optional[bool] = None
-    auto_merge_threshold: Optional[int] = None
-    auto_merge_replaced_chunks: Optional[int] = None
-    auto_merge_steps: Optional[int] = None
-    retrieved_chunks: Optional[List[RetrievedChunk]] = None
-    initial_retrieved_chunks: Optional[List[RetrievedChunk]] = None
-    expanded_retrieved_chunks: Optional[List[RetrievedChunk]] = None
+    user_id: str
+    session_id: str
 
 
 class ChatResponse(BaseModel):
     response: str
-    rag_trace: Optional[RagTrace] = None
+    rag_trace: Optional[dict] = None
 
 
 class MessageInfo(BaseModel):
     type: str
     content: str
     timestamp: str
-    rag_trace: Optional[RagTrace] = None
-
-
-class SessionMessagesResponse(BaseModel):
-    messages: List[MessageInfo]
+    rag_trace: Optional[dict] = None
 
 
 class SessionInfo(BaseModel):
@@ -73,7 +27,11 @@ class SessionInfo(BaseModel):
 
 
 class SessionListResponse(BaseModel):
-    sessions: List[SessionInfo]
+    sessions: list[SessionInfo]
+
+
+class SessionMessagesResponse(BaseModel):
+    messages: list[MessageInfo]
 
 
 class SessionDeleteResponse(BaseModel):
@@ -85,11 +43,10 @@ class DocumentInfo(BaseModel):
     filename: str
     file_type: str
     chunk_count: int
-    uploaded_at: Optional[str] = None
 
 
 class DocumentListResponse(BaseModel):
-    documents: List[DocumentInfo]
+    documents: list[DocumentInfo]
 
 
 class DocumentUploadResponse(BaseModel):

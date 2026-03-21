@@ -4,18 +4,16 @@ import re
 import math
 import requests
 from collections import Counter
-from dotenv import load_dotenv
-
-load_dotenv()
+from config import BASE_URL, EMBEDDER, API_KEY
 
 
 class EmbeddingService:
     """文本向量化服务 - 支持密集向量和稀疏向量"""
 
-    def __init__(self):
-        self.base_url = os.getenv("BASE_URL")
-        self.embedder = os.getenv("EMBEDDER")
-        self.api_key = os.getenv("ARK_API_KEY")
+    def __init__(self, base_url: str = None, embedder: str = None, api_key: str = None):
+        self.base_url = base_url or BASE_URL
+        self.embedder = embedder or EMBEDDER
+        self.api_key = api_key or API_KEY
         
         # BM25 参数
         self.k1 = 1.5  # 词频饱和参数

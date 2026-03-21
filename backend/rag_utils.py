@@ -1,26 +1,17 @@
 from collections import defaultdict
 from typing import List, Tuple, Dict, Any
-import os
 import json
 import requests
-from dotenv import load_dotenv
 
 from milvus_client import MilvusManager
 from embedding import EmbeddingService
 from parent_chunk_store import ParentChunkStore
 from langchain.chat_models import init_chat_model
-
-load_dotenv()
-
-ARK_API_KEY = os.getenv("ARK_API_KEY")
-MODEL = os.getenv("MODEL")
-BASE_URL = os.getenv("BASE_URL")
-RERANK_MODEL = os.getenv("RERANK_MODEL")
-RERANK_BINDING_HOST = os.getenv("RERANK_BINDING_HOST")
-RERANK_API_KEY = os.getenv("RERANK_API_KEY")
-AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
-AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
-LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
+from config import (
+    API_KEY, MODEL, BASE_URL,
+    RERANK_MODEL, RERANK_BINDING_HOST,
+    AUTO_MERGE_ENABLED, AUTO_MERGE_THRESHOLD, LEAF_RETRIEVE_LEVEL
+)
 
 # 全局初始化检索依赖，避免反复构造
 _embedding_service = EmbeddingService()
@@ -109,7 +100,7 @@ def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dic
 def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
     docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(docs, 1)]
     meta: Dict[str, Any] = {
-        "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
+        "rerank_enabled": bool(RERANK_MODEL and API_KEY and RERANK_BINDING_HOST),
         "rerank_applied": False,
         "rerank_model": RERANK_MODEL,
         "rerank_endpoint": _get_rerank_endpoint(),
@@ -129,7 +120,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {RERANK_API_KEY}",
+        "Authorization": f"Bearer {API_KEY}",
     }
     try:
         meta["rerank_applied"] = True
@@ -166,13 +157,13 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
 
 def _get_stepback_model():
     global _stepback_model
-    if not ARK_API_KEY or not MODEL:
+    if not API_KEY or not MODEL:
         return None
     if _stepback_model is None:
         _stepback_model = init_chat_model(
             model=MODEL,
             model_provider="openai",
-            api_key=ARK_API_KEY,
+            api_key=API_KEY,
             base_url=BASE_URL,
             temperature=0.2,
         )
@@ -284,7 +275,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
             return {
                 "docs": [],
                 "meta": {
-                    "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
+                    "rerank_enabled": bool(RERANK_MODEL and API_KEY and RERANK_BINDING_HOST),
                     "rerank_applied": False,
                     "rerank_model": RERANK_MODEL,
                     "rerank_endpoint": _get_rerank_endpoint(),

@@ -1049,6 +1049,22 @@ textarea {
     margin-top: 6px;
 }
 
+/* RAG steps persistent container (after streaming) */
+.rag-steps-container {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.03);
+    font-size: 0.85rem;
+}
+
+.rag-steps-header {
+    font-weight: 600;
+    color: var(--primary-color);
+    margin-bottom: 6px;
+    font-size: 0.88rem;
+}
+
 .rag-step-item {
     display: flex;
     align-items: baseline;
