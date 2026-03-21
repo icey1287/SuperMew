@@ -1,5 +1,7 @@
 # SuperMew 项目说明
 
+> **Chasen's Repo for Learning & Improvement**: [github.com/Chasen00/SuperMew](https://github.com/Chasen00/SuperMew)
+
 Agent的项目记录，方便后续持续更新与展示。
 
 ## 本地部署
@@ -461,6 +463,62 @@ StreamingResponse(
 - Auto-merging 改为从 DocStore 拉取父块，减少向量冗余存储。
 - 思考链路新增三级检索与自动合并步骤事件。
 - `rag_trace` 新增 `leaf_retrieve_level` 与 `auto_merge_*` 字段，且历史会话读取同样保留这些字段。
+
+## Chasen 分支改动记录
+
+### 已完成的改动
+
+#### 1. 环境配置重构
+
+- **新增 `backend/config.py`**：集中管理所有配置，支持多服务商切换
+- **新增 `.env.example`**：更清晰的环境配置模板，注释说明各服务商配置方式
+- **支持服务商**：SiliconFlow、OpenRouter、DeepSeek、OpenAI、Anthropic、火山引擎
+
+#### 2. 系统提示词外置
+
+- **新增 `backend/soul/soul.md`**：将系统提示词从代码中分离，方便修改和维护
+- 后续可在此文件中添加和改进记忆策略
+
+#### 3. 会话摘要中间件升级
+
+- **使用 LangChain 内置 `SummarizationMiddleware`** 替代手动摘要实现
+- 配置参数：`trigger=("tokens", 80000)`，`keep=("messages", 12)`（6 轮交互）
+- 简化了 `backend/agent.py` 中的摘要逻辑
+
+#### 4. Schemas 简化
+
+- 重构 `backend/schemas.py`，使用 Pydantic V2 的 `Field` 语法
+- 移除了冗余的嵌套模型，简化代码结构
+
+#### 5. 其他改动
+
+- **新增 `LICENSE`**：MIT 许可证
+- **新增评估脚本**：`test_langsmith_eval.py`
+- **新增文档**：`sys-doc.md`、`学习笔记.md`
+- **`main.py`**：入口文件优化
+- **`pyproject.toml`**：依赖管理
+
+### 改动方向（Todo）
+
+#### 上下文工程 & 记忆系统
+
+- [ ] 改进会话摘要策略（当前基于 token 数量触发）
+- [ ] 集成 Mem0/LangMem 等外部记忆方案
+- [ ] 优化上下文压缩和注入方式
+- [ ] 完善 `soul.md` 中的记忆指导策略
+
+#### 评估体系
+
+- [ ] LangSmith 评估流程完善
+- [ ] RAG 评估指标建立
+- [ ] Rerank 策略评估
+
+#### 项目结构
+
+- [ ] 多服务商配置优化
+- [ ] 文档完善
+
+---
 
 ### 2026-02-19 RAG 实时思考链路修复
 
