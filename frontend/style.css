@@ -548,7 +548,7 @@ textarea {
     }
     
     .sidebar {
-        display: none; /* Hide sidebar on mobile for now or make it collapsible */
+        display: none;
     }
 }
 
