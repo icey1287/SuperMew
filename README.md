@@ -54,6 +54,7 @@ RERANK_API_KEY=your_rerank_api_key
 MILVUS_HOST=127.0.0.1
 MILVUS_PORT=19530
 MILVUS_COLLECTION=embeddings_collection
+EMBEDDING_DIM=4096
 
 # ===== Database / Cache =====
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/langchain_app

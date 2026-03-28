@@ -22,11 +22,13 @@ class MilvusManager:
             self.client = MilvusClient(uri=self.uri)
         return self.client
 
-    def init_collection(self, dense_dim: int = 2560):
+    def init_collection(self, dense_dim: int = None):
         """
         初始化 Milvus 集合 - 同时支持密集向量和稀疏向量
         :param dense_dim: 密集向量维度
         """
+        if dense_dim is None:
+            dense_dim = int(os.getenv("EMBEDDING_DIM", "2560"))
         client = self._get_client()
         if not client.has_collection(self.collection_name):
             schema = client.create_schema(auto_id=True, enable_dynamic_field=True)
