@@ -552,6 +552,93 @@ textarea {
     }
 }
 
+/* References Section */
+.references-section {
+    margin-top: 10px;
+    padding: 12px 16px;
+    background-color: rgba(255, 255, 255, 0.7);
+    border-radius: 12px;
+    border-left: 4px solid var(--primary-color);
+    font-size: 0.85rem;
+    color: var(--text-color);
+}
+
+.references-title {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--primary-color);
+    cursor: pointer;
+    list-style: none;
+    margin: 0;
+    outline: none;
+}
+
+.references-title::-webkit-details-marker {
+    display: none;
+}
+
+.references-title::before {
+    content: '▶';
+    display: inline-block;
+    transition: transform 0.2s ease;
+    font-size: 0.8em;
+}
+
+details[open] > .references-title::before {
+    transform: rotate(90deg);
+}
+
+.reference-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.ref-index {
+    color: var(--primary-color);
+    font-weight: 600;
+    min-width: 20px;
+}
+
+.ref-file {
+    font-weight: 500;
+    color: #444;
+}
+
+.ref-page {
+    color: var(--text-light);
+}
+
+/* 引用上标样式 */
+sup.cite-ref {
+    color: var(--primary-color);
+    font-weight: 700;
+    margin: 0 2px;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+sup.cite-ref:hover {
+    color: #ff6b6b;
+    text-decoration: underline;
+}
+
+span.cite-ref:hover {
+    color: #ff6b6b;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+@keyframes highlightFade {
+    0% { background-color: rgba(255, 158, 153, 0.4); border-color: var(--primary-color); }
+    100% { background-color: rgba(255, 255, 255, 0.6); border-color: rgba(0, 0, 0, 0.03); }
+}
+
+.highlight-chunk {
+    animation: highlightFade 2s ease-out forwards !important;
+}
+
 /* History Sidebar */
 .history-sidebar {
     position: absolute;

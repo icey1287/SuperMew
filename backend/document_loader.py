@@ -8,32 +8,32 @@ from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, Un
 class DocumentLoader:
     """文档加载和分片服务"""
 
-    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
-        # 保留原有参数以兼容外部调用；默认启用三层滑动窗口分块。
-        level_1_size = max(1200, chunk_size * 2)
-        level_1_overlap = max(240, chunk_overlap * 2)
-        level_2_size = max(600, chunk_size)
-        level_2_overlap = max(120, chunk_overlap)
-        level_3_size = max(300, chunk_size // 2)
-        level_3_overlap = max(60, chunk_overlap // 2)
+    def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100):
+        # 保留原有参数以兼容外部调用；默认启用三层滑动窗口分块，增大了默认分块大小以防碎片化。
+        level_1_size = max(2000, chunk_size * 3)
+        level_1_overlap = max(400, chunk_overlap * 3)
+        level_2_size = max(1000, chunk_size * 2)
+        level_2_overlap = max(200, chunk_overlap * 2)
+        level_3_size = max(600, chunk_size)
+        level_3_overlap = max(100, chunk_overlap)
 
         self._splitter_level_1 = RecursiveCharacterTextSplitter(
             chunk_size=level_1_size,
             chunk_overlap=level_1_overlap,
             add_start_index=True,
-            separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", ""],
+            separators=["\n\n", "。", "！", "？", "\n", "，", "、", " ", ""],
         )
         self._splitter_level_2 = RecursiveCharacterTextSplitter(
             chunk_size=level_2_size,
             chunk_overlap=level_2_overlap,
             add_start_index=True,
-            separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", ""],
+            separators=["\n\n", "。", "！", "？", "\n", "，", "、", " ", ""],
         )
         self._splitter_level_3 = RecursiveCharacterTextSplitter(
             chunk_size=level_3_size,
             chunk_overlap=level_3_overlap,
             add_start_index=True,
-            separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", ""],
+            separators=["\n\n", "。", "！", "？", "\n", "，", "、", " ", ""],
         )
 
     @staticmethod

@@ -31,6 +31,20 @@ createApp({
         } else {
             localStorage.setItem('userId', this.userId);
         }
+        
+        // 事件委托处理点击引用跳转
+        if (this.$refs.chatContainer) {
+            this.$refs.chatContainer.addEventListener('click', (e) => {
+                const citeRef = e.target.closest('.cite-ref');
+                if (citeRef) {
+                    const msgIndex = citeRef.getAttribute('data-msg-index');
+                    const chunkIndex = citeRef.getAttribute('data-chunk-index');
+                    if (msgIndex != null && chunkIndex != null) {
+                        this.scrollToChunk(msgIndex, chunkIndex);
+                    }
+                }
+            });
+        }
     },
     methods: {
         configureMarked() {
@@ -45,10 +59,44 @@ createApp({
             });
         },
         
-        parseMarkdown(text) {
-            return marked.parse(text);
+        parseMarkdown(text, msgIndex) {
+            let html = marked.parse(text);
+            let inCode = false;
+            return html.split(/(<[^>]*>)/).map(part => {
+                if (part.startsWith('<')) {
+                    if (part.startsWith('<code') || part.startsWith('<pre')) inCode = true;
+                    if (part.startsWith('</code') || part.startsWith('</pre')) inCode = false;
+                    return part;
+                }
+                if (!inCode) {
+                    return part.replace(/\[([\d\s,]+)\]/g, (match, p1) => {
+                        const numbers = p1.split(',').map(n => n.trim()).filter(n => /^\d+$/.test(n));
+                        if (numbers.length === 0) return match;
+                        return numbers.map(n => `<sup class="cite-ref" data-msg-index="${msgIndex}" data-chunk-index="${n}">[${n}]</sup>`).join('');
+                    });
+                }
+                return part;
+            }).join('');
         },
         
+        scrollToChunk(msgIndex, chunkIndex) {
+            const msgEl = document.querySelectorAll('.message')[msgIndex];
+            if (msgEl) {
+                const details = msgEl.querySelector('details.references-details');
+                if (details) {
+                    details.open = true;
+                }
+                const chunkEl = document.getElementById(`chunk-${msgIndex}-${chunkIndex}`);
+                if (chunkEl) {
+                    chunkEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    chunkEl.classList.add('highlight-chunk');
+                    setTimeout(() => {
+                        chunkEl.classList.remove('highlight-chunk');
+                    }, 2000);
+                }
+            }
+        },
+
         escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;

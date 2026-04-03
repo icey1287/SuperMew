@@ -129,6 +129,7 @@ def create_agent_instance():
             "Once you call search_knowledge_base and receive its result, you MUST immediately produce the Final Answer based on that result. "
             "After receiving search_knowledge_base result, you MUST NOT call any tool again (including get_current_weather or search_knowledge_base). "
             "If the retrieved context is insufficient, answer honestly that you don't know instead of making up facts. "
+            "When answering based on retrieved chunks, you MUST cite the source chunks using their index numbers inline, for example [1] or [2][3]. "
             "If tool results include a Step-back Question/Answer, use that general principle to reason and answer, "
             "but do not reveal chain-of-thought. "
             "If you don't know the answer, admit it honestly."

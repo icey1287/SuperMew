@@ -5,17 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>喵喵智能助手</title>
     <link rel="stylesheet" href="style.css">
-    <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=Zcool+KuaiLe&display=swap" rel="stylesheet">
-    <!-- Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Markdown Parser -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- Syntax Highlighting -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-light.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
-    <!-- Vue 3 -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link rel="stylesheet" href="vendor/fonts/google-fonts.css">
+    <link rel="stylesheet" href="vendor/css/all.min.css">
+    <script src="vendor/js/marked.min.js"></script>
+    <link rel="stylesheet" href="vendor/css/atom-one-light.min.css">
+    <script src="vendor/js/highlight.min.js"></script>
+    <script src="vendor/js/vue.global.js"></script>
 </head>
 <body>
     <div id="app" class="app-wrapper">
@@ -202,7 +197,31 @@
                         </div>
                     </div>
                     <!-- 正常回复内容 -->
-                    <div v-else class="message-content" v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text)"></div>
+                    <div v-else class="message-content">
+                        <div v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text, index)"></div>
+                        
+                        <!-- 参考文献区 -->
+                        <div v-if="!msg.isUser && msg.ragTrace && msg.ragTrace.retrieved_chunks && msg.ragTrace.retrieved_chunks.length > 0" class="references-section">
+                            <details class="references-details">
+                                <summary class="references-title"><i class="fas fa-book"></i> 参考文献</summary>
+                                <ul class="sources-list" style="margin-top: 10px;">
+                                    <li v-for="(chunk, cIdx) in msg.ragTrace.retrieved_chunks" :key="cIdx" class="source-item" :id="'chunk-' + index + '-' + (cIdx + 1)">
+                                        <div class="source-title-line">
+                                            <span class="ref-index cite-ref" :data-msg-index="index" :data-chunk-index="cIdx + 1">[{{ cIdx + 1 }}]</span>
+                                            <span class="source-file">{{ chunk.filename }}</span>
+                                            <span v-if="chunk.page_number" class="source-page"> - 第 {{ chunk.page_number }} 页</span>
+                                        </div>
+                                        <div class="source-meta-line">
+                                            <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (cIdx + 1) }}</span>
+                                            <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">Rerank分数：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
+                                        </div>
+                                        <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
+                                    </li>
+                                </ul>
+                            </details>
+                        </div>
+                    </div>
+
                     <div v-if="!msg.isUser && msg.ragTrace" class="message-meta">
                         <details class="reasoning-details">
                             <summary>检索过程</summary>
@@ -275,54 +294,6 @@
                                 </div>
                                 <div v-if="msg.ragTrace.hypothetical_doc" class="trace-line">
                                     HyDE 文档：{{ msg.ragTrace.hypothetical_doc }}
-                                </div>
-                                <div v-if="msg.ragTrace.initial_retrieved_chunks && msg.ragTrace.initial_retrieved_chunks.length" class="sources">
-                                    <div class="sources-title">初次检索结果</div>
-                                    <ul class="sources-list">
-                                        <li v-for="(chunk, sIndex) in msg.ragTrace.initial_retrieved_chunks" :key="sIndex" class="source-item">
-                                            <div class="source-title-line">
-                                                <span class="source-file">{{ chunk.filename }}</span>
-                                                <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
-                                            </div>
-                                            <div class="source-meta-line">
-                                                <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
-                                                <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">Rerank分数：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
-                                            </div>
-                                            <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
-                                        </li>
-                                    </ul>
-                                </div>
-                                <div v-if="msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length" class="sources">
-                                    <div class="sources-title">重写后检索结果</div>
-                                    <ul class="sources-list">
-                                        <li v-for="(chunk, sIndex) in msg.ragTrace.expanded_retrieved_chunks" :key="sIndex" class="source-item">
-                                            <div class="source-title-line">
-                                                <span class="source-file">{{ chunk.filename }}</span>
-                                                <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
-                                            </div>
-                                            <div class="source-meta-line">
-                                                <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
-                                                <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">Rerank分数：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
-                                            </div>
-                                            <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
-                                        </li>
-                                    </ul>
-                                </div>
-                                <div v-if="msg.ragTrace.retrieved_chunks && msg.ragTrace.retrieved_chunks.length && !(msg.ragTrace.initial_retrieved_chunks && msg.ragTrace.initial_retrieved_chunks.length) && !(msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length)" class="sources">
-                                    <div class="sources-title">向量检索结果</div>
-                                    <ul class="sources-list">
-                                        <li v-for="(chunk, sIndex) in msg.ragTrace.retrieved_chunks" :key="sIndex" class="source-item">
-                                            <div class="source-title-line">
-                                                <span class="source-file">{{ chunk.filename }}</span>
-                                                <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
-                                            </div>
-                                            <div class="source-meta-line">
-                                                <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
-                                                <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">Rerank分数：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
-                                            </div>
-                                            <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
-                                        </li>
-                                    </ul>
                                 </div>
                             </div>
                         </details>
