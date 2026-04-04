@@ -208,8 +208,12 @@
                                     <li v-for="(chunk, cIdx) in msg.ragTrace.retrieved_chunks" :key="cIdx" class="source-item" :id="'chunk-' + index + '-' + (cIdx + 1)">
                                         <div class="source-title-line">
                                             <span class="ref-index cite-ref" :data-msg-index="index" :data-chunk-index="cIdx + 1">[{{ cIdx + 1 }}]</span>
-                                            <span class="source-file">{{ chunk.filename }}</span>
-                                            <span v-if="chunk.page_number" class="source-page"> - 第 {{ chunk.page_number }} 页</span>
+                                            <span class="source-file">
+                                                <i v-if="chunk.filename.includes('Graph')" class="fas fa-project-diagram" style="color: #9b59b6; margin-right: 4px;"></i>
+                                                <i v-else class="fas fa-file-pdf" style="color: #e74c3c; margin-right: 4px;"></i>
+                                                {{ chunk.filename }}
+                                            </span>
+                                            <span v-if="chunk.page_number && chunk.page_number !== 'Graph'" class="source-page"> - 第 {{ chunk.page_number }} 页</span>
                                         </div>
                                         <div class="source-meta-line">
                                             <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (cIdx + 1) }}</span>
@@ -250,8 +254,17 @@
                                 <div v-if="msg.ragTrace.retrieval_mode" class="trace-line">
                                     检索模式：{{ msg.ragTrace.retrieval_mode }}
                                 </div>
+                                <div v-if="msg.ragTrace.dense_count !== null && msg.ragTrace.dense_count !== undefined" class="trace-line">
+                                    向量检索(Dense)召回数：{{ msg.ragTrace.dense_count }}
+                                </div>
+                                <div v-if="msg.ragTrace.sparse_count !== null && msg.ragTrace.sparse_count !== undefined" class="trace-line">
+                                    关键字检索(Sparse)召回数：{{ msg.ragTrace.sparse_count }}
+                                </div>
+                                <div v-if="msg.ragTrace.graph_count !== null && msg.ragTrace.graph_count !== undefined" class="trace-line">
+                                    图谱检索(Graph)召回数：{{ msg.ragTrace.graph_count }}
+                                </div>
                                 <div v-if="msg.ragTrace.candidate_k" class="trace-line">
-                                    候选召回数：{{ msg.ragTrace.candidate_k }}
+                                    总候选召回数：{{ msg.ragTrace.candidate_k }}
                                 </div>
                                 <div v-if="msg.ragTrace.leaf_retrieve_level" class="trace-line">
                                     叶子召回层级：L{{ msg.ragTrace.leaf_retrieve_level }}
@@ -327,6 +340,12 @@
             </div>
             </div>
             <!-- End of Chat Area -->
+            
+            <!-- Global Concept Tooltip -->
+            <div id="global-tooltip" class="tooltip-bubble" ref="globalTooltip" v-show="showTooltip" :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }">
+                <div class="tooltip-content">{{ tooltipText }}</div>
+                <div class="tooltip-arrow"></div>
+            </div>
         </main>
     </div>
 

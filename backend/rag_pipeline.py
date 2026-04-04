@@ -141,6 +141,9 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "retrieval_mode": retrieve_meta.get("retrieval_mode"),
         "candidate_k": retrieve_meta.get("candidate_k"),
         "leaf_retrieve_level": retrieve_meta.get("leaf_retrieve_level"),
+        "dense_count": retrieve_meta.get("dense_count"),
+        "sparse_count": retrieve_meta.get("sparse_count"),
+        "graph_count": retrieve_meta.get("graph_count"),
         "auto_merge_enabled": retrieve_meta.get("auto_merge_enabled"),
         "auto_merge_applied": retrieve_meta.get("auto_merge_applied"),
         "auto_merge_threshold": retrieve_meta.get("auto_merge_threshold"),
@@ -259,6 +262,9 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     auto_merge_threshold = None
     auto_merge_replaced_chunks = 0
     auto_merge_steps = 0
+    dense_count_any = 0
+    sparse_count_any = 0
+    graph_count_any = 0
 
     if strategy in ("hyde", "complex"):
         hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
@@ -288,6 +294,9 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         auto_merge_threshold = auto_merge_threshold or hyde_meta.get("auto_merge_threshold")
         auto_merge_replaced_chunks += int(hyde_meta.get("auto_merge_replaced_chunks") or 0)
         auto_merge_steps += int(hyde_meta.get("auto_merge_steps") or 0)
+        dense_count_any += int(hyde_meta.get("dense_count") or 0)
+        sparse_count_any += int(hyde_meta.get("sparse_count") or 0)
+        graph_count_any += int(hyde_meta.get("graph_count") or 0)
 
     if strategy in ("step_back", "complex"):
         expanded_query = state.get("expanded_query") or state["question"]
@@ -317,6 +326,9 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         auto_merge_threshold = auto_merge_threshold or step_meta.get("auto_merge_threshold")
         auto_merge_replaced_chunks += int(step_meta.get("auto_merge_replaced_chunks") or 0)
         auto_merge_steps += int(step_meta.get("auto_merge_steps") or 0)
+        dense_count_any += int(step_meta.get("dense_count") or 0)
+        sparse_count_any += int(step_meta.get("sparse_count") or 0)
+        graph_count_any += int(step_meta.get("graph_count") or 0)
 
     deduped = []
     seen = set()
@@ -352,6 +364,9 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "retrieval_mode": retrieval_mode,
         "candidate_k": candidate_k,
         "leaf_retrieve_level": leaf_retrieve_level,
+        "dense_count": dense_count_any,
+        "sparse_count": sparse_count_any,
+        "graph_count": graph_count_any,
         "auto_merge_enabled": auto_merge_enabled,
         "auto_merge_applied": auto_merge_applied,
         "auto_merge_threshold": auto_merge_threshold,

@@ -19,7 +19,11 @@ createApp({
             documentsLoading: false,
             selectedFile: null,
             isUploading: false,
-            uploadProgress: ''
+            uploadProgress: '',
+            showTooltip: false,
+            tooltipText: '',
+            tooltipX: 0,
+            tooltipY: 0
         };
     },
     mounted() {
@@ -45,6 +49,35 @@ createApp({
                 }
             });
         }
+        
+        // 处理全局的名词解释气泡点击
+        document.addEventListener('click', (e) => {
+            const conceptRef = e.target.closest('.concept-tooltip');
+            if (conceptRef) {
+                const desc = conceptRef.getAttribute('data-desc');
+                if (desc) {
+                    this.tooltipText = desc;
+                    this.showTooltip = true;
+                    this.$nextTick(() => {
+                        const tooltip = this.$refs.globalTooltip;
+                        if (tooltip) {
+                            const rect = conceptRef.getBoundingClientRect();
+                            let left = rect.left + (rect.width / 2) - (tooltip.offsetWidth / 2);
+                            let top = rect.top - tooltip.offsetHeight - 8;
+                            
+                            // 边界检测
+                            if (left < 10) left = 10;
+                            if (top < 10) top = rect.bottom + 8;
+                            
+                            this.tooltipX = left;
+                            this.tooltipY = top;
+                        }
+                    });
+                }
+            } else {
+                this.showTooltip = false;
+            }
+        });
     },
     methods: {
         configureMarked() {

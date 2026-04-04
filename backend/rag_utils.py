@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 from milvus_client import MilvusManager
 from embedding import EmbeddingService
 from parent_chunk_store import ParentChunkStore
+from graph_retriever import GraphRetriever
 from langchain.chat_models import init_chat_model
+from tools import emit_rag_step
 
 load_dotenv()
 
@@ -243,60 +245,145 @@ def step_back_expand(query: str) -> dict:
     }
 
 
+def _compute_rrf(*result_lists: List[List[dict]], k: int = 60, top_k: int = 5) -> List[dict]:
+    """
+    Python 层的 RRF 算法，将多个检索列表按名次融合。
+    返回融合后的字典列表。
+    """
+    rrf_scores = defaultdict(float)
+    doc_map = {}
+
+    for doc_list in result_lists:
+        if not doc_list:
+            continue
+        for rank, doc in enumerate(doc_list, 1):
+            key = doc.get("chunk_id") or doc.get("text", "")
+            if not key:
+                continue
+            rrf_scores[key] += 1.0 / (k + rank)
+            if key not in doc_map:
+                doc_map[key] = dict(doc)
+    
+    # 按照 RRF 分数排序
+    sorted_keys = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+    
+    fused_docs = []
+    for rank, key in enumerate(sorted_keys[:top_k], 1):
+        fused_doc = doc_map[key]
+        fused_doc["rrf_rank"] = rank
+        fused_doc["rrf_score"] = rrf_scores[key]
+        fused_docs.append(fused_doc)
+        
+    return fused_docs
+
+
 def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
     candidate_k = max(top_k * 3, top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
+    
+    dense_embedding = []
+    sparse_embedding = {}
     try:
         dense_embeddings = _embedding_service.get_embeddings([query])
-        dense_embedding = dense_embeddings[0]
-        sparse_embedding = _embedding_service.get_sparse_embedding(query)
-
-        retrieved = _milvus_manager.hybrid_retrieve(
-            dense_embedding=dense_embedding,
-            sparse_embedding=sparse_embedding,
-            top_k=candidate_k,
-            filter_expr=filter_expr,
-        )
-        reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
-        rerank_meta["retrieval_mode"] = "hybrid"
-        rerank_meta["candidate_k"] = candidate_k
-        rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-        rerank_meta.update(merge_meta)
-        return {"docs": merged_docs, "meta": rerank_meta}
-    except Exception:
-        try:
-            dense_embeddings = _embedding_service.get_embeddings([query])
+        if dense_embeddings:
             dense_embedding = dense_embeddings[0]
-            retrieved = _milvus_manager.dense_retrieve(
+        sparse_embedding = _embedding_service.get_sparse_embedding(query)
+    except Exception as e:
+        print(f"Embedding generation error: {e}")
+
+    # 1. 密集向量检索 (Dense)
+    dense_results = []
+    if dense_embedding:
+        try:
+            dense_results = _milvus_manager.dense_retrieve(
                 dense_embedding=dense_embedding,
                 top_k=candidate_k,
                 filter_expr=filter_expr,
             )
-            reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-            merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
-            rerank_meta["retrieval_mode"] = "dense_fallback"
-            rerank_meta["candidate_k"] = candidate_k
-            rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-            rerank_meta.update(merge_meta)
-            return {"docs": merged_docs, "meta": rerank_meta}
-        except Exception:
-            return {
-                "docs": [],
-                "meta": {
-                    "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
-                    "rerank_applied": False,
-                    "rerank_model": RERANK_MODEL,
-                    "rerank_endpoint": _get_rerank_endpoint(),
-                    "rerank_error": "retrieve_failed",
-                    "retrieval_mode": "failed",
-                    "candidate_k": candidate_k,
-                    "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                    "auto_merge_enabled": AUTO_MERGE_ENABLED,
-                    "auto_merge_applied": False,
-                    "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-                    "auto_merge_replaced_chunks": 0,
-                    "auto_merge_steps": 0,
-                    "candidate_count": 0,
-                },
-            }
+            emit_rag_step("🎯", f"密集向量(Dense)召回", f"获取 {len(dense_results)} 个候选片段")
+        except Exception as e:
+            print(f"Dense retrieve error: {e}")
+
+    # 2. 稀疏向量检索 (Sparse / BM25)
+    sparse_results = []
+    if sparse_embedding:
+        try:
+            sparse_results = _milvus_manager.sparse_retrieve(
+                sparse_embedding=sparse_embedding,
+                top_k=candidate_k,
+                filter_expr=filter_expr,
+            )
+            emit_rag_step("🔤", f"关键字(Sparse)召回", f"获取 {len(sparse_results)} 个候选片段")
+        except Exception as e:
+            print(f"Sparse retrieve error: {e}")
+
+    # 3. 图检索 (Graph)
+    graph_results = []
+    try:
+        graph_results = _graph_retriever.retrieve(query, top_k=candidate_k)
+        if graph_results:
+            emit_rag_step("🕸️", f"知识图谱(Graph)召回", f"匹配到 {len(graph_results)} 条关联关系")
+    except Exception as e:
+        print(f"Graph retrieve error: {e}")
+
+    # 本地 RRF 融合三路结果
+    retrieved = _compute_rrf(dense_results, sparse_results, graph_results, k=60, top_k=candidate_k)
+    emit_rag_step("🔀", "多路 RRF 混合重排", f"三路融合得出 Top {len(retrieved)} 候选")
+
+    if not retrieved:
+        # Fallback to failed status if absolutely nothing
+        return {
+            "docs": [],
+            "meta": {
+                "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
+                "rerank_applied": False,
+                "rerank_model": RERANK_MODEL,
+                "rerank_endpoint": _get_rerank_endpoint(),
+                "rerank_error": "all_retrieve_failed",
+                "retrieval_mode": "failed",
+                "candidate_k": candidate_k,
+                "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                "auto_merge_enabled": AUTO_MERGE_ENABLED,
+                "auto_merge_applied": False,
+                "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
+                "auto_merge_replaced_chunks": 0,
+                "auto_merge_steps": 0,
+                "candidate_count": 0,
+            },
+        }
+
+    # 重新排序并使用自动合并 (Auto-merging) 与 Reranker
+    try:
+        reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
+        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
+        rerank_meta["retrieval_mode"] = "hybrid_3way_rrf"
+        rerank_meta["candidate_k"] = candidate_k
+        rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+        rerank_meta["dense_count"] = len(dense_results)
+        rerank_meta["sparse_count"] = len(sparse_results)
+        rerank_meta["graph_count"] = len(graph_results)
+        rerank_meta.update(merge_meta)
+        return {"docs": merged_docs, "meta": rerank_meta}
+    except Exception as e:
+        return {
+            "docs": retrieved[:top_k],
+            "meta": {
+                "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
+                "rerank_applied": False,
+                "rerank_model": RERANK_MODEL,
+                "rerank_endpoint": _get_rerank_endpoint(),
+                "rerank_error": f"process_error: {e}",
+                "retrieval_mode": "hybrid_3way_rrf",
+                "candidate_k": candidate_k,
+                "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                "dense_count": len(dense_results),
+                "sparse_count": len(sparse_results),
+                "graph_count": len(graph_results),
+                "auto_merge_enabled": AUTO_MERGE_ENABLED,
+                "auto_merge_applied": False,
+                "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
+                "auto_merge_replaced_chunks": 0,
+                "auto_merge_steps": 0,
+                "candidate_count": len(retrieved),
+            },
+        }

@@ -40,6 +40,9 @@ class RagTrace(BaseModel):
     retrieval_mode: Optional[str] = None
     candidate_k: Optional[int] = None
     leaf_retrieve_level: Optional[int] = None
+    dense_count: Optional[int] = None
+    sparse_count: Optional[int] = None
+    graph_count: Optional[int] = None
     auto_merge_enabled: Optional[bool] = None
     auto_merge_applied: Optional[bool] = None
     auto_merge_threshold: Optional[int] = None
