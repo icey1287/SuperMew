@@ -286,6 +286,20 @@ createApp({
                 isComplete: true
             });
             
+            // 立即将新对话添加到侧边栏，形成秒出卡片的体验
+            if (this.messages.length === 1) {
+                const tempTitle = text.length > 10 ? text.substring(0, 10) + '...' : text;
+                const existingSession = this.sessions.find(s => s.session_id === this.sessionId);
+                if (!existingSession) {
+                    this.sessions.unshift({
+                        session_id: this.sessionId,
+                        title: tempTitle,
+                        message_count: 1,
+                        updated_at: new Date().toISOString()
+                    });
+                }
+            }
+            
             this.userInput = '';
             this.$nextTick(() => {
                 this.resetTextareaHeight();

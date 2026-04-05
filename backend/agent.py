@@ -281,6 +281,8 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
         ] + messages[40:]
 
     messages.append(HumanMessage(content=user_text))
+    storage.save(user_id, session_id, messages)
+
     result = dynamic_agent.invoke(
         {"messages": messages},
         config={"recursion_limit": 8},
@@ -364,6 +366,9 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
         ] + messages[40:]
 
     messages.append(HumanMessage(content=user_text))
+    
+    # 立即存盘一次，保证即便流还没结束，用户如果刷新或者切换会话，至少能加载到自己刚发的消息
+    storage.save(user_id, session_id, messages)
 
     # 启动后台意图识别任务（并发执行，彻底隐藏延迟）
     follow_up_task = asyncio.create_task(_generate_follow_ups(user_text, messages[:-1], model))

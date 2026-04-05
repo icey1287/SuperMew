@@ -289,12 +289,12 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         skip_rerank = True
     elif think_mode == "deep":
         candidate_k = 30
-        final_top_k = 10
+        final_top_k = 15
         skip_rerank = False
     else: # normal
         candidate_k = 15
-        final_top_k = 15
-        skip_rerank = True
+        final_top_k = 10
+        skip_rerank = False
         
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     
