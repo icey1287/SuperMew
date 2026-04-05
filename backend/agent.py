@@ -81,15 +81,6 @@ class ConversationStorage:
 
         return messages
 
-    def load_with_meta(self, user_id: str, session_id: str) -> tuple[list, dict]:
-        """加载对话及元数据"""
-        messages = self.load(user_id, session_id)
-        data = self._load()
-        metadata = {}
-        if user_id in data and session_id in data[user_id]:
-            metadata = data[user_id][session_id].get("metadata", {})
-        return messages, metadata
-
     def list_sessions(self, user_id: str) -> list:
         """列出用户的所有会话"""
         data = self._load()
@@ -177,32 +168,22 @@ agent, model, fast_model = create_agent_instance()
 storage = ConversationStorage()
 profile_manager = ProfileManager()
 
-async def update_persistent_note(current_note: str, user_text: str, ai_response: str, llm_model) -> str:
-    """
-    Context Manager (上下文管理器): 
-    基于 SPARC-RAG 的增量上下文维护机制。用于取代传统的简单拼接式历史记忆。
-    """
-    try:
-        prompt = (
-            "你是一个【Context Manager Agent】(上下文管理器)，你的任务是维护多轮医学对话中的『持久化笔记』(Persistent Note)。\n"
-            "这本笔记是大模型的长效工作记忆，用于在窗口有限（Window limit）的情况下，记录已解决的问题和收集到的关键医疗证据。\n\n"
-            "【更新规则 - 增量与最小化更新】：\n"
-            "1. 不要简单拼接新文本，而是将新收集的证据与现有的记忆状态智能合并。\n"
-            "2. 有选择性地整合相关信息并过滤噪音，确保上下文窗口紧凑且稳定，控制在500字以内。\n\n"
-            "【更新规则 - 冲突解决与持久化笔记】：\n"
-            "3. 如果多轮检索到的信息存在分歧或重复，请保留【最可靠或最新版本的信息】，并补充尚未包含的有用内容。\n"
-            "4. 防止对话历史中的矛盾信息干扰后续推理，以简明扼要的条目 (Bullet points) 输出。\n\n"
-            f"▼ 现有的持久化笔记：\n{current_note if current_note else '无'}\n\n"
-            f"▼ 刚刚发生的最新一轮对话：\n用户提问: {user_text}\nAI回答: {ai_response}\n\n"
-            "请直接输出更新后的【持久化笔记】（纯文本，不要包含任何解释语或Markdown的```）："
-        )
-        
-        loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(None, lambda: llm_model.invoke([SystemMessage(content=prompt)]))
-        return res.content.strip()
-    except Exception as e:
-        print(f"Context Manager Error: {e}")
-        return current_note
+def summarize_old_messages(model, messages: list) -> str:
+    """将旧消息总结为摘要"""
+    # 提取旧对话
+    old_conversation = "\n".join([
+        f"{'用户' if msg.type == 'human' else 'AI'}: {msg.content}"
+        for msg in messages
+    ])
+
+    # 生成摘要
+    summary_prompt = f"""请总结以下对话的关键信息：
+
+{old_conversation}
+总结（包含用户信息、重要事实、待办事项）："""
+
+    summary = model.invoke(summary_prompt).content
+    return summary
 
 
 class FollowUpQuestions(BaseModel):
@@ -355,9 +336,8 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     """
     set_rag_config({"think_mode": think_mode})
     
-    messages, metadata = storage.load_with_meta(user_id, session_id)
+    messages = storage.load(user_id, session_id)
     is_first_message = len(messages) == 0
-    persistent_note = metadata.get("persistent_note", "")
 
     # 清理可能残留的 RAG 上下文
     get_last_rag_context(clear=True)
@@ -377,22 +357,16 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
 
     set_rag_step_queue(_RagStepProxy())
 
-    # 上下文管理器 (Context Manager) 逻辑:
-    # 不再粗暴传输所有历史，而是保持窗口有限。仅传递最近 6 条消息（短期工作记忆）
-    # 和大模型之前自己提炼的“持久化笔记”（长期工作记忆）
-    short_term_messages = messages[-6:] if len(messages) > 6 else messages
-    context_messages = []
-    
-    if persistent_note:
-        context_messages.append(
-            SystemMessage(content=f"【对话持久化笔记（你的工作记忆）】\n{persistent_note}\n请参考以上笔记保持对话连贯性，避免重复回答已解决的问题。")
-        )
-        
-    context_messages.extend(short_term_messages)
-    context_messages.append(HumanMessage(content=user_text))
+    if len(messages) > 50:
+        summary = summarize_old_messages(model, messages[:40])
+        messages = [
+            SystemMessage(content=f"之前的对话摘要：\n{summary}")
+        ] + messages[40:]
+
+    messages.append(HumanMessage(content=user_text))
 
     # 启动后台意图识别任务（并发执行，彻底隐藏延迟）
-    follow_up_task = asyncio.create_task(_generate_follow_ups(user_text, short_term_messages, fast_model))
+    follow_up_task = asyncio.create_task(_generate_follow_ups(user_text, messages[:-1], model))
     
     # 如果是首条消息，后台异步生成标题
     if is_first_message:
@@ -414,7 +388,7 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
         nonlocal full_response
         try:
             async for msg, metadata in dynamic_agent.astream(
-                {"messages": context_messages},
+                {"messages": messages},
                 stream_mode="messages",
                 config={"recursion_limit": 8},
             ):
@@ -487,24 +461,15 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     # 发送结束信号
     yield "data: [DONE]\n\n"
 
-    # 执行 Context Manager 逻辑更新持久化笔记
-    new_note = persistent_note
-    try:
-        # 为了不阻塞主线程，可以在后台更新，但我们需要将其存入 metadata。
-        # 这里 await 调用，因为是在流输出完毕后，多花 1-2 秒执行也不影响用户的体验和 UI 显示。
-        new_note = await update_persistent_note(persistent_note, user_text, full_response, fast_model)
-    except Exception as e:
-        print(f"Update persistent note error: {e}")
-
-    # 保存对话并更新标题和笔记
+    # 保存对话并更新标题
+    metadata = {}
     if is_first_message:
         try:
+            # 确保此时标题任务已完成 (通常早已完成，但保险起见 await 一下以保存元数据)
             title = await title_task
             metadata["title"] = title
         except Exception:
             pass
-            
-    metadata["persistent_note"] = new_note
 
     messages.append(AIMessage(content=full_response))
     extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]

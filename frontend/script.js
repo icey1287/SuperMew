@@ -362,17 +362,20 @@ createApp({
                                 } else if (data.type === 'follow_ups') {
                                     this.messages[botMsgIdx].followUps = data.questions;
                                 } else if (data.type === 'session_title') {
-                                    // 更新侧边栏标题（如果当前历史记录没打开，可在这里动态触发获取，或直接静默更新数组）
+                                    // 乐观更新侧边栏标题（因为此时后端可能还没写入文件，直接请求会导致拉取不到数据）
                                     const s = this.sessions.find(s => s.session_id === data.session_id);
                                     if (s) {
                                         s.title = data.title;
+                                        s.updated_at = new Date().toISOString();
+                                        s.message_count = this.messages.length;
                                     } else {
-                                        // 否则在后台重新获取一次历史记录列表以更新视图
-                                        if (this.messages.length <= 2) {
-                                            fetch(`/sessions/${this.userId}`).then(r => r.json()).then(d => {
-                                                this.sessions = d.sessions;
-                                            });
-                                        }
+                                        // 直接前置插入到本地历史记录数组中，实现“秒出”
+                                        this.sessions.unshift({
+                                            session_id: data.session_id,
+                                            title: data.title,
+                                            message_count: this.messages.length,
+                                            updated_at: new Date().toISOString()
+                                        });
                                     }
                                 } else if (data.type === 'error') {
                                     this.messages[botMsgIdx].isThinking = false;
