@@ -948,6 +948,153 @@ textarea {
     z-index: 1000;
 }
 
+/* Teleport 到 body 的词典弹窗，需高于侧栏/气泡等，且不受 #app overflow 影响 */
+.dictionary-modal-overlay {
+    z-index: 20000;
+}
+
+.chart-modal-content.dictionary-modal-content-wide {
+    max-width: 640px;
+    max-height: 85vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.nci-dictionary-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 200px;
+}
+
+.nci-dictionary-search-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.nci-dictionary-match-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    font-size: 0.85rem;
+    color: var(--text-color);
+}
+
+.nci-dictionary-match-label {
+    font-weight: 600;
+    color: #666;
+}
+
+.nci-dictionary-match-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.nci-dictionary-match-opt input {
+    accent-color: var(--primary-color);
+}
+
+.nci-dictionary-input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-family: inherit;
+}
+
+.nci-dictionary-input:focus {
+    outline: none;
+    border-color: var(--primary-light);
+    box-shadow: 0 0 0 2px rgba(255, 183, 178, 0.35);
+}
+
+.nci-dictionary-search-btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #ff9e99, #ffb7b2);
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+
+.nci-dictionary-search-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.nci-dictionary-error {
+    color: #e74c3c;
+    font-size: 0.85rem;
+}
+
+.nci-dictionary-loading {
+    color: var(--text-light);
+    font-size: 0.9rem;
+}
+
+.nci-dictionary-meta {
+    font-size: 0.8rem;
+    color: #888;
+    margin: 0;
+}
+
+.nci-dictionary-results {
+    overflow-y: auto;
+    max-height: min(52vh, 420px);
+    padding-right: 4px;
+}
+
+.nci-dictionary-item {
+    padding: 12px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.nci-dictionary-item:last-child {
+    border-bottom: none;
+}
+
+.nci-dictionary-term-title {
+    font-weight: 700;
+    color: var(--primary-color);
+    font-size: 1.05rem;
+    margin-bottom: 4px;
+}
+
+.nci-dictionary-pron {
+    font-size: 0.85rem;
+    color: #888;
+    font-style: italic;
+    margin: 0 0 6px;
+}
+
+.nci-dictionary-def {
+    font-size: 0.9rem;
+    line-height: 1.55;
+    color: var(--text-color);
+    margin: 0 0 8px;
+}
+
+.nci-dictionary-link {
+    font-size: 0.8rem;
+    color: #2b7bba;
+}
+
+.nci-dictionary-empty {
+    font-size: 0.9rem;
+    color: var(--text-light);
+}
+
 .chart-modal-content {
     background: #fff;
     padding: 25px;

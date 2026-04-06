@@ -270,6 +270,62 @@
                 </div>
             </div>
 
+            <!-- NCI Dictionary Modal：Teleport 到 body，避免 #app 内 overflow:hidden 裁剪 fixed 遮罩/iframe -->
+            <teleport to="body">
+                <div v-show="showDictionaryModal" class="chart-modal-overlay dictionary-modal-overlay" @click.self="closeDictionaryModal">
+                    <div class="chart-modal-content dictionary-modal-content-wide">
+                        <div class="chart-modal-header">
+                            <h3><i class="fas fa-spell-check"></i> 肿瘤术语字典</h3>
+                            <button type="button" @click="closeDictionaryModal" class="close-btn"><i class="fas fa-times"></i></button>
+                        </div>
+                        <p style="font-size: 0.8rem; color: #888; margin-bottom: 10px;">
+                            数据来自 NCI Dictionary of Cancer Terms（英文）。说明：官网嵌入式 widget 在点击 Search 时会先执行 Adobe 统计脚本，易被广告拦截插件拦截导致无反应；此处改为直接调用 NCI 公开 API。
+                            <a href="https://www.cancer.gov/publications/dictionaries/cancer-terms" target="_blank" rel="noopener noreferrer">打开 NCI 官网词典</a>
+                        </p>
+                        <div class="nci-dictionary-panel">
+                            <div class="nci-dictionary-search-row">
+                                <input
+                                    type="text"
+                                    v-model="nciDictionaryQuery"
+                                    class="nci-dictionary-input"
+                                    placeholder="输入英文术语，如 tumor, chemotherapy"
+                                    autocomplete="off"
+                                    @keydown.enter.prevent="runNciDictionarySearch"
+                                />
+                                <button type="button" class="nci-dictionary-search-btn" :disabled="nciDictionaryLoading" @click="runNciDictionarySearch">
+                                    <i class="fas fa-search"></i> Search
+                                </button>
+                            </div>
+                            <div class="nci-dictionary-match-row">
+                                <span class="nci-dictionary-match-label">匹配方式：</span>
+                                <label class="nci-dictionary-match-opt"><input type="radio" v-model="nciDictionaryMatchType" value="Begins"> 前缀（Begins）</label>
+                                <label class="nci-dictionary-match-opt"><input type="radio" v-model="nciDictionaryMatchType" value="Contains"> 包含（Contains）</label>
+                            </div>
+                            <p v-if="nciDictionaryError" class="nci-dictionary-error">{{ nciDictionaryError }}</p>
+                            <p v-if="nciDictionaryLoading" class="nci-dictionary-loading"><i class="fas fa-spinner fa-spin"></i> 搜索中…</p>
+                            <template v-else-if="nciDictionaryResults.length">
+                                <p class="nci-dictionary-meta">约 {{ nciDictionaryTotal }} 条匹配，当前显示 {{ nciDictionaryResults.length }} 条</p>
+                                <div class="nci-dictionary-results">
+                                    <div v-for="item in nciDictionaryResults" :key="item.termId" class="nci-dictionary-item">
+                                        <div class="nci-dictionary-term-title">{{ item.termName }}</div>
+                                        <p v-if="item.pronunciation && item.pronunciation.key" class="nci-dictionary-pron">{{ item.pronunciation.key }}</p>
+                                        <p class="nci-dictionary-def">{{ item.definition && item.definition.text }}</p>
+                                        <a
+                                            v-if="item.prettyUrlName"
+                                            class="nci-dictionary-link"
+                                            :href="'https://www.cancer.gov/publications/dictionaries/cancer-terms/def/' + item.prettyUrlName"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >在 NCI 网站查看全文 <i class="fas fa-external-link-alt"></i></a>
+                                    </div>
+                                </div>
+                            </template>
+                            <p v-else-if="nciDictionarySearched" class="nci-dictionary-empty">未找到匹配项，请尝试其它拼写或关键词。</p>
+                        </div>
+                    </div>
+                </div>
+            </teleport>
+
             <!-- Chat Area (hidden when settings or profile is active) -->
             <div v-show="activeNav === 'newChat' || activeNav === 'history'" class="chat-area">
                 <header class="chat-header">
@@ -476,6 +532,7 @@
                     <span class="preset-func-label">预设功能：</span>
                     <button class="preset-tag-small" @click="sendFollowUp('请帮我查询关于鼻咽癌的最新诊疗指南。')"><i class="fas fa-book-medical"></i> 指南查询</button>
                     <button class="preset-tag-small" @click="sendFollowUp('请帮我详细解读我上传的病历报告和化验指标，告诉我目前的病情和注意事项。')"><i class="fas fa-microscope"></i> 报告解读</button>
+                    <button type="button" class="preset-tag-small" @click="openDictionaryModal" style="background-color: #fcf3cf; color: #f39c12; border-color: rgba(243, 156, 18, 0.2);"><i class="fas fa-spell-check"></i> 术语字典</button>
                     <button class="preset-tag-small highlight-btn" @click="handleOptimize" :disabled="!userInput.trim() || isOptimizing">
                         <i class="fas fa-magic" :class="{'fa-spin': isOptimizing}"></i> {{ isOptimizing ? '优化中...' : '提问优化' }}
                     </button>

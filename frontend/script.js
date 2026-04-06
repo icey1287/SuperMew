@@ -31,6 +31,16 @@ createApp({
             profileProgress: '',
             uploadMode: 'replace',
             showChartModal: false,
+            showDictionaryModal: false,
+            /** NCI 词典：直接调 glossary API（iframe 内嵌 widget 会先走 Adobe Analytics，易被拦截导致 Search 无反应） */
+            nciDictionaryQuery: '',
+            nciDictionaryResults: [],
+            nciDictionaryTotal: 0,
+            nciDictionaryLoading: false,
+            nciDictionaryError: '',
+            nciDictionarySearched: false,
+            /** NCI API：Begins=前缀，Contains=包含 */
+            nciDictionaryMatchType: 'Begins',
             selectedChartIndicator: '',
             chartInstance: null,
             // 提问优化
@@ -205,6 +215,45 @@ createApp({
         sendFollowUp(question) {
             this.userInput = question;
             this.handleSend();
+        },
+
+        openDictionaryModal() {
+            this.nciDictionaryError = '';
+            this.showDictionaryModal = true;
+        },
+
+        closeDictionaryModal() {
+            this.showDictionaryModal = false;
+        },
+
+        async runNciDictionarySearch() {
+            const q = (this.nciDictionaryQuery || '').trim();
+            if (!q) {
+                this.nciDictionaryError = '请输入要查询的术语。';
+                return;
+            }
+            this.nciDictionaryLoading = true;
+            this.nciDictionaryError = '';
+            this.nciDictionarySearched = true;
+            const encoded = encodeURIComponent(q);
+            const match = this.nciDictionaryMatchType === 'Contains' ? 'Contains' : 'Begins';
+            const url = `https://webapis.cancer.gov/glossary/v1/Terms/search/Cancer.gov/Patient/en/${encoded}?matchType=${match}&from=0&size=50`;
+            try {
+                const res = await fetch(url);
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                this.nciDictionaryTotal = (data.meta && data.meta.totalResults) || 0;
+                this.nciDictionaryResults = Array.isArray(data.results) ? data.results : [];
+            } catch (e) {
+                console.error('NCI dictionary search failed', e);
+                this.nciDictionaryResults = [];
+                this.nciDictionaryTotal = 0;
+                this.nciDictionaryError = '查询失败，请检查网络或稍后重试。（术语以英文为主）';
+            } finally {
+                this.nciDictionaryLoading = false;
+            }
         },
 
         async handleOptimize() {
