@@ -654,13 +654,16 @@ createApp({
                         datasets: [{
                             label: this.selectedChartIndicator,
                             data: values,
-                            borderColor: '#3f2b96',
-                            backgroundColor: 'rgba(63, 43, 150, 0.1)',
+                            borderColor: '#2ecc71', // 绿色折线
+                            backgroundColor: 'rgba(46, 204, 113, 0.1)',
                             borderWidth: 2,
-                            pointBackgroundColor: '#ff6b6b',
-                            pointRadius: 4,
+                            pointBackgroundColor: '#27ae60', // 较深的绿点
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2,
+                            pointRadius: 5,
+                            pointHoverRadius: 7,
                             fill: true,
-                            tension: 0.2
+                            tension: 0.3
                         }]
                     },
                     options: {
@@ -668,13 +671,39 @@ createApp({
                         maintainAspectRatio: false,
                         plugins: {
                             legend: {
-                                display: true,
-                                position: 'top'
+                                display: false // 隐藏顶部的冗余图例（Data-ink ratio）
+                            },
+                            tooltip: {
+                                backgroundColor: 'rgba(255,255,255,0.9)',
+                                titleColor: '#333',
+                                bodyColor: '#666',
+                                borderColor: '#eee',
+                                borderWidth: 1,
+                                padding: 10,
+                                displayColors: false
                             }
                         },
                         scales: {
+                            x: {
+                                grid: {
+                                    display: false, // 隐藏 X 轴网格线
+                                    drawBorder: false
+                                },
+                                ticks: {
+                                    font: { family: "'Nunito', sans-serif" },
+                                    color: '#888'
+                                }
+                            },
                             y: {
-                                beginAtZero: false
+                                beginAtZero: false,
+                                grid: {
+                                    display: false, // 隐藏 Y 轴网格线
+                                    drawBorder: false
+                                },
+                                ticks: {
+                                    font: { family: "'Nunito', sans-serif" },
+                                    color: '#888'
+                                }
                             }
                         }
                     }
