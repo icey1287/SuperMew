@@ -26,7 +26,7 @@ from document_loader import DocumentLoader
 from parent_chunk_store import ParentChunkStore
 from milvus_writer import MilvusWriter
 from milvus_client import MilvusManager
-from embedding import EmbeddingService
+from embedding import embedding_service
 from profile_manager import ProfileManager, UserMedicalFolder, build_folder_medical_summary
 from fastapi import Form
 
@@ -38,7 +38,6 @@ PROFILE_DOC_DIR = DATA_DIR / "profile_docs"
 loader = DocumentLoader()
 parent_chunk_store = ParentChunkStore()
 milvus_manager = MilvusManager()
-embedding_service = EmbeddingService()
 milvus_writer = MilvusWriter(embedding_service=embedding_service, milvus_manager=milvus_manager)
 profile_manager = ProfileManager()
 
@@ -126,6 +125,17 @@ async def delete_discharge_report(user_id: str, report_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _remove_bm25_stats_for_filename(filename: str, kb_tier: str | None = None) -> None:
+    """删除 Milvus 中该文件对应 chunk 前，先从持久化 BM25 统计中扣减（按知识库 tier 查询对应集合）。"""
+    rows = milvus_manager.query_all(
+        filter_expr=f'filename == "{filename}"',
+        output_fields=["text"],
+        kb_tier=kb_tier,
+    )
+    texts = [r.get("text") or "" for r in rows]
+    embedding_service.increment_remove_documents(texts)
 
 
 @router.get("/sessions/{user_id}/{session_id}", response_model=SessionMessagesResponse)
@@ -310,6 +320,10 @@ async def upload_document(file: UploadFile = File(...), kb_tier: str = Form(defa
 
         delete_expr = f'filename == "{filename}"'
         try:
+            _remove_bm25_stats_for_filename(filename, tier)
+        except Exception:
+            pass
+        try:
             milvus_manager.delete(delete_expr, kb_tier=tier)
         except Exception:
             pass
@@ -361,6 +375,7 @@ async def delete_document(filename: str, kb_tier: str = Query(default="brief")):
         milvus_manager.init_collection(kb_tier=tier)
 
         delete_expr = f'filename == "{filename}"'
+        _remove_bm25_stats_for_filename(filename, tier)
         result = milvus_manager.delete(delete_expr, kb_tier=tier)
         parent_chunk_store.delete_by_filename(filename, kb_tier=tier)
 

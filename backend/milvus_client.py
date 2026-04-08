@@ -5,6 +5,9 @@ from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
 
 load_dotenv()
 
+# Milvus 单次 query 的 limit 上限（超出会报 invalid max query result window）
+QUERY_MAX_LIMIT = 16384
+
 
 class MilvusManager:
     """Milvus 连接和集合管理 - 支持混合检索"""
@@ -123,19 +126,51 @@ class MilvusManager:
         filter_expr: str = "",
         output_fields: list[str] = None,
         limit: int = 10000,
+        offset: int = 0,
         kb_tier: str | None = None,
     ):
-        """查询数据"""
+        """查询数据。limit 不宜超过 QUERY_MAX_LIMIT。"""
         collection_name = self._collection_name_for_tier(kb_tier)
         self._ensure_connection(kb_tier=kb_tier)
         if not filter_expr:
-            filter_expr = 'id > 0'
+            filter_expr = "id > 0"
         return self.client.query(
             collection_name=collection_name,
             filter=filter_expr,
             output_fields=output_fields or ["filename", "file_type"],
-            limit=limit
+            limit=min(limit, QUERY_MAX_LIMIT),
+            offset=offset,
         )
+
+    def query_all(
+        self,
+        filter_expr: str = "",
+        output_fields: list[str] | None = None,
+        kb_tier: str | None = None,
+    ) -> list:
+        """分页拉取匹配 filter 的全部行，避免单次 limit 超过服务端窗口。"""
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
+        if not filter_expr:
+            filter_expr = "id > 0"
+        fields = output_fields or ["filename", "file_type"]
+        out: list = []
+        offset = 0
+        while True:
+            batch = self.client.query(
+                collection_name=collection_name,
+                filter=filter_expr,
+                output_fields=fields,
+                limit=QUERY_MAX_LIMIT,
+                offset=offset,
+            )
+            if not batch:
+                break
+            out.extend(batch)
+            if len(batch) < QUERY_MAX_LIMIT:
+                break
+            offset += len(batch)
+        return out
 
     def get_chunks_by_ids(self, chunk_ids: list[str], kb_tier: str | None = None) -> list[dict]:
         """根据 chunk_id 批量查询分块（用于 Auto-merging 拉取父块）"""
