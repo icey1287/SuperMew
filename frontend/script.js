@@ -20,6 +20,12 @@ createApp({
             selectedFile: null,
             isUploading: false,
             uploadProgress: '',
+            kbTier: 'brief',
+            thinkModeHints: {
+                fast: '快速：简要知识库；约10条候选/10条入模，跳过重排序。',
+                normal: '正常：简要知识库；约15条候选/10条入模，启用重排序。',
+                deep: '深度：详细知识库；约30条候选/15条入模，启用重排序。',
+            },
             showTooltip: false,
             tooltipText: '',
             tooltipX: 0,
@@ -78,6 +84,9 @@ createApp({
             const recs = this.userProfile?.records;
             if (!recs || !recs.length) return [];
             return [...new Set(recs.map((r) => (r.order_category || '').trim()).filter(Boolean))].sort();
+        },
+        kbTierLabel() {
+            return this.kbTier === 'detailed' ? '详细知识库' : '简要知识库';
         },
         /** 当前医嘱项目下的报告日期 */
         reportDateOptionsForFilter() {
@@ -1221,7 +1230,7 @@ createApp({
         async loadDocuments() {
             this.documentsLoading = true;
             try {
-                const response = await fetch('/documents');
+                const response = await fetch(`/documents?kb_tier=${encodeURIComponent(this.kbTier)}`);
                 if (!response.ok) {
                     throw new Error('Failed to load documents');
                 }
@@ -1255,6 +1264,7 @@ createApp({
             try {
                 const formData = new FormData();
                 formData.append('file', this.selectedFile);
+                formData.append('kb_tier', this.kbTier);
                 
                 const response = await fetch('/documents/upload', {
                     method: 'POST',
@@ -1291,13 +1301,13 @@ createApp({
             }
         },
         
-        async deleteDocument(filename) {
+        async deleteDocument(filename, kbTier = this.kbTier) {
             if (!confirm(`确定要删除文档 "${filename}" 吗？这将同时删除 Milvus 中的所有相关向量。`)) {
                 return;
             }
             
             try {
-                const response = await fetch(`/documents/${encodeURIComponent(filename)}`, {
+                const response = await fetch(`/documents/${encodeURIComponent(filename)}?kb_tier=${encodeURIComponent(kbTier)}`, {
                     method: 'DELETE'
                 });
                 

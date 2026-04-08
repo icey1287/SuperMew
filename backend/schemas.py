@@ -39,6 +39,7 @@ class RagTrace(BaseModel):
     rerank_endpoint: Optional[str] = None
     rerank_error: Optional[str] = None
     retrieval_mode: Optional[str] = None
+    kb_tier: Optional[str] = None
     candidate_k: Optional[int] = None
     leaf_retrieve_level: Optional[int] = None
     dense_count: Optional[int] = None

@@ -139,6 +139,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "rerank_endpoint": retrieve_meta.get("rerank_endpoint"),
         "rerank_error": retrieve_meta.get("rerank_error"),
         "retrieval_mode": retrieve_meta.get("retrieval_mode"),
+        "kb_tier": retrieve_meta.get("kb_tier"),
         "candidate_k": retrieve_meta.get("candidate_k"),
         "leaf_retrieve_level": retrieve_meta.get("leaf_retrieve_level"),
         "dense_count": retrieve_meta.get("dense_count"),
@@ -257,6 +258,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     rerank_errors = []
     retrieval_mode = None
     candidate_k = None
+    kb_tier = None
     leaf_retrieve_level = None
     auto_merge_enabled = None
     auto_merge_applied = False
@@ -288,6 +290,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         if hyde_meta.get("rerank_error"):
             rerank_errors.append(f"hyde:{hyde_meta.get('rerank_error')}")
         retrieval_mode = retrieval_mode or hyde_meta.get("retrieval_mode")
+        kb_tier = kb_tier or hyde_meta.get("kb_tier")
         candidate_k = candidate_k or hyde_meta.get("candidate_k")
         leaf_retrieve_level = leaf_retrieve_level or hyde_meta.get("leaf_retrieve_level")
         auto_merge_enabled = auto_merge_enabled if auto_merge_enabled is not None else hyde_meta.get("auto_merge_enabled")
@@ -320,6 +323,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         if step_meta.get("rerank_error"):
             rerank_errors.append(f"step_back:{step_meta.get('rerank_error')}")
         retrieval_mode = retrieval_mode or step_meta.get("retrieval_mode")
+        kb_tier = kb_tier or step_meta.get("kb_tier")
         candidate_k = candidate_k or step_meta.get("candidate_k")
         leaf_retrieve_level = leaf_retrieve_level or step_meta.get("leaf_retrieve_level")
         auto_merge_enabled = auto_merge_enabled if auto_merge_enabled is not None else step_meta.get("auto_merge_enabled")
@@ -364,6 +368,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "rerank_endpoint": rerank_endpoint,
         "rerank_error": "; ".join(rerank_errors) if rerank_errors else None,
         "retrieval_mode": retrieval_mode,
+        "kb_tier": kb_tier,
         "candidate_k": candidate_k,
         "leaf_retrieve_level": leaf_retrieve_level,
         "dense_count": dense_count_any,

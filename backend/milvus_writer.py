@@ -10,7 +10,7 @@ class MilvusWriter:
         self.embedding_service = embedding_service or EmbeddingService()
         self.milvus_manager = milvus_manager or MilvusManager()
 
-    def write_documents(self, documents: list[dict], batch_size: int = 50):
+    def write_documents(self, documents: list[dict], batch_size: int = 50, kb_tier: str = "brief"):
         """
         批量写入文档到 Milvus（同时生成密集和稀疏向量）
         :param documents: 文档列表
@@ -19,7 +19,7 @@ class MilvusWriter:
         if not documents:
             return
 
-        self.milvus_manager.init_collection()
+        self.milvus_manager.init_collection(kb_tier=kb_tier)
         
         # 先拟合语料库（用于 BM25 IDF 计算）
         all_texts = [doc["text"] for doc in documents]
@@ -51,4 +51,4 @@ class MilvusWriter:
                 for doc, dense_emb, sparse_emb in zip(batch, dense_embeddings, sparse_embeddings)
             ]
 
-            self.milvus_manager.insert(insert_data)
+            self.milvus_manager.insert(insert_data, kb_tier=kb_tier)

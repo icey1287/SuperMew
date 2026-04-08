@@ -30,7 +30,7 @@ class ParentChunkStore:
             json.dump(data, f, ensure_ascii=False)
         tmp_path.replace(self.store_path)
 
-    def upsert_documents(self, docs: List[dict]) -> int:
+    def upsert_documents(self, docs: List[dict], kb_tier: str = "brief") -> int:
         """写入/更新父级分块，返回写入条数。"""
         if not docs:
             return 0
@@ -44,6 +44,7 @@ class ParentChunkStore:
             store[chunk_id] = {
                 "text": doc.get("text", ""),
                 "filename": doc.get("filename", ""),
+                "kb_tier": kb_tier,
                 "file_type": doc.get("file_type", ""),
                 "file_path": doc.get("file_path", ""),
                 "page_number": doc.get("page_number", 0),
@@ -58,13 +59,21 @@ class ParentChunkStore:
         self._save(store)
         return upserted
 
-    def get_documents_by_ids(self, chunk_ids: List[str]) -> List[dict]:
+    def get_documents_by_ids(self, chunk_ids: List[str], kb_tier: str = "brief") -> List[dict]:
         if not chunk_ids:
             return []
         store = self._load()
-        return [store[item] for item in chunk_ids if item in store]
+        matched = []
+        for item in chunk_ids:
+            if item not in store:
+                continue
+            doc = store[item]
+            doc_tier = (doc.get("kb_tier") or "brief").strip().lower()
+            if doc_tier == kb_tier:
+                matched.append(doc)
+        return matched
 
-    def delete_by_filename(self, filename: str) -> int:
+    def delete_by_filename(self, filename: str, kb_tier: str = "brief") -> int:
         """按文件名删除父级分块，返回删除条数。"""
         if not filename:
             return 0
@@ -73,7 +82,10 @@ class ParentChunkStore:
         before = len(store)
         filtered = {
             key: value for key, value in store.items()
-            if value.get("filename") != filename
+            if not (
+                value.get("filename") == filename
+                and (value.get("kb_tier") or "brief").strip().lower() == kb_tier
+            )
         }
         deleted = before - len(filtered)
         if deleted > 0:

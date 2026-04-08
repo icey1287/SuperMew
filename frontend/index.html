@@ -49,11 +49,22 @@
             <div v-if="activeNav === 'settings'" class="settings-panel">
                 <div class="settings-header">
                     <h2><i class="fas fa-cog"></i> 文档管理</h2>
-                    <p>上传文档进行向量化处理，支持 PDF 和 Word 、Excel 格式</p>
+                    <p>知识库已拆分为简要/详细两套独立向量库；上传、列表、删除均仅作用于当前选择的库。</p>
+                </div>
+                <div class="kb-tier-switch">
+                    <span class="kb-tier-switch-label">知识库分层：</span>
+                    <label class="kb-tier-radio">
+                        <input type="radio" v-model="kbTier" value="brief" @change="loadDocuments">
+                        简要知识库
+                    </label>
+                    <label class="kb-tier-radio">
+                        <input type="radio" v-model="kbTier" value="detailed" @change="loadDocuments">
+                        详细知识库
+                    </label>
                 </div>
 
                 <div class="upload-section">
-                    <h3><i class="fas fa-upload"></i> 上传文档</h3>
+                    <h3><i class="fas fa-upload"></i> 上传文档（{{ kbTierLabel }}）</h3>
                     <div class="upload-area">
                         <input 
                             type="file" 
@@ -78,7 +89,7 @@
                 </div>
 
                 <div class="documents-section">
-                    <h3><i class="fas fa-list"></i> 已上传文档</h3>
+                    <h3><i class="fas fa-list"></i> 已上传文档（{{ kbTierLabel }}）</h3>
                     <button @click="loadDocuments" class="btn-secondary">
                         <i class="fas fa-sync"></i> 刷新列表
                     </button>
@@ -89,7 +100,7 @@
                     
                     <div v-else-if="documents.length === 0" class="empty-documents">
                         <i class="fas fa-inbox"></i>
-                        <p>暂无文档</p>
+                        <p>{{ kbTierLabel }}暂无文档</p>
                     </div>
                     
                     <div v-else class="documents-list">
@@ -111,7 +122,7 @@
                                 </div>
                             </div>
                             <button 
-                                @click="deleteDocument(doc.filename)" 
+                                @click="deleteDocument(doc.filename, kbTier)" 
                                 class="btn-danger"
                                 title="删除文档"
                             >
@@ -536,9 +547,17 @@
                     <div class="header-actions" style="display: flex; gap: 15px; align-items: center;">
                         <div class="think-mode-selector">
                             <span class="mode-label">思考模式：</span>
-                            <label class="mode-radio"><input type="radio" v-model="thinkMode" value="fast"> 快速 </label>
-                            <label class="mode-radio"><input type="radio" v-model="thinkMode" value="normal"> 正常 </label>
-                            <label class="mode-radio"><input type="radio" v-model="thinkMode" value="deep"> 深度 </label>
+                            <label class="mode-radio" :title="thinkModeHints.fast"><input type="radio" v-model="thinkMode" value="fast"> 快速 </label>
+                            <label class="mode-radio" :title="thinkModeHints.normal"><input type="radio" v-model="thinkMode" value="normal"> 正常 </label>
+                            <label class="mode-radio" :title="thinkModeHints.deep"><input type="radio" v-model="thinkMode" value="deep"> 深度 </label>
+                            <span class="think-mode-help" aria-hidden="true">
+                                <i class="fas fa-info-circle"></i>
+                                <div class="think-mode-hover-card">
+                                    <div class="think-mode-hover-line">快速：简要知识库；召回少量知识；跳过重排序，优先响应速度。</div>
+                                    <div class="think-mode-hover-line">正常：简要知识库；召回中等知识；启用重排序，速度与引用质量兼顾。</div>
+                                    <div class="think-mode-hover-line">深度：详细知识库；召回大量知识；启用重排序，检索范围更大、上下文更完整。</div>
+                                </div>
+                            </span>
                         </div>
                         <button class="icon-btn" title="更多"><i class="fas fa-ellipsis-h"></i></button>
                     </div>
@@ -629,6 +648,9 @@
                                 </div>
                                 <div v-if="msg.ragTrace.retrieval_mode" class="trace-line">
                                     检索模式：{{ msg.ragTrace.retrieval_mode }}
+                                </div>
+                                <div v-if="msg.ragTrace.kb_tier" class="trace-line">
+                                    知识库层级：{{ msg.ragTrace.kb_tier === 'detailed' ? '详细知识库' : '简要知识库' }}
                                 </div>
                                 <div v-if="msg.ragTrace.dense_count !== null && msg.ragTrace.dense_count !== undefined" class="trace-line">
                                     向量检索(Dense)召回数：{{ msg.ragTrace.dense_count }}

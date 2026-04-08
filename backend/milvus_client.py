@@ -12,8 +12,23 @@ class MilvusManager:
     def __init__(self):
         self.host = os.getenv("MILVUS_HOST", "localhost")
         self.port = os.getenv("MILVUS_PORT", "19530")
-        self.collection_name = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
+        base_collection = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
+        self.collection_brief = os.getenv("MILVUS_COLLECTION_BRIEF", f"{base_collection}_brief")
+        self.collection_detailed = os.getenv("MILVUS_COLLECTION_DETAILED", f"{base_collection}_detailed")
         self._client = None
+
+    @staticmethod
+    def normalize_kb_tier(kb_tier: str | None) -> str:
+        tier = (kb_tier or "brief").strip().lower()
+        if tier in ("brief", "summary", "simple", "fast", "normal"):
+            return "brief"
+        if tier in ("detailed", "detail", "deep"):
+            return "detailed"
+        return "brief"
+
+    def _collection_name_for_tier(self, kb_tier: str | None) -> str:
+        tier = self.normalize_kb_tier(kb_tier)
+        return self.collection_detailed if tier == "detailed" else self.collection_brief
 
     @property
     def client(self):
@@ -22,10 +37,11 @@ class MilvusManager:
             self._client = MilvusClient(uri=f"http://{self.host}:{self.port}")
         return self._client
 
-    def _ensure_connection(self):
+    def _ensure_connection(self, kb_tier: str | None = None):
+        collection_name = self._collection_name_for_tier(kb_tier)
         try:
             # 轻量调用探测连接是否存活
-            self.client.has_collection(self.collection_name)
+            self.client.has_collection(collection_name)
         except Exception as e:
             if "closed channel" in str(e).lower() or "connection" in str(e).lower():
                 print("Milvus RPC channel closed, attempting to reconnect...")
@@ -36,15 +52,16 @@ class MilvusManager:
                         pass
                 self._client = MilvusClient(uri=f"http://{self.host}:{self.port}")
 
-    def init_collection(self, dense_dim: int | None = None):
+    def init_collection(self, dense_dim: int | None = None, kb_tier: str | None = None):
         """
         初始化 Milvus 集合 - 同时支持密集向量和稀疏向量
         :param dense_dim: 密集向量维度；默认读环境变量 DENSE_EMBEDDING_DIM（本地 BAAI/bge-m3 为 1024）
         """
         if dense_dim is None:
             dense_dim = int(os.getenv("DENSE_EMBEDDING_DIM", "1024"))
-        self._ensure_connection()
-        if not self.client.has_collection(self.collection_name):
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
+        if not self.client.has_collection(collection_name):
             schema = self.client.create_schema(auto_id=True, enable_dynamic_field=True)
             
             # 主键
@@ -90,29 +107,37 @@ class MilvusManager:
             )
 
             self.client.create_collection(
-                collection_name=self.collection_name,
+                collection_name=collection_name,
                 schema=schema,
                 index_params=index_params
             )
 
-    def insert(self, data: list[dict]):
+    def insert(self, data: list[dict], kb_tier: str | None = None):
         """插入数据到 Milvus"""
-        self._ensure_connection()
-        return self.client.insert(self.collection_name, data)
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
+        return self.client.insert(collection_name, data)
 
-    def query(self, filter_expr: str = "", output_fields: list[str] = None, limit: int = 10000):
+    def query(
+        self,
+        filter_expr: str = "",
+        output_fields: list[str] = None,
+        limit: int = 10000,
+        kb_tier: str | None = None,
+    ):
         """查询数据"""
-        self._ensure_connection()
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
         if not filter_expr:
             filter_expr = 'id > 0'
         return self.client.query(
-            collection_name=self.collection_name,
+            collection_name=collection_name,
             filter=filter_expr,
             output_fields=output_fields or ["filename", "file_type"],
             limit=limit
         )
 
-    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
+    def get_chunks_by_ids(self, chunk_ids: list[str], kb_tier: str | None = None) -> list[dict]:
         """根据 chunk_id 批量查询分块（用于 Auto-merging 拉取父块）"""
         ids = [item for item in chunk_ids if item]
         if not ids:
@@ -133,6 +158,7 @@ class MilvusManager:
                 "chunk_idx",
             ],
             limit=len(ids),
+            kb_tier=kb_tier,
         )
 
     def hybrid_retrieve(
@@ -142,6 +168,7 @@ class MilvusManager:
         top_k: int = 5,
         rrf_k: int = 60,     #可调节
         filter_expr: str = "",
+        kb_tier: str | None = None,
     ) -> list[dict]:
         """
         混合检索 - 使用 RRF 融合密集向量和稀疏向量的检索结果
@@ -152,7 +179,8 @@ class MilvusManager:
         :param rrf_k: RRF 算法参数 k，默认60
         :return: 检索结果列表
         """
-        self._ensure_connection()
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
         output_fields = [
             "text",
             "filename",
@@ -187,7 +215,7 @@ class MilvusManager:
         reranker = RRFRanker(k=rrf_k)
         
         results = self.client.hybrid_search(
-            collection_name=self.collection_name,
+            collection_name=collection_name,
             reqs=[dense_search, sparse_search],
             ranker=reranker,
             limit=top_k,
@@ -214,13 +242,20 @@ class MilvusManager:
         
         return formatted_results
 
-    def dense_retrieve(self, dense_embedding: list[float], top_k: int = 5, filter_expr: str = "") -> list[dict]:
+    def dense_retrieve(
+        self,
+        dense_embedding: list[float],
+        top_k: int = 5,
+        filter_expr: str = "",
+        kb_tier: str | None = None,
+    ) -> list[dict]:
         """
         仅使用密集向量检索（降级模式，用于稀疏向量不可用时）
         """
-        self._ensure_connection()
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
         results = self.client.search(
-            collection_name=self.collection_name,
+            collection_name=collection_name,
             data=[dense_embedding],
             anns_field="dense_embedding",
             search_params={"metric_type": "IP", "params": {"ef": 64}},
@@ -258,21 +293,72 @@ class MilvusManager:
         
         return formatted_results
 
-    def delete(self, filter_expr: str):
+    def sparse_retrieve(
+        self,
+        sparse_embedding: dict,
+        top_k: int = 5,
+        filter_expr: str = "",
+        kb_tier: str | None = None,
+    ) -> list[dict]:
+        """仅使用稀疏向量检索（BM25）"""
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
+        results = self.client.search(
+            collection_name=collection_name,
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            search_params={"metric_type": "IP", "params": {"drop_ratio_search": 0.2}},
+            limit=top_k,
+            output_fields=[
+                "text",
+                "filename",
+                "file_type",
+                "page_number",
+                "chunk_id",
+                "parent_chunk_id",
+                "root_chunk_id",
+                "chunk_level",
+                "chunk_idx",
+            ],
+            filter=filter_expr,
+        )
+
+        formatted_results = []
+        for hits in results:
+            for hit in hits:
+                formatted_results.append({
+                    "id": hit.get("id"),
+                    "text": hit.get("entity", {}).get("text", ""),
+                    "filename": hit.get("entity", {}).get("filename", ""),
+                    "file_type": hit.get("entity", {}).get("file_type", ""),
+                    "page_number": hit.get("entity", {}).get("page_number", 0),
+                    "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
+                    "parent_chunk_id": hit.get("entity", {}).get("parent_chunk_id", ""),
+                    "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
+                    "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
+                    "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
+                    "score": hit.get("distance", 0.0)
+                })
+        return formatted_results
+
+    def delete(self, filter_expr: str, kb_tier: str | None = None):
         """删除数据"""
-        self._ensure_connection()
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
         return self.client.delete(
-            collection_name=self.collection_name,
+            collection_name=collection_name,
             filter=filter_expr
         )
 
-    def has_collection(self) -> bool:
+    def has_collection(self, kb_tier: str | None = None) -> bool:
         """检查集合是否存在"""
-        self._ensure_connection()
-        return self.client.has_collection(self.collection_name)
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
+        return self.client.has_collection(collection_name)
 
-    def drop_collection(self):
+    def drop_collection(self, kb_tier: str | None = None):
         """删除集合（用于重建 schema）"""
-        self._ensure_connection()
-        if self.client.has_collection(self.collection_name):
-            self.client.drop_collection(self.collection_name)
+        collection_name = self._collection_name_for_tier(kb_tier)
+        self._ensure_connection(kb_tier=kb_tier)
+        if self.client.has_collection(collection_name):
+            self.client.drop_collection(collection_name)

@@ -212,6 +212,7 @@ body {
     border-radius: 20px;
     font-size: 0.85rem;
     border: 1px solid rgba(0,0,0,0.05);
+    position: relative;
 }
 
 .mode-label {
@@ -235,6 +236,46 @@ body {
 .mode-radio input {
     accent-color: var(--primary-color);
     cursor: pointer;
+}
+
+.think-mode-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #9aa3b2;
+    cursor: help;
+    position: relative;
+}
+
+.think-mode-help i {
+    font-size: 0.9rem;
+}
+
+.think-mode-hover-card {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(320px, calc(100vw - 40px));
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 10px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+    padding: 10px 12px;
+    line-height: 1.45;
+    color: #555;
+    font-size: 0.8rem;
+    display: none;
+    z-index: 20;
+}
+
+.think-mode-hover-line + .think-mode-hover-line {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.think-mode-help:hover .think-mode-hover-card {
+    display: block;
 }
 
 /* Chat Area */
@@ -1864,6 +1905,38 @@ span.cite-ref:hover {
 .settings-header p {
     color: var(--text-light);
     font-size: 0.95rem;
+}
+
+.kb-tier-switch {
+    background: #fff;
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    align-items: center;
+}
+
+.kb-tier-switch-label {
+    font-weight: 700;
+    color: #2563b8;
+    font-size: 0.9rem;
+}
+
+.kb-tier-radio {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.88rem;
+    color: #555;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.kb-tier-radio input {
+    accent-color: #2563b8;
 }
 
 .upload-section,

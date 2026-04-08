@@ -28,6 +28,7 @@ LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
 _embedding_service = EmbeddingService()
 _milvus_manager = MilvusManager()
 _parent_chunk_store = ParentChunkStore()
+_graph_retriever = GraphRetriever()
 
 _stepback_model = None
 
@@ -39,7 +40,7 @@ def _get_rerank_endpoint() -> str:
     return host if host.endswith("/v1/rerank") else f"{host}/v1/rerank"
 
 
-def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[dict], int]:
+def _merge_to_parent_level(docs: List[dict], threshold: int = 2, kb_tier: str = "brief") -> Tuple[List[dict], int]:
     groups: Dict[str, List[dict]] = defaultdict(list)
     for doc in docs:
         parent_id = (doc.get("parent_chunk_id") or "").strip()
@@ -50,7 +51,7 @@ def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[d
     if not merge_parent_ids:
         return docs, 0
 
-    parent_docs = _parent_chunk_store.get_documents_by_ids(merge_parent_ids)
+    parent_docs = _parent_chunk_store.get_documents_by_ids(merge_parent_ids, kb_tier=kb_tier)
     parent_map = {item.get("chunk_id", ""): item for item in parent_docs if item.get("chunk_id")}
 
     merged_docs: List[dict] = []
@@ -81,7 +82,7 @@ def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[d
     return deduped, merged_count
 
 
-def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
+def _auto_merge_documents(docs: List[dict], top_k: int, kb_tier: str = "brief") -> Tuple[List[dict], Dict[str, Any]]:
     if not AUTO_MERGE_ENABLED or not docs:
         return docs[:top_k], {
             "auto_merge_enabled": AUTO_MERGE_ENABLED,
@@ -92,8 +93,16 @@ def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dic
         }
 
     # 两段自动合并：L3->L2，再 L2->L1。
-    merged_docs, merged_count_l3_l2 = _merge_to_parent_level(docs, threshold=AUTO_MERGE_THRESHOLD)
-    merged_docs, merged_count_l2_l1 = _merge_to_parent_level(merged_docs, threshold=AUTO_MERGE_THRESHOLD)
+    merged_docs, merged_count_l3_l2 = _merge_to_parent_level(
+        docs,
+        threshold=AUTO_MERGE_THRESHOLD,
+        kb_tier=kb_tier,
+    )
+    merged_docs, merged_count_l2_l1 = _merge_to_parent_level(
+        merged_docs,
+        threshold=AUTO_MERGE_THRESHOLD,
+        kb_tier=kb_tier,
+    )
 
     merged_docs.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     merged_docs = merged_docs[:top_k]
@@ -282,6 +291,7 @@ from tools import get_rag_config
 def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
     config = get_rag_config()
     think_mode = config.get("think_mode", "normal")
+    kb_tier = "detailed" if think_mode == "deep" else "brief"
     
     if think_mode == "fast":
         candidate_k = 10
@@ -316,6 +326,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                 dense_embedding=dense_embedding,
                 top_k=candidate_k,
                 filter_expr=filter_expr,
+                kb_tier=kb_tier,
             )
             emit_rag_step("🎯", f"密集向量(Dense)召回", f"获取 {len(dense_results)} 个候选片段")
         except Exception as e:
@@ -329,6 +340,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                 sparse_embedding=sparse_embedding,
                 top_k=candidate_k,
                 filter_expr=filter_expr,
+                kb_tier=kb_tier,
             )
             emit_rag_step("🔤", f"关键字(Sparse)召回", f"获取 {len(sparse_results)} 个候选片段")
         except Exception as e:
@@ -358,6 +370,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                 "rerank_endpoint": _get_rerank_endpoint(),
                 "rerank_error": "all_retrieve_failed",
                 "retrieval_mode": "failed",
+                "kb_tier": kb_tier,
                 "candidate_k": candidate_k,
                 "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
                 "auto_merge_enabled": AUTO_MERGE_ENABLED,
@@ -386,8 +399,9 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         else:
             reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=final_top_k)
             
-        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=final_top_k)
+        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=final_top_k, kb_tier=kb_tier)
         rerank_meta["retrieval_mode"] = f"hybrid_3way_rrf_{think_mode}"
+        rerank_meta["kb_tier"] = kb_tier
         rerank_meta["candidate_k"] = candidate_k
         rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
         rerank_meta["dense_count"] = len(dense_results)
@@ -405,6 +419,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                 "rerank_endpoint": _get_rerank_endpoint(),
                 "rerank_error": f"process_error: {e}",
                 "retrieval_mode": f"hybrid_3way_rrf_{think_mode}",
+                "kb_tier": kb_tier,
                 "candidate_k": candidate_k,
                 "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
                 "dense_count": len(dense_results),

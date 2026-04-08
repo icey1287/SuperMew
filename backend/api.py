@@ -3,7 +3,7 @@ import os
 import json
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 
 from schemas import (
@@ -43,6 +43,10 @@ milvus_writer = MilvusWriter(embedding_service=embedding_service, milvus_manager
 profile_manager = ProfileManager()
 
 router = APIRouter()
+
+
+def _normalize_kb_tier(kb_tier: str | None) -> str:
+    return milvus_manager.normalize_kb_tier(kb_tier)
 
 @router.get("/profile/{user_id}")
 async def get_user_profile(user_id: str):
@@ -258,15 +262,17 @@ async def chat_stream_endpoint(request: ChatRequest):
 
 
 @router.get("/documents", response_model=DocumentListResponse)
-async def list_documents():
+async def list_documents(kb_tier: str = Query(default="brief")):
     """获取已上传的文档列表"""
     try:
-        milvus_manager.init_collection()
+        tier = _normalize_kb_tier(kb_tier)
+        milvus_manager.init_collection(kb_tier=tier)
 
         results = milvus_manager.query(
             filter_expr='id > 0',
             output_fields=["filename", "file_type"],
             limit=10000,
+            kb_tier=tier,
         )
         
         # 按文件名分组统计
@@ -289,28 +295,30 @@ async def list_documents():
 
 
 @router.post("/documents/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), kb_tier: str = Form(default="brief")):
     """上传文档并进行embedding"""
     try:
+        tier = _normalize_kb_tier(kb_tier)
         filename = file.filename
         file_lower = filename.lower()
         if not (file_lower.endswith(".pdf") or file_lower.endswith((".docx", ".doc")) or file_lower.endswith((".xlsx", ".xls"))):
             raise HTTPException(status_code=400, detail="仅支持 PDF、Word 和 Excel 文档")
 
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        milvus_manager.init_collection()
+        target_upload_dir = UPLOAD_DIR / tier
+        os.makedirs(target_upload_dir, exist_ok=True)
+        milvus_manager.init_collection(kb_tier=tier)
 
         delete_expr = f'filename == "{filename}"'
         try:
-            milvus_manager.delete(delete_expr)
+            milvus_manager.delete(delete_expr, kb_tier=tier)
         except Exception:
             pass
         try:
-            parent_chunk_store.delete_by_filename(filename)
+            parent_chunk_store.delete_by_filename(filename, kb_tier=tier)
         except Exception:
             pass
 
-        file_path = UPLOAD_DIR / filename
+        file_path = target_upload_dir / filename
         with open(file_path, "wb") as f:
             content = await file.read()
             f.write(content)
@@ -328,14 +336,14 @@ async def upload_document(file: UploadFile = File(...)):
         if not leaf_docs:
             raise HTTPException(status_code=500, detail="文档处理失败，未生成可检索叶子分块")
 
-        parent_chunk_store.upsert_documents(parent_docs)
-        milvus_writer.write_documents(leaf_docs)
+        parent_chunk_store.upsert_documents(parent_docs, kb_tier=tier)
+        milvus_writer.write_documents(leaf_docs, kb_tier=tier)
 
         return DocumentUploadResponse(
             filename=filename,
             chunks_processed=len(leaf_docs),
             message=(
-                f"成功上传并处理 {filename}，叶子分块 {len(leaf_docs)} 个，"
+                f"成功上传并处理到{('简要' if tier == 'brief' else '详细')}知识库：{filename}，叶子分块 {len(leaf_docs)} 个，"
                 f"父级分块 {len(parent_docs)} 个（存入docstore）"
             ),
         )
@@ -346,19 +354,20 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @router.delete("/documents/{filename}", response_model=DocumentDeleteResponse)
-async def delete_document(filename: str):
+async def delete_document(filename: str, kb_tier: str = Query(default="brief")):
     """删除文档在 Milvus 中的向量（保留本地文件）"""
     try:
-        milvus_manager.init_collection()
+        tier = _normalize_kb_tier(kb_tier)
+        milvus_manager.init_collection(kb_tier=tier)
 
         delete_expr = f'filename == "{filename}"'
-        result = milvus_manager.delete(delete_expr)
-        parent_chunk_store.delete_by_filename(filename)
+        result = milvus_manager.delete(delete_expr, kb_tier=tier)
+        parent_chunk_store.delete_by_filename(filename, kb_tier=tier)
 
         return DocumentDeleteResponse(
             filename=filename,
             chunks_deleted=result.get("delete_count", 0) if isinstance(result, dict) else 0,
-            message=f"成功删除文档 {filename} 的向量数据（本地文件已保留）",
+            message=f"成功从{('简要' if tier == 'brief' else '详细')}知识库删除文档 {filename} 的向量数据（本地文件已保留）",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
