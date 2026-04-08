@@ -2,21 +2,29 @@
 import os
 import re
 import math
-import requests
 from collections import Counter
 from dotenv import load_dotenv
+from langchain_huggingface import HuggingFaceEmbeddings
 
 load_dotenv()
+
+
+def _create_dense_embedder() -> HuggingFaceEmbeddings:
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    device = os.getenv("EMBEDDING_DEVICE", "cpu")
+    return HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs={"device": device},
+        encode_kwargs={"normalize_embeddings": True},
+    )
 
 
 class EmbeddingService:
     """文本向量化服务 - 支持密集向量和稀疏向量"""
 
     def __init__(self):
-        self.base_url = os.getenv("BASE_URL")
-        self.embedder = os.getenv("EMBEDDER")
-        self.api_key = os.getenv("ARK_API_KEY")
-        
+        self._embedder = _create_dense_embedder()
+
         # BM25 参数
         self.k1 = 1.5  # 词频饱和参数
         self.b = 0.75  # 文档长度归一化参数
@@ -32,27 +40,16 @@ class EmbeddingService:
 
     def get_embeddings(self, texts: list[str]) -> list[list[float]]:
         """
-        调用嵌入 API 生成密集向量
+        使用本地 HuggingFace 模型生成密集向量
         :param texts: 待转换的文本列表（支持批量）
         :return: 向量列表
         """
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": self.embedder,
-            "input": texts,
-            "encoding_format": "float"
-        }
-
+        if not texts:
+            return []
         try:
-            response = requests.post(f"{self.base_url}/embeddings", headers=headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            return [item["embedding"] for item in result["data"]]
+            return self._embedder.embed_documents(texts)
         except Exception as e:
-            raise Exception(f"嵌入 API 调用失败: {str(e)}")
+            raise Exception(f"本地嵌入模型调用失败: {str(e)}") from e
 
     def tokenize(self, text: str) -> list[str]:
         """
