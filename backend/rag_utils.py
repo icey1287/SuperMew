@@ -6,7 +6,7 @@ import requests
 from dotenv import load_dotenv
 
 from milvus_client import MilvusManager
-from embedding import EmbeddingService
+from embedding import embedding_service as _embedding_service
 from parent_chunk_store import ParentChunkStore
 from langchain.chat_models import init_chat_model
 
@@ -22,8 +22,7 @@ AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
 LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
 
-# 全局初始化检索依赖，避免反复构造
-_embedding_service = EmbeddingService()
+# 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
 _parent_chunk_store = ParentChunkStore()
 

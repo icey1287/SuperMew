@@ -43,7 +43,11 @@ uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ARK_API_KEY=your_ark_api_key
 MODEL=your_model_name
 BASE_URL=https://your-llm-endpoint/v1
-EMBEDDER=your_embedding_model
+
+# ===== 本地稠密向量（langchain_huggingface，默认 BAAI/bge-m3）=====
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DEVICE=cpu
+DENSE_EMBEDDING_DIM=1024
 
 # ===== Rerank (可选，不配则自动降级) =====
 RERANK_MODEL=your_rerank_model
@@ -65,6 +69,9 @@ ADMIN_INVITE_CODE=supermew-admin-2026
 JWT_ALGORITHM=HS256
 JWT_EXPIRE_MINUTES=1440
 PASSWORD_PBKDF2_ROUNDS=310000
+
+# ===== BM25 稀疏统计持久化（默认 data/bm25_state.json，可改路径）=====
+# BM25_STATE_PATH=/path/to/bm25_state.json
 
 # ===== Tools （可选）=====
 AMAP_WEATHER_API=https://restapi.amap.com/v3/weather/weatherInfo
@@ -125,6 +132,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 - **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答。
 - **会话摘要记忆**：自动摘要旧消息并注入系统提示，维持上下文且控制 token。
 - **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
+- **BM25 统计持久化**：`词表 + 文档频次 df + 文档数 N` 落盘到 `data/bm25_state.json`，入库时增量增加、删除/覆盖上传前按文件名从 Milvus 拉取 chunk 文本后增量扣减，与向量库同步；`embedding_service` 在 API 与检索模块间单例共享。
 - **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）。
 - **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
 - **工具可扩展**：天气查询示例 + 知识库检索，便于按需增添第三方 API 或企业数据源。
@@ -209,15 +217,16 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
   - [cache.py](backend/cache.py)：Redis JSON 缓存封装。
   - [agent.py](backend/agent.py)：LangChain Agent、会话存储、摘要逻辑。
   - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
-  - [embedding.py](backend/embedding.py)：稠密向量 API 调用 + BM25 稀疏向量生成。
+  - [embedding.py](backend/embedding.py)：本地 HuggingFace 稠密向量（默认 `BAAI/bge-m3`）+ BM25 稀疏向量；BM25 状态持久化与增量更新。
   - [document_loader.py](backend/document_loader.py)：PDF/Word 加载与分片。
   - [parent_chunk_store.py](backend/parent_chunk_store.py)：父级分块仓储（PostgreSQL + Redis，用于 Auto-merging 回取父块）。
   - [milvus_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
-  - [milvus_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索。
+  - [milvus_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索；`query_all` 分页查询（单次 `query` 的 `limit` 受服务端上限约束，删除前拉全量 chunk 文本时使用）。
   - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
 - 前端：`frontend/`
   - [index.html](frontend/index.html) + [script.js](frontend/script.js) + [style.css](frontend/style.css)：Vue 3 + marked + highlight.js，提供聊天、历史会话、文档上传/删除界面。
 - 数据：`data/`
+  - `bm25_state.json`：BM25 词表与 `doc_freq` / `total_docs` 等统计（稀疏检索 IDF 与入库、删除同步）。
   - `documents/`：上传文档原文件。
 - 向量库：Milvus（可由 `docker-compose` 或自建服务提供）。
 
@@ -259,13 +268,18 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 
 ### 3) 文档入库链路
 1. 前端上传 PDF/Word 到 `POST /documents/upload`。
-2. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk_id / parent_chunk_id / root_chunk_id / chunk_level）。
-3. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore）。
-4. L3 叶子分块进入 `embedding.py` 生成 Dense 向量与 BM25 Sparse 向量。
-5. `milvus_writer.py` 仅将叶子块向量 + 元数据写入 Milvus。
-5. 后续检索可直接利用新文档参与召回。
+2. 若同名文件已存在：先从 Milvus **分页查询**该文件全部叶子 chunk 的 `text`，对 BM25 统计执行 **increment_remove**，再删除旧向量与父块缓存，避免统计与库不一致。
+3. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk_id / parent_chunk_id / root_chunk_id / chunk_level）。
+4. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore）。
+5. L3 叶子分块在 `milvus_writer` 中先对本轮 chunk 文本执行 BM25 **increment_add**（更新 `N`、`df`、总长度并写回 `bm25_state.json`），再经 `embedding.py` 生成 Dense 与 Sparse 向量并写入 Milvus。
+6. 后续检索可直接利用新文档参与召回。
 
-### 4) 会话记忆链路
+### 4) BM25 状态文件（`data/bm25_state.json`）
+- **内容**：`version`、全局 `total_docs`（chunk 篇数）、`sum_token_len`、`vocab`（词 → 稀疏维度下标）、`doc_freq`（词 → 文档频次，用于 IDF）。`vocab` 与 `doc_freq` 职责不同：前者定 Milvus 稀疏向量维度，后者定 BM25 统计。
+- **增量**：每入库一批叶子 chunk 增加统计；删除文档或覆盖上传前按文件名扣减。词表下标不回收，避免与历史稀疏向量维度冲突。
+- **注意**：`data/` 默认被 `.gitignore` 忽略，状态文件通常不落库；若 Milvus 已有数据但状态文件缺失，需清空重导或自行重建统计。
+
+### 5) 会话记忆链路
 1. 每轮问答按当前登录用户 + `session_id` 写入 PostgreSQL。
 2. 当消息过长时触发摘要压缩，保留长期上下文。
 3. Redis 缓存会话列表与会话消息，减少高频读取数据库压力。
@@ -274,13 +288,15 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ## 技术栈
 - 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn、SQLAlchemy、PostgreSQL、Redis。
 - 向量与检索：Milvus（HNSW 稠密索引 + SPARSE_INVERTED_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
-- 嵌入与稀疏：自定义 API 调用获取稠密向量；BM25 手写稀疏向量；同时输出双塔特征。
+- 嵌入与稀疏：`langchain_huggingface` 本地稠密向量（默认 `BAAI/bge-m3`）；中英混合规则分词 + BM25 手写稀疏向量，统计持久化至 `bm25_state.json`。
 - 前端：Vue 3 (CDN)、marked、highlight.js、纯静态部署。
 - 工具链：dotenv 配置、requests、langchain_text_splitters、langchain_community.loaders。
 
 ## 环境变量
 需在仓库根目录或运行环境配置：
-- 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
+- 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`
+- 稠密向量：`EMBEDDING_MODEL`、`EMBEDDING_DEVICE`、`DENSE_EMBEDDING_DIM`（需与 Milvus 集合 `dense_embedding` 维度一致）
+- BM25 持久化：`BM25_STATE_PATH`（可选，默认 `data/bm25_state.json`）
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
@@ -304,7 +320,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 - 文档（管理员权限）
   - `GET /documents`：列出已入库文档及 chunk 数。
   - `POST /documents/upload`：上传并向量化 PDF/Word/Excel。
-  - `DELETE /documents/{filename}`：删除指定文档向量数据。
+  - `DELETE /documents/{filename}`：删除指定文档向量数据（会先按文件名分页拉取 chunk 文本并同步扣减 BM25 持久化统计，再删 Milvus）。
 
 ## 流式输出与实时检索过程 — 技术细节
 
@@ -343,13 +359,13 @@ def emit_rag_step(icon, label):
 ```
 
 ### 2. 混合检索（Hybrid Search）深度实现
-项目并非简单调用 Milvus 接口，而是手动构建了工业级的稀疏-稠密双塔检索：
+项目并非简单调用 Milvus 接口，而是手动构建了稀疏-稠密双塔检索：
 
-- **Dense Pathway**: 使用 OpenAI `text-embedding-3-small` 生成 1536 维稠密向量，捕捉语义匹配。
-- **Sparse Pathway**:
-    - 在 `embedding.py` 中实现了基于 `jieba` 分词的自定义 BM25 算法。
-    - 生成 `{word_id: tf_idf_score}` 格式的稀疏向量，模拟 ElasticSearch 的关键词匹配能力。
-- **Milvus 融合**:
+- **Dense Pathway**：使用 `langchain_huggingface.HuggingFaceEmbeddings`（默认 `BAAI/bge-m3`）生成稠密向量，维度由 `DENSE_EMBEDDING_DIM` 与集合 schema 对齐（默认 1024），向量可做 L2 归一化后与 Milvus `IP` 度量配合。
+- **Sparse Pathway**：
+    - 在 `embedding.py` 中基于中英混合规则分词（单字中文 + 英文单词）实现 BM25，生成 `{稀疏维度下标: BM25 分数}`，写入 Milvus `SPARSE_FLOAT_VECTOR`。
+    - 全局 `N` / `doc_freq` / 平均文档长等统计持久化在 `bm25_state.json`，入库与删除走增量更新；检索与写入共用同一 `embedding_service` 单例。
+- **Milvus 融合**：
     - 使用 Milvus 的 `AnnSearchRequest` 同时发起两个请求。
     - **RRFRanker (Reciprocal Rank Fusion)**: 采用 `k=60` 的倒数排名融合算法，将两路召回结果无参数化地合并，避免了加权求和中调节 `alpha` 参数的困难。
 
@@ -461,6 +477,12 @@ StreamingResponse(
 - **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
 
 ## 更新日志
+
+### 2026-04-08 本地嵌入与 BM25 持久化
+- **稠密向量**：由兼容 API 改为 `langchain_huggingface` 本地模型（默认 `BAAI/bge-m3`），支持 `EMBEDDING_MODEL` / `EMBEDDING_DEVICE`；Milvus `dense_embedding` 维度与 `DENSE_EMBEDDING_DIM` 对齐（默认 1024）。
+- **BM25 统计**：`词表 vocab + 文档频次 doc_freq + 文档数 N` 持久化至 `data/bm25_state.json`（可选 `BM25_STATE_PATH`）；每个叶子 chunk 视为一篇文档，入库时 **increment_add**，删除文档或覆盖上传前按文件名从 Milvus 拉取 chunk 文本后 **increment_remove**；`embedding_service` 在 `api` 与 `rag_utils` 间单例共享，避免写入与检索状态分裂。
+- **Milvus 查询**：单次 `query` 的 `limit` 受服务端窗口限制（如 16384），新增 **`query_all`** 分页拉取，供删除/覆盖前取回全文以同步 BM25；修复单次 `limit=100000` 导致的 RPC 报错。
+- **说明**：README「环境变量」「文档入库」「混合检索」「数据目录」等已同步为上述行为；`data/` 下 `bm25_state.json` 通常被 git 忽略，空库仅有 Milvus 无状态文件时需自行重建或重导。
 
 ### 2026-03-21 后端服务建设升级（认证 + 数据库 + 缓存）
 - 新增认证与权限模块：注册、登录、JWT、管理员权限控制。
