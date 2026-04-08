@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 
 
 class ChatRequest(BaseModel):
@@ -107,3 +107,8 @@ class DocumentDeleteResponse(BaseModel):
     filename: str
     chunks_deleted: int
     message: str
+
+
+class ProfileUpdateRequest(BaseModel):
+    """用户在前端校对后的完整档案 JSON"""
+    profile: Dict[str, Any]

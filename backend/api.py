@@ -17,6 +17,7 @@ from schemas import (
     DocumentInfo,
     DocumentUploadResponse,
     DocumentDeleteResponse,
+    ProfileUpdateRequest,
 )
 from pydantic import BaseModel
 from agent import chat_with_agent, chat_with_agent_stream, storage, optimize_user_question, model, fast_model
@@ -25,7 +26,7 @@ from parent_chunk_store import ParentChunkStore
 from milvus_writer import MilvusWriter
 from milvus_client import MilvusManager
 from embedding import EmbeddingService
-from profile_manager import ProfileManager
+from profile_manager import ProfileManager, PatientProfile
 from fastapi import Form
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -68,6 +69,17 @@ async def upload_personal_record(user_id: str = Form(...), is_update: str = Form
         return {"message": "病历解析成功", "profile": profile_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"病历解析失败: {str(e)}")
+
+
+@router.put("/profile/{user_id}")
+async def update_user_profile(user_id: str, body: ProfileUpdateRequest):
+    """保存用户在前端校对、补充后的病历档案"""
+    try:
+        normalized = PatientProfile(**body.profile).model_dump()
+        profile_manager.save_profile(user_id, normalized)
+        return {"message": "档案已保存", "profile": normalized}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"保存档案失败: {str(e)}")
 
 
 @router.get("/sessions/{user_id}/{session_id}", response_model=SessionMessagesResponse)

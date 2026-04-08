@@ -31,6 +31,10 @@ createApp({
             profileProgress: '',
             uploadMode: 'replace',
             showChartModal: false,
+            /** 病历解析完成后的校对弹窗 */
+            showProfileReviewModal: false,
+            profileReviewDraft: null,
+            isSavingProfileReview: false,
             showDictionaryModal: false,
             /** NCI 词典：直接调 glossary API（iframe 内嵌 widget 会先走 Adobe Analytics，易被拦截导致 Search 无反应） */
             nciDictionaryQuery: '',
@@ -611,6 +615,77 @@ createApp({
             }
         },
 
+        normalizeProfileDraft(p) {
+            const d = JSON.parse(JSON.stringify(p || {}));
+            if (!Array.isArray(d.test_items)) d.test_items = [];
+            if (!Array.isArray(d.suggested_questions)) d.suggested_questions = [];
+            d.test_items = d.test_items.map((t) => ({
+                item_name: t.item_name ?? '',
+                result: t.result ?? '',
+                unit: t.unit ?? '',
+                reference_range: t.reference_range ?? '',
+                abnormal: t.abnormal ?? '',
+                record_date: t.record_date ?? '',
+            }));
+            d.suggested_questions = d.suggested_questions.map((q) => (typeof q === 'string' ? q : String(q ?? '')));
+            return d;
+        },
+
+        emptyTestItem() {
+            return {
+                item_name: '',
+                result: '',
+                unit: '',
+                reference_range: '',
+                abnormal: '',
+                record_date: '',
+            };
+        },
+
+        addProfileReviewTestRow() {
+            if (!this.profileReviewDraft) return;
+            this.profileReviewDraft.test_items.push(this.emptyTestItem());
+        },
+
+        removeProfileReviewTestRow(index) {
+            if (!this.profileReviewDraft || !this.profileReviewDraft.test_items) return;
+            this.profileReviewDraft.test_items.splice(index, 1);
+        },
+
+        closeProfileReviewModal() {
+            this.showProfileReviewModal = false;
+            this.profileReviewDraft = null;
+        },
+
+        async saveProfileReview() {
+            if (!this.profileReviewDraft) return;
+            this.isSavingProfileReview = true;
+            try {
+                const response = await fetch(`/profile/${this.userId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile: this.profileReviewDraft }),
+                });
+                if (!response.ok) {
+                    let detail = '保存失败';
+                    try {
+                        const err = await response.json();
+                        detail = err.detail || detail;
+                    } catch (_) { /* ignore */ }
+                    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+                }
+                const data = await response.json();
+                this.userProfile = data.profile;
+                this.profileProgress = data.message || '已保存校对后的档案';
+                this.closeProfileReviewModal();
+            } catch (error) {
+                console.error('saveProfileReview', error);
+                alert('保存失败：' + error.message);
+            } finally {
+                this.isSavingProfileReview = false;
+            }
+        },
+
         handleProfileSelect(event) {
             const files = event.target.files;
             if (files && files.length > 0) {
@@ -654,7 +729,9 @@ createApp({
                 const data = await response.json();
                 this.profileProgress = data.message;
                 this.userProfile = data.profile;
-                
+                this.profileReviewDraft = this.normalizeProfileDraft(data.profile);
+                this.showProfileReviewModal = true;
+
                 // 清空选择
                 this.selectedProfileFile = null;
                 if (this.$refs.profileInput) {

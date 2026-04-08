@@ -1133,6 +1133,173 @@ textarea {
     color: #e74c3c;
 }
 
+/* 病历解析校对弹窗 */
+.profile-review-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1100;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.profile-review-modal {
+    background: #fff;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 920px;
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.profile-review-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 18px 22px 12px;
+    border-bottom: 2px solid #f0f0f0;
+    flex-shrink: 0;
+}
+
+.profile-review-header h3 {
+    margin: 0;
+    color: var(--primary-color);
+    font-size: 1.15rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.profile-review-hint {
+    margin: 0;
+    padding: 0 22px 12px;
+    font-size: 0.88rem;
+    color: #666;
+    line-height: 1.5;
+}
+
+.profile-review-body {
+    padding: 0 22px 16px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.profile-review-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px 14px;
+    margin-bottom: 12px;
+}
+
+.profile-review-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #555;
+}
+
+.profile-review-input {
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-family: inherit;
+}
+
+.profile-review-input:focus {
+    outline: none;
+    border-color: var(--primary-light);
+    box-shadow: 0 0 0 2px rgba(255, 183, 178, 0.35);
+}
+
+.profile-review-section-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 16px 0 8px;
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #333;
+}
+
+.profile-review-mini-btn {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    margin-bottom: 0;
+}
+
+.profile-review-table-wrap {
+    overflow-x: auto;
+    max-height: min(280px, 40vh);
+    overflow-y: auto;
+    border: 1px solid #eee;
+    border-radius: 8px;
+}
+
+.profile-review-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+.profile-review-table th,
+.profile-review-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f0f0f0;
+    text-align: left;
+    vertical-align: middle;
+}
+
+.profile-review-table th {
+    background: #fafafa;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-weight: 600;
+    color: #555;
+}
+
+.profile-review-table .table-input {
+    width: 100%;
+    min-width: 56px;
+    box-sizing: border-box;
+    font-size: 0.8rem;
+    padding: 4px 6px;
+}
+
+.profile-review-remove {
+    background: none;
+    border: none;
+    color: #c0392b;
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+}
+
+.profile-review-remove:hover {
+    background: rgba(192, 57, 43, 0.08);
+}
+
+.profile-review-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 14px 22px 18px;
+    border-top: 1px solid #f0f0f0;
+    flex-shrink: 0;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .app-wrapper {

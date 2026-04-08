@@ -230,6 +230,62 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- 解析完成：人工校对弹窗 -->
+                <div v-if="showProfileReviewModal && profileReviewDraft" class="profile-review-overlay">
+                    <div class="profile-review-modal" @click.stop>
+                        <div class="profile-review-header">
+                            <h3><i class="fas fa-clipboard-check"></i> 校对病历解析结果</h3>
+                            <button type="button" class="close-btn" @click="closeProfileReviewModal" :disabled="isSavingProfileReview" title="关闭（未保存的修改将丢弃）"><i class="fas fa-times"></i></button>
+                        </div>
+                        <p class="profile-review-hint">请仅核对姓名、年龄、性别、报告时间与化验指标；诊断、治疗史、病情总结等其余字段不在此展示，但会随「确认保存」与解析结果一并写入档案。</p>
+                        <div class="profile-review-body">
+                            <div class="profile-review-grid">
+                                <label>姓名 <input type="text" v-model="profileReviewDraft.name" class="profile-review-input" /></label>
+                                <label>年龄 <input type="text" v-model="profileReviewDraft.age" class="profile-review-input" /></label>
+                                <label>性别 <input type="text" v-model="profileReviewDraft.gender" class="profile-review-input" /></label>
+                                <label>病历/报告时间 <input type="text" v-model="profileReviewDraft.record_date" class="profile-review-input" placeholder="如 2024-01-15" /></label>
+                            </div>
+
+                            <div class="profile-review-section-title">
+                                <span><i class="fas fa-vials"></i> 化验指标（可增删行）</span>
+                                <button type="button" class="btn-secondary profile-review-mini-btn" @click="addProfileReviewTestRow"><i class="fas fa-plus"></i> 添加一行</button>
+                            </div>
+                            <div class="profile-review-table-wrap">
+                                <table class="profile-review-table">
+                                    <thead>
+                                        <tr>
+                                            <th>日期</th>
+                                            <th>项目</th>
+                                            <th>结果</th>
+                                            <th>单位</th>
+                                            <th>参考</th>
+                                            <th>异常</th>
+                                            <th></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="(row, ri) in profileReviewDraft.test_items" :key="'ti-'+ri">
+                                            <td><input type="text" v-model="row.record_date" class="profile-review-input table-input" /></td>
+                                            <td><input type="text" v-model="row.item_name" class="profile-review-input table-input" /></td>
+                                            <td><input type="text" v-model="row.result" class="profile-review-input table-input" /></td>
+                                            <td><input type="text" v-model="row.unit" class="profile-review-input table-input" /></td>
+                                            <td><input type="text" v-model="row.reference_range" class="profile-review-input table-input" /></td>
+                                            <td><input type="text" v-model="row.abnormal" class="profile-review-input table-input" /></td>
+                                            <td><button type="button" class="profile-review-remove" @click="removeProfileReviewTestRow(ri)" title="删除此行"><i class="fas fa-trash-alt"></i></button></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="profile-review-footer">
+                            <button type="button" class="btn-secondary" @click="closeProfileReviewModal" :disabled="isSavingProfileReview">取消</button>
+                            <button type="button" class="btn-primary" style="background-color: #3f2b96;" @click="saveProfileReview" :disabled="isSavingProfileReview">
+                                <i class="fas fa-save"></i> {{ isSavingProfileReview ? '保存中…' : '确认保存' }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- History Sidebar -->
