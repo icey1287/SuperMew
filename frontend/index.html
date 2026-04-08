@@ -125,8 +125,8 @@
             <!-- Profile Panel -->
             <div v-if="activeNav === 'profile'" class="settings-panel">
                 <div class="settings-header">
-                    <h2><i class="fas fa-user-md"></i> 我的病历档案</h2>
-                    <p>上传您的检查报告、病历资料，大模型将自动提取并记录您的健康信息以提供专属建议。</p>
+                    <h2><i class="fas fa-folder-open"></i> 我的病历夹</h2>
+                    <p>检验报告每次上传为<strong>独立一条</strong>；请按<strong>医嘱项目 → 报告时间</strong>筛选。出院报告单独上传，系统会解析<strong>出院医嘱</strong>并在日历上标注复诊日期。</p>
                 </div>
 
                 <div class="upload-section">
@@ -139,22 +139,19 @@
                             accept=".pdf,.jpg,.jpeg,.png"
                             style="display: none"
                         />
-                        <div class="upload-buttons" style="display: flex; gap: 10px;" v-if="userProfile && Object.keys(userProfile).length > 0">
-                            <button @click="triggerProfileUpload('update')" class="upload-btn" style="background: linear-gradient(135deg, #a8c0ff, #3f2b96);">
-                                <i class="fas fa-plus-circle"></i> 更新本人病历
-                            </button>
-                            <button @click="triggerProfileUpload('replace')" class="btn-secondary" style="margin-bottom: 0;">
-                                <i class="fas fa-exchange-alt"></i> 更换其他病历
+                        <div class="upload-buttons" style="display: flex; gap: 10px;" v-if="userProfile && userProfile.records && userProfile.records.length > 0">
+                            <button @click="triggerProfileUpload" class="upload-btn" style="background: linear-gradient(135deg, #a8c0ff, #3f2b96);">
+                                <i class="fas fa-plus-circle"></i> 上传新报告
                             </button>
                         </div>
-                        <button v-else @click="triggerProfileUpload('replace')" class="upload-btn" style="background: linear-gradient(135deg, #a8c0ff, #3f2b96);">
+                        <button v-else @click="triggerProfileUpload" class="upload-btn" style="background: linear-gradient(135deg, #a8c0ff, #3f2b96);">
                             <i class="fas fa-camera"></i> 选择图片或PDF
                         </button>
 
                         <div v-if="selectedProfileFile" class="selected-file">
                             <i class="fas fa-file-medical-alt"></i> {{ selectedProfileFile.name }}
                             <button @click="uploadProfile" class="btn-primary" :disabled="isUploadingProfile" style="background-color: #3f2b96;">
-                                <i class="fas fa-upload"></i> {{ isUploadingProfile ? '多模态解析中...' : (uploadMode === 'update' ? '追加更新' : '开始提取') }}
+                                <i class="fas fa-upload"></i> {{ isUploadingProfile ? '多模态解析中...' : '开始提取' }}
                             </button>
                         </div>
                         <div v-if="profileProgress" class="upload-progress">
@@ -163,23 +160,73 @@
                     </div>
                 </div>
 
-                <div class="documents-section" v-if="userProfile && Object.keys(userProfile).length > 0">
-                    <h3><i class="fas fa-clipboard-list"></i> 健康档案摘要</h3>
-                    <div class="profile-card">
-                        <div class="profile-row"><span class="profile-label">姓名:</span> <span class="profile-value">{{ userProfile.name || '未知' }}</span></div>
-                        <div class="profile-row"><span class="profile-label">性别/年龄:</span> <span class="profile-value">{{ userProfile.gender || '未知' }} / {{ userProfile.age || '未知' }}</span></div>
-                        <div class="profile-row"><span class="profile-label">病历时间:</span> <span class="profile-value">{{ userProfile.record_date || '未知' }}</span></div>
-                        <div class="profile-row"><span class="profile-label">诊断分期:</span> <span class="profile-value">{{ userProfile.diagnosis || '未知' }} ({{ userProfile.stage || '未知' }})</span></div>
-                        <div class="profile-row" v-if="userProfile.medical_summary" style="flex-direction: column; gap: 8px;">
-                            <span class="profile-label"><i class="fas fa-brain"></i> AI 长效记忆总结:</span>
+                <div class="upload-section discharge-upload-section">
+                    <h3><i class="fas fa-file-contract"></i> 上传出院报告</h3>
+                    <p class="discharge-upload-hint">上传出院小结/出院记录 PDF 或照片，系统将<strong>重点解析「出院医嘱」</strong>，提取复诊与带药等日期，并显示在下方日历中。</p>
+                    <div class="upload-area">
+                        <input
+                            type="file"
+                            ref="dischargeInput"
+                            @change="handleDischargeSelect"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            style="display: none"
+                        />
+                        <button type="button" @click="triggerDischargeUpload" class="upload-btn" style="background: linear-gradient(135deg, #89c4f4, #2563b8);">
+                            <i class="fas fa-file-upload"></i> 选择出院报告
+                        </button>
+                        <div v-if="selectedDischargeFile" class="selected-file">
+                            <i class="fas fa-file-alt"></i> {{ selectedDischargeFile.name }}
+                            <button type="button" @click="uploadDischargeReport" class="btn-primary" :disabled="isUploadingDischarge" style="background-color: #2563b8;">
+                                <i class="fas fa-cloud-upload-alt"></i> {{ isUploadingDischarge ? '解析中…' : '开始解析' }}
+                            </button>
+                        </div>
+                        <div v-if="dischargeProgress" class="upload-progress">{{ dischargeProgress }}</div>
+                    </div>
+                </div>
+
+                <div class="documents-section" v-if="userProfile && userProfile.records && userProfile.records.length > 0">
+                    <h3><i class="fas fa-clipboard-list"></i> 健康档案</h3>
+                    <div class="profile-folder-filters">
+                        <label class="profile-filter-label">
+                            <span>医嘱项目</span>
+                            <select v-model="profileFilterOrder" @change="onProfileOrderChange" class="profile-filter-select" :disabled="!orderCategoryOptions.length">
+                                <option v-if="!orderCategoryOptions.length" value="">（暂无医嘱项目标签，可在校对时补充）</option>
+                                <option v-for="o in orderCategoryOptions" :key="o" :value="o">{{ o }}</option>
+                            </select>
+                        </label>
+                        <label class="profile-filter-label">
+                            <span>报告时间</span>
+                            <select v-model="profileFilterDate" class="profile-filter-select" :disabled="!reportDateOptionsForFilter.length">
+                                <option v-if="!reportDateOptionsForFilter.length" value="">—</option>
+                                <option v-for="d in reportDateOptionsForFilter" :key="d" :value="d">{{ d }}</option>
+                            </select>
+                        </label>
+                        <button
+                            v-if="activeMedicalRecord"
+                            type="button"
+                            class="btn-delete-record"
+                            :disabled="isDeletingMedicalRecord"
+                            @click="deleteActiveMedicalRecord"
+                        >
+                            <i class="fas fa-trash-alt"></i> {{ isDeletingMedicalRecord ? '删除中…' : '删除本条病历' }}
+                        </button>
+                    </div>
+                    <div class="profile-card" v-if="activeMedicalRecord">
+                        <div class="profile-row"><span class="profile-label">姓名:</span> <span class="profile-value">{{ userProfile.name || activeMedicalRecord.name || '未知' }}</span></div>
+                        <div class="profile-row"><span class="profile-label">性别/年龄:</span> <span class="profile-value">{{ userProfile.gender || activeMedicalRecord.gender || '未知' }} / {{ userProfile.age || activeMedicalRecord.age || '未知' }}</span></div>
+                        <div class="profile-row"><span class="profile-label">本份医嘱项目:</span> <span class="profile-value">{{ activeMedicalRecord.order_category || '未知' }}</span></div>
+                        <div class="profile-row"><span class="profile-label">本份报告时间:</span> <span class="profile-value">{{ activeMedicalRecord.report_date || '未知' }}</span></div>
+                        <div class="profile-row"><span class="profile-label">诊断分期:</span> <span class="profile-value">{{ activeMedicalRecord.diagnosis || '未知' }} ({{ activeMedicalRecord.stage || '未知' }})</span></div>
+                        <div class="profile-row" v-if="activeMedicalRecord.medical_summary" style="flex-direction: column; gap: 8px;">
+                            <span class="profile-label"><i class="fas fa-brain"></i> 本份摘要:</span>
                             <span class="profile-value" style="background: rgba(63, 43, 150, 0.05); padding: 10px; border-radius: 8px; line-height: 1.5; font-size: 0.9rem;">
-                                {{ userProfile.medical_summary }}
+                                {{ activeMedicalRecord.medical_summary }}
                             </span>
                         </div>
                         
-                        <div class="profile-row" v-if="userProfile.test_items && userProfile.test_items.length > 0" style="flex-direction: column; border-bottom: none; gap: 15px; margin-top: 10px;">
+                        <div class="profile-row" v-if="activeMedicalRecord.test_items && activeMedicalRecord.test_items.length > 0" style="flex-direction: column; border-bottom: none; gap: 15px; margin-top: 10px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                <span class="profile-label"><i class="fas fa-vials"></i> 详细化验指标:</span>
+                                <span class="profile-label"><i class="fas fa-vials"></i> 本份化验指标:</span>
                                 <button class="btn-primary" style="background-color: #3f2b96; padding: 6px 12px; font-size: 0.85rem;" @click="showChartModal = true">
                                     <i class="fas fa-chart-line"></i> 查看指标趋势图
                                 </button>
@@ -197,7 +244,7 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <tr v-for="(item, idx) in userProfile.test_items" :key="idx">
+                                        <tr v-for="(item, idx) in activeMedicalRecord.test_items" :key="idx">
                                             <td>{{ item.record_date || '未知' }}</td>
                                             <td class="item-name">{{ item.item_name }}</td>
                                             <td :class="{'abnormal-val': item.abnormal && item.abnormal !== '正常'}">{{ item.result }}</td>
@@ -208,6 +255,100 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="documents-section follow-up-calendar-section" v-if="userProfile && userProfile.discharge_reports && userProfile.discharge_reports.length > 0">
+                    <h3><i class="fas fa-calendar-alt"></i> 复诊日历（出院医嘱）</h3>
+                    <p class="calendar-hint">以下为解析得到的<strong>就诊/复查日期</strong>，请按时就诊；可切换月份查看。</p>
+                    <div class="follow-up-calendar-toolbar">
+                        <button type="button" class="btn-secondary calendar-nav-btn" @click="prevFollowUpMonth"><i class="fas fa-chevron-left"></i></button>
+                        <span class="calendar-month-label">{{ followUpCalendarYear }} 年 {{ followUpCalendarMonth }} 月</span>
+                        <button type="button" class="btn-secondary calendar-nav-btn" @click="nextFollowUpMonth"><i class="fas fa-chevron-right"></i></button>
+                    </div>
+                    <div class="follow-up-calendar-grid">
+                        <div class="cal-weekday" v-for="wd in ['日','一','二','三','四','五','六']" :key="wd">{{ wd }}</div>
+                        <template v-for="(week, wi) in followUpCalendarWeeks" :key="'wk'+wi">
+                            <div
+                                v-for="(cell, ci) in week"
+                                :key="'c'+wi+'-'+ci"
+                                class="cal-cell"
+                                :class="calCellDynamicClass(cell)"
+                                :role="cell.day && followUpEventsForDay(cell.day).length ? 'button' : null"
+                                :tabindex="cell.day && followUpEventsForDay(cell.day).length ? 0 : -1"
+                                @click="onFollowUpCalDayClick(cell, $event)"
+                                @keydown.enter.prevent="onFollowUpCalDayKeydown(cell, $event)"
+                            >
+                                <template v-if="cell.day">
+                                    <span class="cal-day-num">{{ cell.day }}</span>
+                                    <ul class="cal-day-events" v-if="followUpEventsForDay(cell.day).length">
+                                        <li v-for="(ev, ei) in followUpEventsForDay(cell.day)" :key="'e'+ei" :title="ev.detail || ev.title">
+                                            {{ ev.title }}
+                                        </li>
+                                    </ul>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                    <!-- 复诊日详情气泡（新增交互层，不修改原日历格样式类） -->
+                    <div
+                        v-if="followUpBubbleVisible"
+                        class="follow-up-cal-bubble-overlay"
+                        @click.self="closeFollowUpBubble"
+                    >
+                        <div
+                            class="follow-up-cal-bubble"
+                            :style="followUpBubbleBoxStyle"
+                            role="dialog"
+                            aria-modal="true"
+                            @click.stop
+                        >
+                            <button type="button" class="follow-up-cal-bubble-close" @click="closeFollowUpBubble" aria-label="关闭">
+                                <i class="fas fa-times"></i>
+                            </button>
+                            <div class="follow-up-cal-bubble-date">{{ followUpBubbleDateLabel }}</div>
+                            <ul class="follow-up-cal-bubble-list">
+                                <li v-for="(bev, bi) in followUpBubbleEvents" :key="'b'+bi">
+                                    <div class="follow-up-cal-bubble-title">{{ bev.title }}</div>
+                                    <div v-if="bev.detail" class="follow-up-cal-bubble-detail">{{ bev.detail }}</div>
+                                    <div v-if="bev.source" class="follow-up-cal-bubble-src">来源：{{ bev.source }}</div>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="documents-section discharge-list-section" v-if="userProfile && userProfile.discharge_reports && userProfile.discharge_reports.length > 0">
+                    <h3><i class="fas fa-notes-medical"></i> 已保存的出院报告</h3>
+                    <div class="discharge-report-cards">
+                        <div class="discharge-card" v-for="dr in [...userProfile.discharge_reports].reverse()" :key="dr.id">
+                            <div class="discharge-card-head">
+                                <span><i class="fas fa-hospital"></i> {{ dr.hospital_name || '医院未识别' }} · {{ dr.report_date || '日期待定' }}</span>
+                                <button type="button" class="discharge-card-del" :disabled="isDeletingDischargeReport" @click="deleteDischargeReport(dr)">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </div>
+                            <p class="discharge-card-meta">{{ dr.department || '' }} {{ dr.name ? '· ' + dr.name : '' }}</p>
+                            <div v-if="dr.discharge_orders_full_text" class="discharge-orders-block">
+                                <strong>出院医嘱摘录</strong>
+                                <p class="discharge-orders-text">{{ dr.discharge_orders_full_text }}</p>
+                            </div>
+                            <div v-if="dr.follow_up_items && dr.follow_up_items.length" class="follow-up-table-wrap">
+                                <table class="follow-up-items-table">
+                                    <thead>
+                                        <tr><th>日期</th><th>事项</th><th>说明</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="(fi, fidx) in dr.follow_up_items" :key="fidx">
+                                            <td>{{ fi.visit_date || '—' }}</td>
+                                            <td>{{ fi.item_title || '—' }}</td>
+                                            <td>{{ fi.detail || '—' }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <p v-if="dr.parse_notes" class="parse-notes">{{ dr.parse_notes }}</p>
                         </div>
                     </div>
                 </div>
@@ -238,13 +379,16 @@
                             <h3><i class="fas fa-clipboard-check"></i> 校对病历解析结果</h3>
                             <button type="button" class="close-btn" @click="closeProfileReviewModal" :disabled="isSavingProfileReview" title="关闭（未保存的修改将丢弃）"><i class="fas fa-times"></i></button>
                         </div>
-                        <p class="profile-review-hint">请仅核对姓名、年龄、性别、报告时间与化验指标；诊断、治疗史、病情总结等其余字段不在此展示，但会随「确认保存」与解析结果一并写入档案。</p>
+                        <p class="profile-review-hint">请核对医嘱项目、姓名、年龄、性别、报告时间与化验指标；本份报告其它解析字段会随「确认保存」一并写入该条病历。</p>
                         <div class="profile-review-body">
+                            <label class="profile-review-label-inline">医嘱项目（报告种类）
+                                <input type="text" v-model="profileReviewDraft.order_category" class="profile-review-input" placeholder="如 血常规、生化全项" />
+                            </label>
                             <div class="profile-review-grid">
                                 <label>姓名 <input type="text" v-model="profileReviewDraft.name" class="profile-review-input" /></label>
                                 <label>年龄 <input type="text" v-model="profileReviewDraft.age" class="profile-review-input" /></label>
                                 <label>性别 <input type="text" v-model="profileReviewDraft.gender" class="profile-review-input" /></label>
-                                <label>病历/报告时间 <input type="text" v-model="profileReviewDraft.record_date" class="profile-review-input" placeholder="如 2024-01-15" /></label>
+                                <label>报告时间 <input type="text" v-model="profileReviewDraft.report_date" class="profile-review-input" placeholder="如 2024-01-15" /></label>
                             </div>
 
                             <div class="profile-review-section-title">

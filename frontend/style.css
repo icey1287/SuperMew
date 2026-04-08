@@ -849,6 +849,263 @@ textarea {
 }
 
 /* Profile Card */
+.profile-folder-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 18px;
+    align-items: flex-end;
+}
+
+.btn-delete-record {
+    margin-left: auto;
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    border: 1px solid #e74c3c;
+    border-radius: 8px;
+    background: #fff;
+    color: #c0392b;
+    cursor: pointer;
+    font-weight: 600;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-delete-record:hover:not(:disabled) {
+    background: rgba(231, 76, 60, 0.08);
+}
+
+.btn-delete-record:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.discharge-upload-section {
+    margin-top: 8px;
+}
+
+.discharge-upload-hint {
+    font-size: 0.88rem;
+    color: #555;
+    margin: 0 0 12px;
+    line-height: 1.5;
+}
+
+.follow-up-calendar-section,
+.discharge-list-section {
+    margin-top: 20px;
+}
+
+.calendar-hint {
+    font-size: 0.88rem;
+    color: #555;
+    margin: 0 0 14px;
+}
+
+.follow-up-calendar-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.calendar-month-label {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: #2563b8;
+    min-width: 160px;
+    text-align: center;
+}
+
+.calendar-nav-btn {
+    padding: 6px 12px;
+    margin-bottom: 0;
+}
+
+.follow-up-calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.cal-weekday {
+    text-align: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #888;
+    padding: 6px 2px;
+}
+
+.cal-cell {
+    min-height: 72px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 4px 4px 6px;
+    background: #fafafa;
+    font-size: 0.75rem;
+    overflow: hidden;
+}
+
+.cal-cell--muted {
+    background: transparent;
+    border-color: transparent;
+    min-height: 0;
+    padding: 0;
+}
+
+.cal-cell--mark {
+    background: linear-gradient(180deg, rgba(37, 99, 184, 0.12), #fff);
+    border-color: rgba(37, 99, 184, 0.35);
+}
+
+.cal-day-num {
+    font-weight: 700;
+    color: #333;
+    display: block;
+    margin-bottom: 2px;
+}
+
+.cal-day-events {
+    margin: 0;
+    padding: 0 0 0 12px;
+    list-style: disc;
+    color: #2563b8;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.cal-day-events li {
+    margin: 0 0 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.discharge-report-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.discharge-card {
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: #fff;
+}
+
+.discharge-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    font-weight: 600;
+    color: #2563b8;
+}
+
+.discharge-card-del {
+    background: none;
+    border: none;
+    color: #c0392b;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+.discharge-card-del:hover:not(:disabled) {
+    background: rgba(192, 57, 43, 0.08);
+}
+
+.discharge-card-meta {
+    font-size: 0.85rem;
+    color: #666;
+    margin: 6px 0 10px;
+}
+
+.discharge-orders-block {
+    margin-top: 8px;
+}
+
+.discharge-orders-block strong {
+    font-size: 0.85rem;
+    color: #444;
+}
+
+.discharge-orders-text {
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: #333;
+    white-space: pre-wrap;
+    margin: 6px 0 0;
+    max-height: 200px;
+    overflow-y: auto;
+    background: rgba(37, 99, 184, 0.06);
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.follow-up-table-wrap {
+    margin-top: 12px;
+    overflow-x: auto;
+}
+
+.follow-up-items-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+
+.follow-up-items-table th,
+.follow-up-items-table td {
+    border: 1px solid #eee;
+    padding: 6px 8px;
+    text-align: left;
+}
+
+.follow-up-items-table th {
+    background: #f5f7fa;
+}
+
+.parse-notes {
+    font-size: 0.8rem;
+    color: #e67e22;
+    margin: 10px 0 0;
+}
+
+.profile-filter-label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #555;
+}
+
+.profile-filter-select {
+    min-width: 200px;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: #fff;
+}
+
+.profile-review-label-inline {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #555;
+}
+
 .profile-card {
     background-color: var(--bg-color);
     border-radius: 12px;
@@ -1980,4 +2237,102 @@ span.cite-ref:hover {
 .stop-btn:hover {
     background-color: #ee5a5a !important;
     transform: scale(1.1) !important;
+}
+
+/* 复诊日历交互增强（新增类名，不修改既有 .cal-cell / .cal-cell--mark 规则） */
+.cal-cell-interactive {
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+
+.cal-cell-interactive:active {
+    transform: translateY(2px);
+    box-shadow: inset 0 3px 8px rgba(0, 0, 0, 0.14);
+}
+
+.follow-up-cal-bubble-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2100;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.follow-up-cal-bubble {
+    position: fixed;
+    z-index: 2101;
+    width: min(360px, calc(100vw - 32px));
+    max-height: min(70vh, 420px);
+    overflow: auto;
+    padding: 14px 36px 14px 14px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(37, 99, 184, 0.2);
+    text-align: left;
+}
+
+.follow-up-cal-bubble-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #666;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+}
+
+.follow-up-cal-bubble-close:hover {
+    background: rgba(0, 0, 0, 0.06);
+    color: #333;
+}
+
+.follow-up-cal-bubble-date {
+    font-weight: 700;
+    font-size: 1rem;
+    color: #2563b8;
+    margin-bottom: 10px;
+    padding-right: 8px;
+}
+
+.follow-up-cal-bubble-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.follow-up-cal-bubble-list > li {
+    padding: 10px 0;
+    border-top: 1px solid #eee;
+}
+
+.follow-up-cal-bubble-list > li:first-child {
+    border-top: none;
+    padding-top: 0;
+}
+
+.follow-up-cal-bubble-title {
+    font-weight: 600;
+    color: #222;
+    font-size: 0.92rem;
+    margin-bottom: 6px;
+}
+
+.follow-up-cal-bubble-detail {
+    font-size: 0.85rem;
+    color: #444;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
+.follow-up-cal-bubble-src {
+    font-size: 0.78rem;
+    color: #888;
+    margin-top: 6px;
 }

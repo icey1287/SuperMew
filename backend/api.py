@@ -1,6 +1,7 @@
 import re
 import os
 import json
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -26,7 +27,7 @@ from parent_chunk_store import ParentChunkStore
 from milvus_writer import MilvusWriter
 from milvus_client import MilvusManager
 from embedding import EmbeddingService
-from profile_manager import ProfileManager, PatientProfile
+from profile_manager import ProfileManager, UserMedicalFolder, build_folder_medical_summary
 from fastapi import Form
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -75,11 +76,52 @@ async def upload_personal_record(user_id: str = Form(...), is_update: str = Form
 async def update_user_profile(user_id: str, body: ProfileUpdateRequest):
     """保存用户在前端校对、补充后的病历档案"""
     try:
-        normalized = PatientProfile(**body.profile).model_dump()
+        normalized = UserMedicalFolder(**body.profile).model_dump()
+        normalized["medical_summary"] = build_folder_medical_summary(normalized)
         profile_manager.save_profile(user_id, normalized)
         return {"message": "档案已保存", "profile": normalized}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"保存档案失败: {str(e)}")
+
+
+@router.delete("/profile/{user_id}/records/{record_id}")
+async def delete_profile_record(user_id: str, record_id: str):
+    """删除病历夹中的单条记录，并重新拼接夹级长记忆（与各条简要记忆同步）。"""
+    try:
+        folder = profile_manager.delete_record(user_id, record_id)
+        return {"message": "已删除该条病历，长记忆已更新", "profile": folder}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/profile/{user_id}/discharge/upload")
+async def upload_discharge_report(user_id: str, file: UploadFile = File(...)):
+    """上传出院报告 PDF/图片，解析出院医嘱与随访日期。"""
+    try:
+        filename = file.filename or "discharge.pdf"
+        os.makedirs(PROFILE_DOC_DIR, exist_ok=True)
+        safe_name = f"discharge_{uuid.uuid4().hex[:12]}_{Path(filename).name}"
+        file_path = PROFILE_DOC_DIR / safe_name
+        with open(file_path, "wb") as f:
+            f.write(await file.read())
+        profile_data = profile_manager.process_discharge_report(user_id, str(file_path), filename)
+        return {"message": "出院报告解析成功", "profile": profile_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"出院报告解析失败: {str(e)}")
+
+
+@router.delete("/profile/{user_id}/discharge/{report_id}")
+async def delete_discharge_report(user_id: str, report_id: str):
+    """删除一条出院报告并更新夹级长记忆。"""
+    try:
+        folder = profile_manager.delete_discharge_report(user_id, report_id)
+        return {"message": "已删除该份出院报告", "profile": folder}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/sessions/{user_id}/{session_id}", response_model=SessionMessagesResponse)

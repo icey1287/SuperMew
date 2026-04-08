@@ -7,7 +7,7 @@ from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
 from tools import search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
-from profile_manager import ProfileManager
+from profile_manager import ProfileManager, build_folder_medical_summary
 from datetime import datetime
 
 load_dotenv()
@@ -145,15 +145,20 @@ def create_agent_instance(profile: dict = None):
         "请始终用中文和用户进行自然、流畅、通俗易懂的交流。\n"
     )
 
-    if profile and isinstance(profile, dict) and profile.get('medical_summary'):
-        # 仅使用精炼的 medical_summary 作为长效记忆，大幅降低系统复杂度
-        memory_lines = [
-            "\n【当前患者的 Long-Term Memory (长效病历记忆)】",
-            f"病历报告时间: {profile.get('record_date', '未知')}",
-            f"病情总结: {profile['medical_summary']}",
-            "请牢记以上患者背景信息，在回答时紧密结合患者的实际病情、分期或用药史，提供高度个性化且具有针对性的建议。如果问题与患者病情无关，可仅做参考。"
-        ]
-        base_system_prompt += "\n".join(memory_lines)
+    if profile and isinstance(profile, dict):
+        summary_text = ""
+        if profile.get("records"):
+            summary_text = build_folder_medical_summary(profile)
+        if not summary_text:
+            summary_text = profile.get("medical_summary") or ""
+        if summary_text:
+            memory_lines = [
+                "\n【当前患者的 Long-Term Memory (长效病历记忆)】",
+                f"最近报告日期: {profile.get('record_date', '未知')}",
+                f"病情总结（含历次报告摘要）: {summary_text}",
+                "请牢记以上患者背景信息，在回答时紧密结合患者的实际病情、分期或用药史，提供高度个性化且具有针对性的建议。如果问题与患者病情无关，可仅做参考。",
+            ]
+            base_system_prompt += "\n".join(memory_lines)
 
     agent = create_agent(
         model=model,

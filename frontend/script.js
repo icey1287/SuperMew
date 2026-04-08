@@ -29,12 +29,30 @@ createApp({
             selectedProfileFile: null,
             isUploadingProfile: false,
             profileProgress: '',
-            uploadMode: 'replace',
+            /** 病历夹：先选医嘱项目，再选报告时间 */
+            profileFilterOrder: '',
+            profileFilterDate: '',
             showChartModal: false,
             /** 病历解析完成后的校对弹窗 */
             showProfileReviewModal: false,
             profileReviewDraft: null,
+            /** 校对弹窗正在编辑的 records[].id */
+            profileReviewRecordId: null,
             isSavingProfileReview: false,
+            isDeletingMedicalRecord: false,
+            /** 出院报告上传 */
+            selectedDischargeFile: null,
+            isUploadingDischarge: false,
+            dischargeProgress: '',
+            isDeletingDischargeReport: false,
+            /** 复诊日历（展示出院医嘱中的 visit_date） */
+            followUpCalendarYear: new Date().getFullYear(),
+            followUpCalendarMonth: new Date().getMonth() + 1,
+            /** 复诊日历：详情气泡（纯新增交互） */
+            followUpBubbleVisible: false,
+            followUpBubbleEvents: [],
+            followUpBubbleDateKey: '',
+            followUpBubblePos: { left: 0, top: 0 },
             showDictionaryModal: false,
             /** NCI 词典：直接调 glossary API（iframe 内嵌 widget 会先走 Adobe Analytics，易被拦截导致 Search 无反应） */
             nciDictionaryQuery: '',
@@ -55,11 +73,94 @@ createApp({
         };
     },
     computed: {
+        /** 医嘱项目下拉：去重 */
+        orderCategoryOptions() {
+            const recs = this.userProfile?.records;
+            if (!recs || !recs.length) return [];
+            return [...new Set(recs.map((r) => (r.order_category || '').trim()).filter(Boolean))].sort();
+        },
+        /** 当前医嘱项目下的报告日期 */
+        reportDateOptionsForFilter() {
+            const recs = this.userProfile?.records || [];
+            const pool = this.profileFilterOrder
+                ? recs.filter((r) => (r.order_category || '') === this.profileFilterOrder)
+                : recs;
+            return [...new Set(pool.map((r) => (r.report_date || '').trim()).filter(Boolean))].sort();
+        },
+        /** 当前筛选下展示的这一份病历 */
+        activeMedicalRecord() {
+            const recs = this.userProfile?.records || [];
+            if (!recs.length) return null;
+            let pool = this.profileFilterOrder
+                ? recs.filter((r) => (r.order_category || '') === this.profileFilterOrder)
+                : recs;
+            if (!pool.length) pool = recs;
+            if (this.profileFilterDate) {
+                const exact = pool.find((r) => (r.report_date || '') === this.profileFilterDate);
+                if (exact) return exact;
+            }
+            return pool[pool.length - 1];
+        },
+        /** 趋势图：同医嘱项目下跨时间对比指标 */
         uniqueTestItemNames() {
-            if (!this.userProfile || !this.userProfile.test_items) return [];
-            const names = this.userProfile.test_items.map(item => item.item_name);
+            const recs = this.userProfile?.records || [];
+            const pool = this.profileFilterOrder
+                ? recs.filter((r) => (r.order_category || '') === this.profileFilterOrder)
+                : recs;
+            const names = pool.flatMap((r) => (r.test_items || []).map((item) => item.item_name));
             return [...new Set(names)].filter(Boolean);
-        }
+        },
+        /** 出院随访日期 -> 事项列表（用于日历打点） */
+        followUpEventsByDate() {
+            const map = Object.create(null);
+            for (const dr of this.userProfile?.discharge_reports || []) {
+                const src = dr.source_filename || '出院报告';
+                for (const it of dr.follow_up_items || []) {
+                    let vd = (it.visit_date || '').trim().replace(/\//g, '-');
+                    if (!vd) continue;
+                    if (vd.length >= 10) vd = vd.slice(0, 10);
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(vd)) continue;
+                    if (!map[vd]) map[vd] = [];
+                    map[vd].push({
+                        title: (it.item_title || '复诊').trim() || '复诊提醒',
+                        detail: (it.detail || '').trim(),
+                        source: src,
+                    });
+                }
+            }
+            return map;
+        },
+        /** 当前月的周行，每格 { day: 1..31 | null } */
+        followUpCalendarWeeks() {
+            const y = this.followUpCalendarYear;
+            const m = this.followUpCalendarMonth;
+            const first = new Date(y, m - 1, 1);
+            const lastDate = new Date(y, m, 0).getDate();
+            const startPad = first.getDay();
+            const cells = [];
+            for (let i = 0; i < startPad; i++) cells.push({ day: null });
+            for (let d = 1; d <= lastDate; d++) cells.push({ day: d });
+            while (cells.length % 7 !== 0) cells.push({ day: null });
+            const weeks = [];
+            for (let i = 0; i < cells.length; i += 7) {
+                weeks.push(cells.slice(i, i + 7));
+            }
+            return weeks;
+        },
+        followUpBubbleDateLabel() {
+            if (!this.followUpBubbleDateKey) return '';
+            const parts = this.followUpBubbleDateKey.split('-');
+            if (parts.length !== 3) return this.followUpBubbleDateKey;
+            const [y, m, d] = parts;
+            return `${y} 年 ${Number(m)} 月 ${Number(d)} 日`;
+        },
+        followUpBubbleBoxStyle() {
+            if (!this.followUpBubbleVisible) return {};
+            return {
+                left: `${this.followUpBubblePos.left}px`,
+                top: `${this.followUpBubblePos.top}px`,
+            };
+        },
     },
     mounted() {
         this.configureMarked();
@@ -114,6 +215,19 @@ createApp({
                 this.showTooltip = false;
             }
         });
+
+        this._followUpBubbleEscHandler = (e) => {
+            if (e.key === 'Escape' && this.followUpBubbleVisible) {
+                e.preventDefault();
+                this.closeFollowUpBubble();
+            }
+        };
+        document.addEventListener('keydown', this._followUpBubbleEscHandler);
+    },
+    beforeUnmount() {
+        if (this._followUpBubbleEscHandler) {
+            document.removeEventListener('keydown', this._followUpBubbleEscHandler);
+        }
     },
     methods: {
         configureMarked() {
@@ -609,16 +723,243 @@ createApp({
                 if (response.ok) {
                     const data = await response.json();
                     this.userProfile = data.profile;
+                    this.$nextTick(() => this.initProfileFilters());
                 }
             } catch (error) {
                 console.error("加载个人档案失败", error);
             }
         },
 
-        normalizeProfileDraft(p) {
-            const d = JSON.parse(JSON.stringify(p || {}));
+        /** 初始化病历夹筛选（先医嘱项目，再报告时间） */
+        initProfileFilters() {
+            const recs = this.userProfile?.records;
+            if (!recs?.length) {
+                this.profileFilterOrder = '';
+                this.profileFilterDate = '';
+                return;
+            }
+            const orders = this.orderCategoryOptions;
+            if (orders.length && !orders.includes(this.profileFilterOrder)) {
+                this.profileFilterOrder = orders[0];
+            }
+            this.$nextTick(() => {
+                const dates = this.reportDateOptionsForFilter;
+                if (dates.length && !dates.includes(this.profileFilterDate)) {
+                    this.profileFilterDate = dates[dates.length - 1];
+                }
+            });
+        },
+
+        onProfileOrderChange() {
+            const dates = this.reportDateOptionsForFilter;
+            this.profileFilterDate = dates.length ? dates[dates.length - 1] : '';
+        },
+
+        async deleteActiveMedicalRecord() {
+            const snap = this.activeMedicalRecord;
+            if (!snap) return;
+            this.isDeletingMedicalRecord = true;
+            try {
+                await this.loadProfile();
+                let rec = (this.userProfile?.records || []).find(
+                    (r) => String(r.id || '') === String(snap.id || '')
+                );
+                if (!rec && !String(snap.id || '').trim()) {
+                    rec = (this.userProfile?.records || []).find(
+                        (r) =>
+                            (r.order_category || '') === (snap.order_category || '') &&
+                            (r.report_date || '') === (snap.report_date || '') &&
+                            (r.source_filename || '') === (snap.source_filename || '')
+                    );
+                }
+                if (!rec || !String(rec.id || '').trim()) {
+                    alert('无法定位要删除的病历（可能缺少记录 id）。请刷新页面后再试。');
+                    return;
+                }
+                const label = `${rec.order_category || '病历'} · ${rec.report_date || ''}`.trim();
+                if (
+                    !confirm(
+                        `确定删除本条病历「${label || rec.id}」？\n该条的简要记忆将从病历夹与对话记忆中移除，且不可恢复。`
+                    )
+                ) {
+                    return;
+                }
+                const response = await fetch(
+                    `/profile/${this.userId}/records/${encodeURIComponent(String(rec.id).trim())}`,
+                    { method: 'DELETE' }
+                );
+                if (!response.ok) {
+                    let detail = '删除失败';
+                    try {
+                        const err = await response.json();
+                        detail = err.detail || detail;
+                    } catch (_) { /* ignore */ }
+                    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+                }
+                const data = await response.json();
+                this.userProfile = data.profile;
+                this.profileProgress = data.message || '已删除';
+                this.$nextTick(() => this.initProfileFilters());
+            } catch (e) {
+                console.error('deleteActiveMedicalRecord', e);
+                alert('删除失败：' + e.message);
+            } finally {
+                this.isDeletingMedicalRecord = false;
+            }
+        },
+
+        followUpDateKey(day) {
+            if (day == null) return '';
+            const m = String(this.followUpCalendarMonth).padStart(2, '0');
+            const ds = String(day).padStart(2, '0');
+            return `${this.followUpCalendarYear}-${m}-${ds}`;
+        },
+        followUpEventsForDay(day) {
+            if (day == null) return [];
+            return this.followUpEventsByDate[this.followUpDateKey(day)] || [];
+        },
+        calCellDynamicClass(cell) {
+            const has =
+                cell &&
+                cell.day &&
+                this.followUpEventsForDay(cell.day).length > 0;
+            return {
+                'cal-cell--muted': !cell.day,
+                'cal-cell--mark': cell.day && has,
+                'cal-cell-interactive': !!has,
+            };
+        },
+        _clampFollowUpBubblePos(clientX, clientY) {
+            const w = 320;
+            const h = 200;
+            const pad = 12;
+            let left = clientX + 8;
+            let top = clientY + 8;
+            if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+            if (left < pad) left = pad;
+            if (top + h > window.innerHeight - pad) top = clientY - h - 12;
+            if (top < pad) top = pad;
+            this.followUpBubblePos = { left, top };
+        },
+        onFollowUpCalDayClick(cell, evt) {
+            if (!cell || cell.day == null) return;
+            const evs = this.followUpEventsForDay(cell.day);
+            if (!evs.length) return;
+            this.followUpBubbleDateKey = this.followUpDateKey(cell.day);
+            this.followUpBubbleEvents = evs;
+            this._clampFollowUpBubblePos(evt.clientX, evt.clientY);
+            this.followUpBubbleVisible = true;
+        },
+        onFollowUpCalDayKeydown(cell, evt) {
+            if (evt.key !== 'Enter') return;
+            if (!cell || cell.day == null) return;
+            const evs = this.followUpEventsForDay(cell.day);
+            if (!evs.length) return;
+            const el = evt.currentTarget;
+            const rect = el.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            this.followUpBubbleDateKey = this.followUpDateKey(cell.day);
+            this.followUpBubbleEvents = evs;
+            this._clampFollowUpBubblePos(cx, cy);
+            this.followUpBubbleVisible = true;
+        },
+        closeFollowUpBubble() {
+            this.followUpBubbleVisible = false;
+            this.followUpBubbleEvents = [];
+            this.followUpBubbleDateKey = '';
+        },
+        prevFollowUpMonth() {
+            this.closeFollowUpBubble();
+            if (this.followUpCalendarMonth <= 1) {
+                this.followUpCalendarMonth = 12;
+                this.followUpCalendarYear--;
+            } else {
+                this.followUpCalendarMonth--;
+            }
+        },
+        nextFollowUpMonth() {
+            this.closeFollowUpBubble();
+            if (this.followUpCalendarMonth >= 12) {
+                this.followUpCalendarMonth = 1;
+                this.followUpCalendarYear++;
+            } else {
+                this.followUpCalendarMonth++;
+            }
+        },
+        handleDischargeSelect(event) {
+            const files = event.target.files;
+            if (files && files.length > 0) {
+                this.selectedDischargeFile = files[0];
+                this.dischargeProgress = '';
+            }
+        },
+        triggerDischargeUpload() {
+            if (this.$refs.dischargeInput) this.$refs.dischargeInput.click();
+        },
+        async uploadDischargeReport() {
+            if (!this.selectedDischargeFile) {
+                alert('请选择出院报告 PDF 或图片');
+                return;
+            }
+            this.isUploadingDischarge = true;
+            this.dischargeProgress = '正在解析出院报告与出院医嘱，请稍候…';
+            try {
+                const formData = new FormData();
+                formData.append('file', this.selectedDischargeFile);
+                const response = await fetch(`/profile/${this.userId}/discharge/upload`, {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || '上传失败');
+                }
+                const data = await response.json();
+                this.userProfile = data.profile;
+                this.dischargeProgress = data.message || '解析成功';
+                this.selectedDischargeFile = null;
+                if (this.$refs.dischargeInput) this.$refs.dischargeInput.value = '';
+            } catch (e) {
+                console.error(e);
+                this.dischargeProgress = '失败：' + e.message;
+            } finally {
+                this.isUploadingDischarge = false;
+            }
+        },
+        async deleteDischargeReport(rep) {
+            if (!rep || !rep.id) return;
+            if (
+                !confirm(
+                    `确定删除出院报告「${rep.source_filename || rep.id}」？随访日历中的相关日期将一并移除。`
+                )
+            ) {
+                return;
+            }
+            this.isDeletingDischargeReport = true;
+            try {
+                const response = await fetch(
+                    `/profile/${this.userId}/discharge/${encodeURIComponent(rep.id)}`,
+                    { method: 'DELETE' }
+                );
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || '删除失败');
+                }
+                const data = await response.json();
+                this.userProfile = data.profile;
+                this.dischargeProgress = data.message || '已删除';
+            } catch (e) {
+                alert('删除失败：' + e.message);
+            } finally {
+                this.isDeletingDischargeReport = false;
+            }
+        },
+
+        /** 单条病历（MedicalRecordEntry）校对草稿 */
+        normalizeRecordDraft(r) {
+            const d = JSON.parse(JSON.stringify(r || {}));
             if (!Array.isArray(d.test_items)) d.test_items = [];
-            if (!Array.isArray(d.suggested_questions)) d.suggested_questions = [];
             d.test_items = d.test_items.map((t) => ({
                 item_name: t.item_name ?? '',
                 result: t.result ?? '',
@@ -627,7 +968,11 @@ createApp({
                 abnormal: t.abnormal ?? '',
                 record_date: t.record_date ?? '',
             }));
-            d.suggested_questions = d.suggested_questions.map((q) => (typeof q === 'string' ? q : String(q ?? '')));
+            d.order_category = d.order_category ?? '';
+            d.report_date = d.report_date ?? d.record_date ?? '';
+            d.name = d.name ?? '';
+            d.age = d.age ?? '';
+            d.gender = d.gender ?? '';
             return d;
         },
 
@@ -655,16 +1000,32 @@ createApp({
         closeProfileReviewModal() {
             this.showProfileReviewModal = false;
             this.profileReviewDraft = null;
+            this.profileReviewRecordId = null;
         },
 
         async saveProfileReview() {
-            if (!this.profileReviewDraft) return;
+            if (!this.profileReviewDraft || this.profileReviewRecordId == null) return;
             this.isSavingProfileReview = true;
             try {
+                const folder = JSON.parse(JSON.stringify(this.userProfile || {}));
+                if (!Array.isArray(folder.records)) folder.records = [];
+                const idx = folder.records.findIndex((r) => r.id === this.profileReviewRecordId);
+                if (idx < 0) {
+                    throw new Error('找不到对应病历记录');
+                }
+                const merged = this.normalizeRecordDraft(this.profileReviewDraft);
+                merged.id = this.profileReviewRecordId;
+                folder.records[idx] = merged;
+                if (merged.name) folder.name = merged.name;
+                if (merged.age) folder.age = merged.age;
+                if (merged.gender) folder.gender = merged.gender;
+                if (merged.report_date) folder.record_date = merged.report_date;
+                folder.schema_version = 2;
+
                 const response = await fetch(`/profile/${this.userId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ profile: this.profileReviewDraft }),
+                    body: JSON.stringify({ profile: folder }),
                 });
                 if (!response.ok) {
                     let detail = '保存失败';
@@ -678,6 +1039,7 @@ createApp({
                 this.userProfile = data.profile;
                 this.profileProgress = data.message || '已保存校对后的档案';
                 this.closeProfileReviewModal();
+                this.$nextTick(() => this.initProfileFilters());
             } catch (error) {
                 console.error('saveProfileReview', error);
                 alert('保存失败：' + error.message);
@@ -694,8 +1056,7 @@ createApp({
             }
         },
 
-        triggerProfileUpload(mode) {
-            this.uploadMode = mode;
+        triggerProfileUpload() {
             if (this.$refs.profileInput) {
                 this.$refs.profileInput.click();
             }
@@ -714,7 +1075,7 @@ createApp({
                 const formData = new FormData();
                 formData.append('file', this.selectedProfileFile);
                 formData.append('user_id', this.userId);
-                formData.append('is_update', this.uploadMode === 'update' ? 'true' : 'false');
+                formData.append('is_update', 'false');
                 
                 const response = await fetch('/profile/upload', {
                     method: 'POST',
@@ -729,14 +1090,20 @@ createApp({
                 const data = await response.json();
                 this.profileProgress = data.message;
                 this.userProfile = data.profile;
-                this.profileReviewDraft = this.normalizeProfileDraft(data.profile);
-                this.showProfileReviewModal = true;
+                const recs = data.profile?.records || [];
+                const last = recs[recs.length - 1];
+                if (last) {
+                    this.profileReviewRecordId = last.id;
+                    this.profileReviewDraft = this.normalizeRecordDraft(last);
+                    this.showProfileReviewModal = true;
+                }
 
                 // 清空选择
                 this.selectedProfileFile = null;
                 if (this.$refs.profileInput) {
                     this.$refs.profileInput.value = '';
                 }
+                this.$nextTick(() => this.initProfileFilters());
                 
             } catch (error) {
                 console.error('Error uploading profile:', error);
@@ -755,15 +1122,29 @@ createApp({
         },
 
         renderChart() {
-            if (!this.selectedChartIndicator || !this.userProfile || !this.userProfile.test_items) return;
-            
-            const dataPoints = this.userProfile.test_items.filter(item => item.item_name === this.selectedChartIndicator);
-            
-            // Sort by date (assuming YYYY-MM-DD format)
-            dataPoints.sort((a, b) => new Date(a.record_date || 0) - new Date(b.record_date || 0));
-            
-            const labels = dataPoints.map(item => item.record_date || '未知时间');
-            const values = dataPoints.map(item => parseFloat(item.result) || 0);
+            if (!this.selectedChartIndicator || !this.userProfile?.records?.length) return;
+
+            const recs = this.userProfile.records || [];
+            const pool = this.profileFilterOrder
+                ? recs.filter((r) => (r.order_category || '') === this.profileFilterOrder)
+                : recs;
+            const dataPoints = [];
+            for (const r of pool) {
+                for (const item of r.test_items || []) {
+                    if (item.item_name === this.selectedChartIndicator) {
+                        dataPoints.push({
+                            ...item,
+                            _labelDate: item.record_date || r.report_date || '',
+                        });
+                    }
+                }
+            }
+            dataPoints.sort(
+                (a, b) => new Date(a._labelDate || 0) - new Date(b._labelDate || 0)
+            );
+
+            const labels = dataPoints.map((item) => item._labelDate || '未知时间');
+            const values = dataPoints.map((item) => parseFloat(item.result) || 0);
 
             this.$nextTick(() => {
                 const ctx = document.getElementById('indicatorChart');
