@@ -110,14 +110,11 @@ createApp({
             }
             return pool[pool.length - 1];
         },
-        /** 趋势图：同医嘱项目下跨时间对比指标 */
+        /** 趋势图：全部检验记录下指标去重（不区分医嘱项目），按时间看变化 */
         uniqueTestItemNames() {
             const recs = this.userProfile?.records || [];
-            const pool = this.profileFilterOrder
-                ? recs.filter((r) => (r.order_category || '') === this.profileFilterOrder)
-                : recs;
-            const names = pool.flatMap((r) => (r.test_items || []).map((item) => item.item_name));
-            return [...new Set(names)].filter(Boolean);
+            const names = recs.flatMap((r) => (r.test_items || []).map((item) => item.item_name));
+            return [...new Set(names)].filter(Boolean).sort();
         },
         /** 出院随访日期 -> 事项列表（用于日历打点） */
         followUpEventsByDate() {
@@ -1130,15 +1127,53 @@ createApp({
             });
         },
 
+        /**
+         * 从化验项「参考区间」字段解析数值上下界（如 3.5-5.5、0.0~10、3.5 至 5.5）。
+         * 无法解析为双数值时返回 null（如「阴性」、纯文字）。
+         */
+        parseReferenceRange(text) {
+            if (!text || typeof text !== 'string') return null;
+            const cleaned = String(text)
+                .trim()
+                .replace(/^参考[区间值范围]*[：:]\s*/i, '');
+            if (!cleaned) return null;
+            const re = /(-?\d+(?:\.\d+)?)\s*[~～∼〜\-–—]\s*(-?\d+(?:\.\d+)?)/;
+            const reZhi = /(-?\d+(?:\.\d+)?)\s*至\s*(-?\d+(?:\.\d+)?)/;
+            let m = cleaned.match(re) || cleaned.match(reZhi);
+            if (!m) return null;
+            const a = parseFloat(m[1]);
+            const b = parseFloat(m[2]);
+            if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+            return { min: Math.min(a, b), max: Math.max(a, b) };
+        },
+
+        /** 按时间点对齐参考区间；前后向填充，便于画出连续浅绿带 */
+        buildReferenceBandSeries(dataPoints) {
+            const parsed = dataPoints.map((p) => this.parseReferenceRange(p.reference_range || ''));
+            let last = null;
+            for (let i = 0; i < parsed.length; i++) {
+                if (parsed[i]) last = parsed[i];
+                else if (last) parsed[i] = last;
+            }
+            let next = null;
+            for (let i = parsed.length - 1; i >= 0; i--) {
+                if (parsed[i]) next = parsed[i];
+                else if (next) parsed[i] = next;
+            }
+            const hasBand = parsed.length > 0 && parsed.every((p) => p != null);
+            if (!hasBand) return { refMax: null, refMin: null };
+            return {
+                refMax: parsed.map((p) => p.max),
+                refMin: parsed.map((p) => p.min),
+            };
+        },
+
         renderChart() {
             if (!this.selectedChartIndicator || !this.userProfile?.records?.length) return;
 
             const recs = this.userProfile.records || [];
-            const pool = this.profileFilterOrder
-                ? recs.filter((r) => (r.order_category || '') === this.profileFilterOrder)
-                : recs;
             const dataPoints = [];
-            for (const r of pool) {
+            for (const r of recs) {
                 for (const item of r.test_items || []) {
                     if (item.item_name === this.selectedChartIndicator) {
                         dataPoints.push({
@@ -1153,76 +1188,137 @@ createApp({
             );
 
             const labels = dataPoints.map((item) => item._labelDate || '未知时间');
-            const values = dataPoints.map((item) => parseFloat(item.result) || 0);
+            const values = dataPoints.map((item) => {
+                const raw = String(item.result || '')
+                    .replace(/[<>≤≥]/g, '')
+                    .trim();
+                if (!raw) return null;
+                const v = parseFloat(raw);
+                return Number.isFinite(v) ? v : null;
+            });
+
+            const { refMax, refMin } = this.buildReferenceBandSeries(dataPoints);
+            const bandDatasets =
+                refMax && refMin && refMax.length === labels.length
+                    ? [
+                          {
+                              label: '参考上限',
+                              data: refMax,
+                              borderColor: 'transparent',
+                              backgroundColor: 'transparent',
+                              pointRadius: 0,
+                              hitRadius: 0,
+                              borderWidth: 0,
+                              fill: false,
+                              tension: 0.25,
+                              order: 1,
+                          },
+                          {
+                              label: '参考下限',
+                              data: refMin,
+                              borderColor: 'transparent',
+                              backgroundColor: 'rgba(185, 236, 185, 0.55)',
+                              pointRadius: 0,
+                              hitRadius: 0,
+                              borderWidth: 0,
+                              fill: '-1',
+                              tension: 0.25,
+                              order: 1,
+                          },
+                      ]
+                    : [];
 
             this.$nextTick(() => {
                 const ctx = document.getElementById('indicatorChart');
                 if (!ctx) return;
-                
+
                 if (this.chartInstance) {
                     this.chartInstance.destroy();
                 }
-                
+
+                const mainDataset = {
+                    label: this.selectedChartIndicator,
+                    data: values,
+                    borderColor: '#27ae60',
+                    backgroundColor: 'rgba(46, 204, 113, 0.12)',
+                    borderWidth: 2,
+                    pointBackgroundColor: '#1e8449',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 2,
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    fill: bandDatasets.length ? false : true,
+                    tension: 0.3,
+                    order: 2,
+                    spanGaps: false,
+                };
+
                 this.chartInstance = new Chart(ctx, {
                     type: 'line',
                     data: {
                         labels: labels,
-                        datasets: [{
-                            label: this.selectedChartIndicator,
-                            data: values,
-                            borderColor: '#2ecc71', // 绿色折线
-                            backgroundColor: 'rgba(46, 204, 113, 0.1)',
-                            borderWidth: 2,
-                            pointBackgroundColor: '#27ae60', // 较深的绿点
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 2,
-                            pointRadius: 5,
-                            pointHoverRadius: 7,
-                            fill: true,
-                            tension: 0.3
-                        }]
+                        datasets: [...bandDatasets, mainDataset],
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
                         plugins: {
                             legend: {
-                                display: false // 隐藏顶部的冗余图例（Data-ink ratio）
+                                display: false,
                             },
                             tooltip: {
-                                backgroundColor: 'rgba(255,255,255,0.9)',
+                                backgroundColor: 'rgba(255,255,255,0.95)',
                                 titleColor: '#333',
                                 bodyColor: '#666',
                                 borderColor: '#eee',
                                 borderWidth: 1,
                                 padding: 10,
-                                displayColors: false
-                            }
+                                displayColors: true,
+                                filter: (item) => {
+                                    const lab = item.dataset.label || '';
+                                    return lab !== '参考上限' && lab !== '参考下限';
+                                },
+                                callbacks: {
+                                    afterBody: (items) => {
+                                        if (!items || !items.length) return '';
+                                        const idx = items[0].dataIndex;
+                                        const row = dataPoints[idx];
+                                        if (!row) return '';
+                                        const ref = (row.reference_range || '').trim();
+                                        if (!ref) return '';
+                                        return `参考区间：${ref}`;
+                                    },
+                                },
+                            },
                         },
                         scales: {
                             x: {
                                 grid: {
-                                    display: false, // 隐藏 X 轴网格线
-                                    drawBorder: false
+                                    display: false,
+                                    drawBorder: false,
                                 },
                                 ticks: {
                                     font: { family: "'Nunito', sans-serif" },
-                                    color: '#888'
-                                }
+                                    color: '#888',
+                                },
                             },
                             y: {
                                 beginAtZero: false,
                                 grid: {
-                                    display: false, // 隐藏 Y 轴网格线
-                                    drawBorder: false
+                                    display: false,
+                                    drawBorder: false,
                                 },
                                 ticks: {
                                     font: { family: "'Nunito', sans-serif" },
-                                    color: '#888'
-                                }
-                            }
-                        }
-                    }
+                                    color: '#888',
+                                },
+                            },
+                        },
+                    },
                 });
             });
         },

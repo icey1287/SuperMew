@@ -371,6 +371,7 @@
                             <h3><i class="fas fa-chart-line"></i> 检验指标趋势分析</h3>
                             <button @click="showChartModal = false" class="close-btn"><i class="fas fa-times"></i></button>
                         </div>
+                        <p class="chart-modal-hint">按指标名称汇总<strong>全部</strong>检验记录，横轴为报告时间，展示该指标随时间的变化（不区分医嘱项目）。浅绿色带为<strong>参考正常区间</strong></p>
                         <div class="chart-controls" style="margin-bottom: 15px;">
                             <label style="font-weight: 600; color: var(--text-color);">选择要观察的指标：</label>
                             <select v-model="selectedChartIndicator" @change="renderChart" style="padding: 6px; border-radius: 6px; border: 1px solid #ccc; font-family: inherit;">
