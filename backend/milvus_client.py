@@ -5,6 +5,9 @@ from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
 
 load_dotenv()
 
+# Milvus 单次 query 的 limit 上限（超出会报 invalid max query result window）
+QUERY_MAX_LIMIT = 16384
+
 
 class MilvusManager:
     """Milvus 连接和集合管理 - 支持混合检索"""
@@ -85,14 +88,42 @@ class MilvusManager:
         """插入数据到 Milvus"""
         return self._get_client().insert(self.collection_name, data)
 
-    def query(self, filter_expr: str = "", output_fields: list[str] = None, limit: int = 10000):
-        """查询数据"""
+    def query(
+        self,
+        filter_expr: str = "",
+        output_fields: list[str] = None,
+        limit: int = 10000,
+        offset: int = 0,
+    ):
+        """查询数据。limit 不宜超过 QUERY_MAX_LIMIT。"""
         return self._get_client().query(
             collection_name=self.collection_name,
             filter=filter_expr,
             output_fields=output_fields or ["filename", "file_type"],
-            limit=limit
+            limit=min(limit, QUERY_MAX_LIMIT),
+            offset=offset,
         )
+
+    def query_all(self, filter_expr: str = "", output_fields: list[str] | None = None) -> list:
+        """分页拉取匹配 filter 的全部行，避免单次 limit 超过服务端窗口。"""
+        fields = output_fields or ["filename", "file_type"]
+        out: list = []
+        offset = 0
+        while True:
+            batch = self._get_client().query(
+                collection_name=self.collection_name,
+                filter=filter_expr,
+                output_fields=fields,
+                limit=QUERY_MAX_LIMIT,
+                offset=offset,
+            )
+            if not batch:
+                break
+            out.extend(batch)
+            if len(batch) < QUERY_MAX_LIMIT:
+                break
+            offset += len(batch)
+        return out
 
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
         """根据 chunk_id 批量查询分块（用于 Auto-merging 拉取父块）"""

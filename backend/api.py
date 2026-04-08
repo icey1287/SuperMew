@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from agent import chat_with_agent, chat_with_agent_stream, storage
 from auth import authenticate_user, create_access_token, get_current_user, get_db, get_password_hash, require_admin, resolve_role
 from document_loader import DocumentLoader
-from embedding import EmbeddingService
+from embedding import embedding_service
 from milvus_client import MilvusManager
 from milvus_writer import MilvusWriter
 from models import User
@@ -40,10 +40,19 @@ UPLOAD_DIR = DATA_DIR / "documents"
 loader = DocumentLoader()
 parent_chunk_store = ParentChunkStore()
 milvus_manager = MilvusManager()
-embedding_service = EmbeddingService()
 milvus_writer = MilvusWriter(embedding_service=embedding_service, milvus_manager=milvus_manager)
 
 router = APIRouter()
+
+
+def _remove_bm25_stats_for_filename(filename: str) -> None:
+    """删除 Milvus 中该文件对应 chunk 前，先从持久化 BM25 统计中扣减。"""
+    rows = milvus_manager.query_all(
+        filter_expr=f'filename == "{filename}"',
+        output_fields=["text"],
+    )
+    texts = [r.get("text") or "" for r in rows]
+    embedding_service.increment_remove_documents(texts)
 
 
 @router.post("/auth/register", response_model=AuthResponse)
@@ -223,6 +232,10 @@ async def upload_document(file: UploadFile = File(...), _: User = Depends(requir
 
         delete_expr = f'filename == "{filename}"'
         try:
+            _remove_bm25_stats_for_filename(filename)
+        except Exception:
+            pass
+        try:
             milvus_manager.delete(delete_expr)
         except Exception:
             pass
@@ -273,6 +286,7 @@ async def delete_document(filename: str, _: User = Depends(require_admin)):
         milvus_manager.init_collection()
 
         delete_expr = f'filename == "{filename}"'
+        _remove_bm25_stats_for_filename(filename)
         result = milvus_manager.delete(delete_expr)
         parent_chunk_store.delete_by_filename(filename)
 

@@ -1,5 +1,5 @@
 """文档向量化并写入 Milvus - 支持密集+稀疏向量"""
-from embedding import EmbeddingService
+from embedding import EmbeddingService, embedding_service as _default_embedding_service
 from milvus_client import MilvusManager
 
 
@@ -7,7 +7,7 @@ class MilvusWriter:
     """文档向量化并写入 Milvus 服务 - 支持混合检索"""
 
     def __init__(self, embedding_service: EmbeddingService = None, milvus_manager: MilvusManager = None):
-        self.embedding_service = embedding_service or EmbeddingService()
+        self.embedding_service = embedding_service or _default_embedding_service
         self.milvus_manager = milvus_manager or MilvusManager()
 
     def write_documents(self, documents: list[dict], batch_size: int = 50):
@@ -20,10 +20,9 @@ class MilvusWriter:
             return
 
         self.milvus_manager.init_collection()
-        
-        # 先拟合语料库（用于 BM25 IDF 计算）
+
         all_texts = [doc["text"] for doc in documents]
-        self.embedding_service.fit_corpus(all_texts)
+        self.embedding_service.increment_add_documents(all_texts)
 
         total = len(documents)
         for i in range(0, total, batch_size):
