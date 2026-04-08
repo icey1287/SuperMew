@@ -23,7 +23,7 @@ from document_loader import DocumentLoader
 from parent_chunk_store import ParentChunkStore
 from milvus_writer import MilvusWriter
 from milvus_client import MilvusManager
-from embedding import EmbeddingService
+from embedding import embedding_service
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR.parent / "data"
@@ -32,10 +32,19 @@ UPLOAD_DIR = DATA_DIR / "documents"
 loader = DocumentLoader()
 parent_chunk_store = ParentChunkStore()
 milvus_manager = MilvusManager()
-embedding_service = EmbeddingService()
 milvus_writer = MilvusWriter(embedding_service=embedding_service, milvus_manager=milvus_manager)
 
 router = APIRouter()
+
+
+def _remove_bm25_stats_for_filename(filename: str) -> None:
+    """删除 Milvus 中该文件对应 chunk 前，先从持久化 BM25 统计中扣减。"""
+    rows = milvus_manager.query_all(
+        filter_expr=f'filename == "{filename}"',
+        output_fields=["text"],
+    )
+    texts = [r.get("text") or "" for r in rows]
+    embedding_service.increment_remove_documents(texts)
 
 
 @router.get("/sessions/{user_id}/{session_id}", response_model=SessionMessagesResponse)
@@ -196,6 +205,10 @@ async def upload_document(file: UploadFile = File(...)):
 
         delete_expr = f'filename == "{filename}"'
         try:
+            _remove_bm25_stats_for_filename(filename)
+        except Exception:
+            pass
+        try:
             milvus_manager.delete(delete_expr)
         except Exception:
             pass
@@ -246,6 +259,7 @@ async def delete_document(filename: str):
         milvus_manager.init_collection()
 
         delete_expr = f'filename == "{filename}"'
+        _remove_bm25_stats_for_filename(filename)
         result = milvus_manager.delete(delete_expr)
         parent_chunk_store.delete_by_filename(filename)
 
