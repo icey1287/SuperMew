@@ -41,6 +41,11 @@ class ConversationStorage:
         existing_meta = data[user_id].get(session_id, {}).get("metadata", {})
         merged_meta = {**existing_meta, **(metadata or {})}
 
+        # 同一会话上一次落盘的消息（用于保留每条 AI 回复的 rag_trace）
+        old_session_messages = []
+        if user_id in data and session_id in data[user_id]:
+            old_session_messages = data[user_id][session_id].get("messages") or []
+
         serialized = []
         for idx, msg in enumerate(messages):
             record = {
@@ -48,10 +53,19 @@ class ConversationStorage:
                 "content": msg.content,
                 "timestamp": datetime.now().isoformat()
             }
+            new_rag = None
             if extra_message_data and idx < len(extra_message_data):
                 extra = extra_message_data[idx] or {}
-                if "rag_trace" in extra:
-                    record["rag_trace"] = extra["rag_trace"]
+                if extra.get("rag_trace") is not None:
+                    new_rag = extra["rag_trace"]
+            if new_rag is not None:
+                record["rag_trace"] = new_rag
+            elif idx < len(old_session_messages):
+                om = old_session_messages[idx]
+                if om.get("type") == msg.type and om.get("content") == msg.content:
+                    old_rag = om.get("rag_trace")
+                    if old_rag is not None:
+                        record["rag_trace"] = old_rag
             serialized.append(record)
 
         data[user_id][session_id] = {
@@ -139,9 +153,12 @@ def create_agent_instance(profile: dict = None):
         "2. 每次对话最多调用一次检索工具，接收到检索结果后，必须立刻基于该结果生成 Final Answer，不可重复调用。\n"
         "3. 如果检索到的知识库内容不足以回答问题，请诚实地说明你不知道，切勿捏造或猜测任何医疗事实。\n"
         "4. 回答结构：在进行详细的医学解读或建议之前，**必须**先在回答的最开头提供一段简明扼要的「深度总结（核心结论）」，让患者或家属能一眼看懂核心要点，然后再分段或分点进行详细的解读。\n"
-        "5. 引用格式：当你的回答参考了检索到的文档块时，**必须**在引用的句子末尾使用 [1] 或 [2][3] 这样的内联序号标注来源。\n"
-        "6. 名词解释：当你提到重要的医学术语、治疗方案、药物或解剖学名词时，**必须**使用 HTML 标签包裹它以提供解释，格式为：<span class=\"concept-tooltip\" data-desc=\"简短的术语解释或定义\">医学名词</span>。这样用户可以在前端点击查看解释。\n"
-        "7. 如果工具返回了退步问题（Step-back）相关的解答，请结合该普遍原理来回答，但不要在最终回复中暴露思考过程（chain-of-thought）。\n"
+        "5. 正文引用：当回答依据了检索到的文档块时，**必须**在相应句子末尾使用 [1] 或 [2][3] 等数字编号；编号须与对话界面中**自动展示的「参考文献」面板**中的条目序号一致（该面板由系统根据检索结果单独渲染，含标题、链接等元数据）。\n"
+        "6. **禁止重复罗列文献**：**不要**在回答正文之后再输出「参考文献」「参考资料」等标题或小节，也**不要**在文末重复列出文献题录或链接——完整来源信息仅由前端参考文献区展示即可，你只需在正文中保留行内编号 [1][2]。\n"
+        "7. 名词解释：当你提到重要的医学术语、治疗方案、药物或解剖学名词时，**必须**使用 HTML 标签包裹它以提供解释，格式为：<span class=\"concept-tooltip\" data-desc=\"简短的术语解释或定义\">医学名词</span>。这样用户可以在前端点击查看解释。\n"
+        "8. 如果工具返回了退步问题（Step-back）相关的解答，请结合该普遍原理来回答，但不要在最终回复中暴露思考过程（chain-of-thought）。\n"
+        "9. **真实性**：严禁伪造来源或编造检索中不存在的医学事实；无法从检索内容核实的信息不要断言。\n"
+        "10. **编号一致性**：正文中出现的 [n] 应对应在本次检索被实际用于论证的要点；不要引用与当前回答无关的编号，以免与界面参考文献序号错位。\n"
         "请始终用中文和用户进行自然、流畅、通俗易懂的交流。\n"
     )
 

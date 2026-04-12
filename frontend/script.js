@@ -297,7 +297,10 @@ createApp({
         },
         
         parseMarkdown(text, msgIndex) {
-            let html = marked.parse(text);
+            // GFM 将 ASCII ~~...~~ 解析为删除线；剂量区间如 65~70Gy、5~5.5 周易被误识别。
+            // 仅替换 U+007E 为全角 U+FF5E，保留波浪号外观且不再触发 strikethrough。
+            const textForMd = text.replace(/\u007E/g, '\uFF5E');
+            let html = marked.parse(textForMd);
             let inCode = false;
             return html.split(/(<[^>]*>)/).map(part => {
                 if (part.startsWith('<')) {
@@ -332,6 +335,63 @@ createApp({
                     }, 2000);
                 }
             }
+        },
+
+        /** 解析 chunk.meta（JSON 字符串或对象）；无效时返回 null */
+        _parseChunkMeta(chunk) {
+            if (!chunk || chunk.meta == null || chunk.meta === '') return null;
+            let raw = chunk.meta;
+            if (typeof raw === 'string') {
+                try {
+                    raw = JSON.parse(raw);
+                } catch {
+                    return null;
+                }
+            }
+            if (!raw || typeof raw !== 'object') return null;
+            return raw;
+        },
+
+        /** 参考文献区展示：优先 meta 各字段，无则回退 filename；有则展示、无则省略 */
+        referenceSourceDisplay(chunk) {
+            const empty = {
+                show: false,
+                headline: '',
+                date: '',
+                journal: '',
+                category: '',
+                linkUrl: '',
+                hasMetaJson: false,
+            };
+            if (!chunk) return empty;
+            const m = this._parseChunkMeta(chunk);
+            const fn = (chunk.filename && String(chunk.filename).trim()) || '';
+            const headline = (m && m.title && String(m.title).trim()) || fn;
+            const date = (m && m.publication_date && String(m.publication_date).trim()) || '';
+            const journal = (m && m.journal_title && String(m.journal_title).trim()) || '';
+            const category = (m && m.category && String(m.category).trim()) || '';
+            const linkUrl = m ? this.literaturePubmedUrl(m) : '';
+            const show = !!(headline || date || journal || category || linkUrl);
+            return {
+                show,
+                headline,
+                date,
+                journal,
+                category,
+                linkUrl,
+                hasMetaJson: !!m,
+            };
+        },
+
+        /** PubMed / 外部网页链接，用于新窗口打开 */
+        literaturePubmedUrl(meta) {
+            if (!meta) return '';
+            const u = String(meta.pubmed_web || '').trim();
+            if (!u) return '';
+            if (/^https?:\/\//i.test(u)) return u;
+            if (u.startsWith('//')) return `https:${u}`;
+            if (/^www\./i.test(u)) return `https://${u}`;
+            return u;
         },
 
         async copyText(text, event) {

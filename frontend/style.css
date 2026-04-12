@@ -521,6 +521,12 @@ body {
     color: var(--primary-color);
 }
 
+.source-type-icon {
+    display: inline-flex;
+    align-items: center;
+    opacity: 0.9;
+}
+
 .source-page {
     color: var(--text-light);
 }
@@ -1709,6 +1715,54 @@ details[open] > .references-title::before {
 
 .ref-page {
     color: var(--text-light);
+}
+
+/* Excel 文献 meta（与 ingest_excel_literature 字段一致） */
+.source-literature-meta {
+    margin: 8px 0 6px 0;
+    padding: 10px 12px;
+    background: rgba(33, 115, 70, 0.06);
+    border-radius: 8px;
+    border-left: 3px solid #217346;
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+
+/* 仅有 filename、无 meta JSON 时略区分样式 */
+.source-literature-meta--filename {
+    background: rgba(44, 62, 80, 0.06);
+    border-left-color: #7f8c8d;
+}
+
+.ref-lit-title {
+    font-weight: 600;
+    color: #1a3d2e;
+    margin-bottom: 6px;
+}
+
+.ref-lit-line {
+    margin-top: 4px;
+    color: #444;
+}
+
+.ref-lit-label {
+    color: var(--text-light);
+    margin-right: 6px;
+    font-size: 0.85rem;
+}
+
+.ref-lit-link-wrap {
+    margin-top: 8px;
+}
+
+.ref-lit-link {
+    color: #217346;
+    font-weight: 500;
+    text-decoration: underline;
+}
+
+.ref-lit-link:hover {
+    color: #14532d;
 }
 
 /* 专有名词高亮气泡 */

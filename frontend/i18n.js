@@ -151,6 +151,11 @@
             '我是专为鼻咽癌患者及家属打造的智能问答助手，你可以向我提问关于病情、治疗、副作用等方面的问题。',
         thinking_default: '正在思考中...',
         references: '参考文献',
+        ref_lit_title_lbl: '标题',
+        ref_lit_date: '发表日期',
+        ref_lit_journal: '期刊',
+        ref_lit_category: '类别',
+        ref_lit_link: '网页链接',
         source_page: ' - 第 {n} 页',
         rrf_rank: 'RRF名次：#{n}',
         rerank_score: 'Rerank分数：{s}',
@@ -201,7 +206,7 @@
         action_up: '赞',
         action_down: '踩',
         disclaimer:
-            '● 免责申明：AI可能会出错，仅供参考，具体以医生诊断为主。',
+            'AI可能会出错，仅供参考，具体以医生诊断为主。',
 
         opt_popup_title: '● 提问优化：我为你推荐了以下更加专业的问题：',
         opt_close: '关闭',
@@ -398,6 +403,11 @@
             'I help nasopharyngeal cancer patients and families with questions on care, treatment, and side effects.',
         thinking_default: 'Thinking...',
         references: 'References',
+        ref_lit_title_lbl: 'Title',
+        ref_lit_date: 'Published',
+        ref_lit_journal: 'Journal',
+        ref_lit_category: 'Category',
+        ref_lit_link: 'Web link',
         source_page: ' — p. {n}',
         rrf_rank: 'RRF #{n}',
         rerank_score: 'Rerank {s}',
@@ -448,7 +458,7 @@
         action_up: 'Upvote',
         action_down: 'Downvote',
         disclaimer:
-            'Disclaimer: AI can make mistakes. For reference only; follow your clinician.',
+            'AI can make mistakes. For reference only; follow your clinician.',
 
         opt_popup_title: 'Question polish — try one of these:',
         opt_close: 'Close',

@@ -1,12 +1,51 @@
 """Milvus 客户端 - 支持密集向量+稀疏向量混合检索"""
+import json
 import os
+from typing import Any
+
 from dotenv import load_dotenv
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
+from pymilvus.orm.constants import UNLIMITED
 
 load_dotenv()
 
 # Milvus 单次 query 的 limit 上限（超出会报 invalid max query result window）
 QUERY_MAX_LIMIT = 16384
+
+
+def _normalize_meta_field(raw: Any) -> dict | None:
+    """动态字段 meta（JSON 字符串或 dict），与 ingest_excel_literature 写入格式一致。"""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return raw if raw else None
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+def _meta_from_search_hit(hit: dict) -> dict | None:
+    """MilvusClient.search 返回的 hit 中 meta 可能在 entity 内。"""
+    if not isinstance(hit, dict):
+        return None
+    ent = hit.get("entity")
+    if isinstance(ent, dict) and ent.get("meta") is not None:
+        return _normalize_meta_field(ent.get("meta"))
+    return _normalize_meta_field(hit.get("meta"))
+
+
+def _meta_from_hybrid_hit(hit: dict) -> dict | None:
+    """hybrid_search 的 hit 多为扁平字段。"""
+    if not isinstance(hit, dict):
+        return None
+    raw = hit.get("meta")
+    if raw is None and isinstance(hit.get("entity"), dict):
+        raw = hit["entity"].get("meta")
+    return _normalize_meta_field(raw)
 
 
 class MilvusManager:
@@ -148,28 +187,28 @@ class MilvusManager:
         output_fields: list[str] | None = None,
         kb_tier: str | None = None,
     ) -> list:
-        """分页拉取匹配 filter 的全部行，避免单次 limit 超过服务端窗口。"""
+        """拉取匹配 filter 的全部行。Milvus 单次 query 要求 offset+limit≤16384，故用 query_iterator 全量遍历。"""
         collection_name = self._collection_name_for_tier(kb_tier)
         self._ensure_connection(kb_tier=kb_tier)
         if not filter_expr:
             filter_expr = "id > 0"
         fields = output_fields or ["filename", "file_type"]
         out: list = []
-        offset = 0
-        while True:
-            batch = self.client.query(
-                collection_name=collection_name,
-                filter=filter_expr,
-                output_fields=fields,
-                limit=QUERY_MAX_LIMIT,
-                offset=offset,
-            )
-            if not batch:
-                break
-            out.extend(batch)
-            if len(batch) < QUERY_MAX_LIMIT:
-                break
-            offset += len(batch)
+        iterator = self.client.query_iterator(
+            collection_name=collection_name,
+            filter=filter_expr,
+            output_fields=fields,
+            batch_size=QUERY_MAX_LIMIT,
+            limit=UNLIMITED,
+        )
+        try:
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                out.extend(batch)
+        finally:
+            iterator.close()
         return out
 
     def get_chunks_by_ids(self, chunk_ids: list[str], kb_tier: str | None = None) -> list[dict]:
@@ -179,7 +218,7 @@ class MilvusManager:
             return []
         quoted_ids = ", ".join([f'"{item}"' for item in ids])
         filter_expr = f"chunk_id in [{quoted_ids}]"
-        return self.query(
+        rows = self.query(
             filter_expr=filter_expr,
             output_fields=[
                 "text",
@@ -191,10 +230,15 @@ class MilvusManager:
                 "root_chunk_id",
                 "chunk_level",
                 "chunk_idx",
+                "meta",
             ],
             limit=len(ids),
             kb_tier=kb_tier,
         )
+        for row in rows:
+            if isinstance(row, dict) and "meta" in row:
+                row["meta"] = _normalize_meta_field(row.get("meta"))
+        return rows
 
     def hybrid_retrieve(
         self,
@@ -226,6 +270,7 @@ class MilvusManager:
             "root_chunk_id",
             "chunk_level",
             "chunk_idx",
+            "meta",
         ]
         
         # 密集向量搜索请求
@@ -272,6 +317,7 @@ class MilvusManager:
                     "root_chunk_id": hit.get("root_chunk_id", ""),
                     "chunk_level": hit.get("chunk_level", 0),
                     "chunk_idx": hit.get("chunk_idx", 0),
+                    "meta": _meta_from_hybrid_hit(hit),
                     "score": hit.get("distance", 0.0)
                 })
         
@@ -305,6 +351,7 @@ class MilvusManager:
                 "root_chunk_id",
                 "chunk_level",
                 "chunk_idx",
+                "meta",
             ],
             filter=filter_expr,
         )
@@ -312,17 +359,19 @@ class MilvusManager:
         formatted_results = []
         for hits in results:
             for hit in hits:
+                ent = hit.get("entity") or {}
                 formatted_results.append({
                     "id": hit.get("id"),
-                    "text": hit.get("entity", {}).get("text", ""),
-                    "filename": hit.get("entity", {}).get("filename", ""),
-                    "file_type": hit.get("entity", {}).get("file_type", ""),
-                    "page_number": hit.get("entity", {}).get("page_number", 0),
-                    "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
-                    "parent_chunk_id": hit.get("entity", {}).get("parent_chunk_id", ""),
-                    "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
-                    "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
-                    "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
+                    "text": ent.get("text", ""),
+                    "filename": ent.get("filename", ""),
+                    "file_type": ent.get("file_type", ""),
+                    "page_number": ent.get("page_number", 0),
+                    "chunk_id": ent.get("chunk_id", ""),
+                    "parent_chunk_id": ent.get("parent_chunk_id", ""),
+                    "root_chunk_id": ent.get("root_chunk_id", ""),
+                    "chunk_level": ent.get("chunk_level", 0),
+                    "chunk_idx": ent.get("chunk_idx", 0),
+                    "meta": _meta_from_search_hit(hit),
                     "score": hit.get("distance", 0.0)
                 })
         
@@ -354,6 +403,7 @@ class MilvusManager:
                 "root_chunk_id",
                 "chunk_level",
                 "chunk_idx",
+                "meta",
             ],
             filter=filter_expr,
         )
@@ -361,17 +411,19 @@ class MilvusManager:
         formatted_results = []
         for hits in results:
             for hit in hits:
+                ent = hit.get("entity") or {}
                 formatted_results.append({
                     "id": hit.get("id"),
-                    "text": hit.get("entity", {}).get("text", ""),
-                    "filename": hit.get("entity", {}).get("filename", ""),
-                    "file_type": hit.get("entity", {}).get("file_type", ""),
-                    "page_number": hit.get("entity", {}).get("page_number", 0),
-                    "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
-                    "parent_chunk_id": hit.get("entity", {}).get("parent_chunk_id", ""),
-                    "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
-                    "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
-                    "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
+                    "text": ent.get("text", ""),
+                    "filename": ent.get("filename", ""),
+                    "file_type": ent.get("file_type", ""),
+                    "page_number": ent.get("page_number", 0),
+                    "chunk_id": ent.get("chunk_id", ""),
+                    "parent_chunk_id": ent.get("parent_chunk_id", ""),
+                    "root_chunk_id": ent.get("root_chunk_id", ""),
+                    "chunk_level": ent.get("chunk_level", 0),
+                    "chunk_idx": ent.get("chunk_idx", 0),
+                    "meta": _meta_from_search_hit(hit),
                     "score": hit.get("distance", 0.0)
                 })
         return formatted_results

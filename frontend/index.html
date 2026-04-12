@@ -617,12 +617,30 @@
                                     <li v-for="(chunk, cIdx) in msg.ragTrace.retrieved_chunks" :key="cIdx" class="source-item" :id="'chunk-' + index + '-' + (cIdx + 1)">
                                         <div class="source-title-line">
                                             <span class="ref-index cite-ref" :data-msg-index="index" :data-chunk-index="cIdx + 1">[{{ cIdx + 1 }}]</span>
-                                            <span class="source-file">
-                                                <i v-if="chunk.filename.includes('Graph')" class="fas fa-project-diagram" style="color: #9b59b6; margin-right: 4px;"></i>
-                                                <i v-else class="fas fa-file-pdf" style="color: #e74c3c; margin-right: 4px;"></i>
-                                                {{ chunk.filename }}
+                                            <span class="source-type-icon" aria-hidden="true">
+                                                <i v-if="referenceSourceDisplay(chunk).hasMetaJson" class="fas fa-table" style="color: #217346;"></i>
+                                                <i v-else-if="chunk.filename && chunk.filename.includes('Graph')" class="fas fa-project-diagram" style="color: #9b59b6;"></i>
+                                                <i v-else class="fas fa-file-pdf" style="color: #e74c3c;"></i>
                                             </span>
                                             <span v-if="chunk.page_number && chunk.page_number !== 'Graph'" class="source-page">{{ t('source_page', { n: chunk.page_number }) }}</span>
+                                        </div>
+                                        <div v-if="referenceSourceDisplay(chunk).show" class="source-literature-meta" :class="{ 'source-literature-meta--filename': !referenceSourceDisplay(chunk).hasMetaJson }">
+                                            <div v-if="referenceSourceDisplay(chunk).headline" class="ref-lit-title">{{ referenceSourceDisplay(chunk).headline }}</div>
+                                            <div v-if="referenceSourceDisplay(chunk).date" class="ref-lit-line">
+                                                <span class="ref-lit-label">{{ t('ref_lit_date') }}</span>
+                                                <span>{{ referenceSourceDisplay(chunk).date }}</span>
+                                            </div>
+                                            <div v-if="referenceSourceDisplay(chunk).journal" class="ref-lit-line">
+                                                <span class="ref-lit-label">{{ t('ref_lit_journal') }}</span>
+                                                <span>{{ referenceSourceDisplay(chunk).journal }}</span>
+                                            </div>
+                                            <div v-if="referenceSourceDisplay(chunk).category" class="ref-lit-line">
+                                                <span class="ref-lit-label">{{ t('ref_lit_category') }}</span>
+                                                <span>{{ referenceSourceDisplay(chunk).category }}</span>
+                                            </div>
+                                            <div v-if="referenceSourceDisplay(chunk).linkUrl" class="ref-lit-line ref-lit-link-wrap">
+                                                <a :href="referenceSourceDisplay(chunk).linkUrl" target="_blank" rel="noopener noreferrer" class="ref-lit-link">{{ t('ref_lit_link') }}</a>
+                                            </div>
                                         </div>
                                         <div class="source-meta-line">
                                             <span class="source-page">{{ t('rrf_rank', { n: chunk.rrf_rank || (cIdx + 1) }) }}</span>
