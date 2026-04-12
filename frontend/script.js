@@ -982,15 +982,35 @@ createApp({
             if (day == null) return [];
             return this.followUpEventsByDate[this.followUpDateKey(day)] || [];
         },
+        /** 复诊日历：明亮莫兰迪色块（按标题/说明关键词粗分） */
+        followUpEventJewelClass(ev) {
+            const raw = `${(ev && ev.title) || ''} ${(ev && ev.detail) || ''}`;
+            if (/化疗|放疗|化学|放射|chemo|radiation/i.test(raw)) return 'cal-jewel--core';
+            if (/住院|挂号|手术|入院|门诊|procedure|admission/i.test(raw)) return 'cal-jewel--proc';
+            if (/血常规|白细胞|血小板|化验|血象|lab|cbc|生化/i.test(raw)) return 'cal-jewel--labs';
+            if (/升白|g-csf|粒细胞|刺激因子/i.test(raw)) return 'cal-jewel--support';
+            if (/pet|ct|mri|核磁|复查|大检查|staging|scan|增强/i.test(raw)) return 'cal-jewel--milestone';
+            return 'cal-jewel--default';
+        },
+        isFollowUpDayPast(day) {
+            if (day == null) return false;
+            const d = new Date(this.followUpCalendarYear, this.followUpCalendarMonth - 1, day);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            d.setHours(0, 0, 0, 0);
+            return d < today;
+        },
         calCellDynamicClass(cell) {
             const has =
                 cell &&
                 cell.day &&
                 this.followUpEventsForDay(cell.day).length > 0;
+            const past = !!(cell && cell.day && this.isFollowUpDayPast(cell.day));
             return {
                 'cal-cell--muted': !cell.day,
                 'cal-cell--mark': cell.day && has,
                 'cal-cell-interactive': !!has,
+                'cal-cell--past': past && cell.day,
             };
         },
         _clampFollowUpBubblePos(clientX, clientY) {

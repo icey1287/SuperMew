@@ -4,8 +4,8 @@
  */
 (function (global) {
     const ZH = {
-        page_title: '喵喵智能助手',
-        brand_short: '喵喵助手',
+        page_title: '医疗智能助手',
+        brand_short: '医疗助手',
         nav_new_chat: '新建会话',
         nav_history: '历史记录',
         nav_settings: '知识库设置',
@@ -136,7 +136,7 @@
         dict_enter_term: '请输入要查询的术语。',
         dict_query_fail: '查询失败，请检查网络或稍后重试。（术语以英文为主）',
 
-        status_online: '喵喵在线中...',
+        status_online: '助手在线',
         think_mode_label: '思考模式：',
         think_fast: '快速',
         think_normal: '正常',
@@ -146,9 +146,9 @@
         think_hover_deep: '深度：详细知识库；召回大量知识；启用重排序，检索范围更大、上下文更完整。',
         more_btn: '更多',
 
-        welcome_title: '你好呀！我是喵喵',
+        welcome_title: '您好，我是医疗智能助手',
         welcome_body:
-            '我是专为鼻咽癌患者及家属打造的智能问答助手，你可以向我提问关于病情、治疗、副作用等方面的问题。',
+            '面向鼻咽癌患者与家属，提供病情、治疗与副作用等医学信息检索与说明。内容仅供参考，请以临床医生诊断为准。',
         thinking_default: '正在思考中...',
         references: '参考文献',
         ref_lit_title_lbl: '标题',
@@ -216,7 +216,7 @@
         preset_dict: '术语字典',
         preset_optimize: '提问优化',
         preset_optimize_ing: '优化中...',
-        input_placeholder: '和喵喵说点什么吧... (Shift+Enter 换行)',
+        input_placeholder: '请输入您的问题…（Shift+Enter 换行）',
         send_stop: '终止回答',
         send_go: '发送',
         footer_ai_note: 'AI 生成的内容可能包含错误，请仔细甄别。',
@@ -225,7 +225,7 @@
         preset_q_report: '请帮我详细解读我上传的病历报告和化验指标，告诉我目前的病情和注意事项。',
 
         err_copy: '复制失败，您的浏览器不支持该功能。',
-        confirm_clear: '确定要清空当前对话吗？喵？',
+        confirm_clear: '确定要清空当前对话吗？',
         err_load_sessions: '加载历史记录失败：',
         err_load_session: '加载会话失败：',
         confirm_delete_session: '确定要删除会话 "{id}" 吗？',
@@ -239,7 +239,7 @@
         err_opt_fail: '优化提问请求失败，请稍后再试。',
         stream_stopped: '(已终止回答)',
         stream_stopped_note: '_(回答已被终止)_',
-        stream_error_prefix: '喵呜... 出了点问题：',
+        stream_error_prefix: '请求出现问题：',
         pick_discharge_first: '请选择出院报告 PDF 或图片',
         confirm_delete_discharge: '确定删除出院报告「{name}」？随访日历中的相关日期将一并移除。',
         err_delete_discharge: '删除失败：',
@@ -256,8 +256,8 @@
     };
 
     const EN = {
-        page_title: 'MewMew Assistant',
-        brand_short: 'MewMew',
+        page_title: 'Clinical Assistant',
+        brand_short: 'Med Assistant',
         nav_new_chat: 'New chat',
         nav_history: 'History',
         nav_settings: 'Knowledge base',
@@ -388,7 +388,7 @@
         dict_enter_term: 'Enter a search term.',
         dict_query_fail: 'Search failed. Check network. (Terms are mostly English.)',
 
-        status_online: 'Online',
+        status_online: 'Assistant online',
         think_mode_label: 'Reasoning:',
         think_fast: 'Fast',
         think_normal: 'Normal',
@@ -398,9 +398,9 @@
         think_hover_deep: 'Deep: detailed KB, larger recall and rerank — richer context.',
         more_btn: 'More',
 
-        welcome_title: 'Hi, I am MewMew',
+        welcome_title: 'Clinical assistant',
         welcome_body:
-            'I help nasopharyngeal cancer patients and families with questions on care, treatment, and side effects.',
+            'For nasopharyngeal cancer patients and families: care, treatment, and side effects. Information is for reference only; follow your clinician.',
         thinking_default: 'Thinking...',
         references: 'References',
         ref_lit_title_lbl: 'Title',
@@ -468,7 +468,7 @@
         preset_dict: 'Term lookup',
         preset_optimize: 'Polish question',
         preset_optimize_ing: 'Polishing...',
-        input_placeholder: 'Message MewMew… (Shift+Enter for newline)',
+        input_placeholder: 'Type your question… (Shift+Enter for newline)',
         send_stop: 'Stop',
         send_go: 'Send',
         footer_ai_note: 'AI output may contain errors — verify important facts.',

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>喵喵智能助手</title>
+    <title>医疗智能助手</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="vendor/fonts/google-fonts.css">
     <link rel="stylesheet" href="vendor/css/all.min.css">
@@ -32,7 +32,7 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
-                <div class="logo-icon">🐱</div>
+                <div class="logo-icon" aria-hidden="true"><i class="fas fa-leaf"></i></div>
                 <h2>{{ t('brand_short') }}</h2>
             </div>
             <nav class="sidebar-nav">
@@ -153,7 +153,7 @@
                     <p>{{ t('profile_intro') }}</p>
                 </div>
 
-                <div class="upload-section">
+                <div class="upload-section upload-section--medical">
                     <h3><i class="fas fa-file-medical"></i> {{ t('upload_medical_title') }}</h3>
                     <div class="upload-area">
                         <input 
@@ -163,18 +163,18 @@
                             accept=".pdf,.jpg,.jpeg,.png"
                             style="display: none"
                         />
-                        <div class="upload-buttons" style="display: flex; gap: 10px;" v-if="userProfile && userProfile.records && userProfile.records.length > 0">
-                            <button @click="triggerProfileUpload" class="upload-btn" style="background: linear-gradient(135deg, #a8c0ff, #3f2b96);">
+                        <div class="upload-buttons upload-buttons-row" v-if="userProfile && userProfile.records && userProfile.records.length > 0">
+                            <button @click="triggerProfileUpload" class="upload-btn upload-btn--medical">
                                 <i class="fas fa-plus-circle"></i> {{ t('upload_new_report') }}
                             </button>
                         </div>
-                        <button v-else @click="triggerProfileUpload" class="upload-btn" style="background: linear-gradient(135deg, #a8c0ff, #3f2b96);">
+                        <button v-else @click="triggerProfileUpload" class="upload-btn upload-btn--medical">
                             <i class="fas fa-camera"></i> {{ t('choose_image_pdf') }}
                         </button>
 
-                        <div v-if="selectedProfileFile" class="selected-file">
+                        <div v-if="selectedProfileFile" class="selected-file selected-file--medical">
                             <i class="fas fa-file-medical-alt"></i> {{ selectedProfileFile.name }}
-                            <button @click="uploadProfile" class="btn-primary" :disabled="isUploadingProfile" style="background-color: #3f2b96;">
+                            <button @click="uploadProfile" class="btn-primary btn-primary--medical" :disabled="isUploadingProfile">
                                 <i class="fas fa-upload"></i> {{ isUploadingProfile ? t('extract_ing') : t('extract_start') }}
                             </button>
                         </div>
@@ -184,7 +184,7 @@
                     </div>
                 </div>
 
-                <div class="upload-section discharge-upload-section">
+                <div class="upload-section upload-section--discharge discharge-upload-section">
                     <h3><i class="fas fa-file-contract"></i> {{ t('discharge_title') }}</h3>
                     <p class="discharge-upload-hint">{{ t('discharge_hint') }}</p>
                     <div class="upload-area">
@@ -195,12 +195,12 @@
                             accept=".pdf,.jpg,.jpeg,.png"
                             style="display: none"
                         />
-                        <button type="button" @click="triggerDischargeUpload" class="upload-btn" style="background: linear-gradient(135deg, #89c4f4, #2563b8);">
+                        <button type="button" @click="triggerDischargeUpload" class="upload-btn upload-btn--discharge">
                             <i class="fas fa-file-upload"></i> {{ t('choose_discharge') }}
                         </button>
-                        <div v-if="selectedDischargeFile" class="selected-file">
+                        <div v-if="selectedDischargeFile" class="selected-file selected-file--discharge">
                             <i class="fas fa-file-alt"></i> {{ selectedDischargeFile.name }}
-                            <button type="button" @click="uploadDischargeReport" class="btn-primary" :disabled="isUploadingDischarge" style="background-color: #2563b8;">
+                            <button type="button" @click="uploadDischargeReport" class="btn-primary btn-primary--discharge" :disabled="isUploadingDischarge">
                                 <i class="fas fa-cloud-upload-alt"></i> {{ isUploadingDischarge ? t('discharge_parse_ing') : t('discharge_parse_start') }}
                             </button>
                         </div>
@@ -307,7 +307,12 @@
                                 <template v-if="cell.day">
                                     <span class="cal-day-num">{{ cell.day }}</span>
                                     <ul class="cal-day-events" v-if="followUpEventsForDay(cell.day).length">
-                                        <li v-for="(ev, ei) in followUpEventsForDay(cell.day)" :key="'e'+ei" :title="ev.detail || ev.title">
+                                        <li
+                                            v-for="(ev, ei) in followUpEventsForDay(cell.day)"
+                                            :key="'e'+ei"
+                                            :title="ev.detail || ev.title"
+                                            :class="followUpEventJewelClass(ev)"
+                                        >
                                             {{ ev.title }}
                                         </li>
                                     </ul>
@@ -315,7 +320,8 @@
                             </div>
                         </template>
                     </div>
-                    <!-- 复诊日详情气泡（新增交互层，不修改原日历格样式类） -->
+                    <!-- 挂到 body：避免祖先层 backdrop-filter 使 fixed 定位错位 -->
+                    <teleport to="body">
                     <div
                         v-if="followUpBubbleVisible"
                         class="follow-up-cal-bubble-overlay"
@@ -341,6 +347,7 @@
                             </ul>
                         </div>
                     </div>
+                    </teleport>
                 </div>
 
                 <div class="documents-section discharge-list-section" v-if="userProfile && userProfile.discharge_reports && userProfile.discharge_reports.length > 0">
@@ -579,7 +586,7 @@
 
                 <div class="chat-container" ref="chatContainer">
                 <div v-if="messages.length === 0" class="welcome-screen">
-                    <div class="big-avatar">🐱</div>
+                    <div class="big-avatar" aria-hidden="true"><i class="fas fa-seedling"></i></div>
                     <h3>{{ t('welcome_title') }}</h3>
                     <p style="color: var(--text-light); font-size: 0.95rem; margin-bottom: 20px;">{{ t('welcome_body') }}</p>
                 </div>
@@ -845,11 +852,19 @@
             </div>
             <!-- End of Chat Area -->
             
-            <!-- Global Concept Tooltip -->
-            <div id="global-tooltip" class="tooltip-bubble" ref="globalTooltip" v-show="showTooltip" :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }">
-                <div class="tooltip-content">{{ tooltipText }}</div>
-                <div class="tooltip-arrow"></div>
-            </div>
+            <!-- 挂到 body：避免祖先 backdrop-filter 导致 fixed 与 getBoundingClientRect 不一致 -->
+            <teleport to="body">
+                <div
+                    id="global-tooltip"
+                    class="tooltip-bubble"
+                    ref="globalTooltip"
+                    v-show="showTooltip"
+                    :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }"
+                >
+                    <div class="tooltip-content">{{ tooltipText }}</div>
+                    <div class="tooltip-arrow"></div>
+                </div>
+            </teleport>
         </main>
         </div>
     </div>
