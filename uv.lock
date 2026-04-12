@@ -3996,6 +3996,7 @@ name = "supermew"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "beautifulsoup4" },
     { name = "docx2txt" },
     { name = "fastapi" },
     { name = "langchain" },
@@ -4031,6 +4032,7 @@ study = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "bilibili-api-python", marker = "extra == 'study'", specifier = ">=17.0.0" },
     { name = "chromadb", marker = "extra == 'study'", specifier = ">=0.5.5" },
     { name = "docx2txt", specifier = ">=0.8" },

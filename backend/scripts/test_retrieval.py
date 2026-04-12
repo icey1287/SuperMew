@@ -1,4 +1,21 @@
-from backend.rag_utils import _milvus_manager, _embedding_service, _get_medical_graph
+"""本地检索 / 图谱冒烟（需 Milvus、Neo4j、embedding 可用）。"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = SCRIPTS_DIR.parent
+ROOT = BACKEND_DIR.parent
+sys.path.insert(0, str(BACKEND_DIR))
+os.chdir(BACKEND_DIR)
+
+from dotenv import load_dotenv
+
+load_dotenv(ROOT / ".env")
+
+from rag_utils import _embedding_service, _get_medical_graph, _milvus_manager
 
 query = "系统性轻链淀粉样变性的临床表现"
 sparse_emb = _embedding_service.get_sparse_embedding(query)

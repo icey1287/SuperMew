@@ -135,30 +135,57 @@ class DocumentLoader:
         elif file_lower.endswith((".xlsx", ".xls")):
             doc_type = "Excel"
             loader = UnstructuredExcelLoader(file_path)
+        elif file_lower.endswith((".html", ".htm")):
+            doc_type = "HTML"
+            try:
+                from html_processor import load_html_for_document_loader
+
+                raw_docs = load_html_for_document_loader(file_path, filename)
+                return self._load_from_langchain_docs(raw_docs, file_path, filename, doc_type)
+            except Exception as e:
+                raise Exception(f"处理文档失败: {str(e)}")
         else:
             raise ValueError(f"不支持的文件类型: {filename}")
 
         try:
             raw_docs = loader.load()
-            documents = []
-            page_global_chunk_idx = 0
-            for doc in raw_docs:
-                base_doc = {
-                    "filename": filename,
-                    "file_path": file_path,
-                    "file_type": doc_type,
-                    "page_number": doc.metadata.get("page", 0),
-                }
-                page_chunks = self._split_page_to_three_levels(
-                    text=(doc.page_content or "").strip(),
-                    base_doc=base_doc,
-                    page_global_chunk_idx=page_global_chunk_idx,
-                )
-                page_global_chunk_idx += len(page_chunks)
-                documents.extend(page_chunks)
-            return documents
+            return self._load_from_langchain_docs(raw_docs, file_path, filename, doc_type)
         except Exception as e:
             raise Exception(f"处理文档失败: {str(e)}")
+
+    def _load_from_langchain_docs(
+        self,
+        raw_docs: list,
+        file_path: str,
+        filename: str,
+        doc_type: str,
+    ) -> list[dict]:
+        """将 LangChain Document 列表转为带三层分块的项目内部结构。"""
+        documents: list[dict] = []
+        page_global_chunk_idx = 0
+        for doc in raw_docs:
+            meta = getattr(doc, "metadata", None) or {}
+            page_num = meta.get("page", 0)
+            if page_num is None:
+                page_num = 0
+            try:
+                page_num = int(page_num)
+            except (TypeError, ValueError):
+                page_num = 0
+            base_doc = {
+                "filename": filename,
+                "file_path": file_path,
+                "file_type": doc_type,
+                "page_number": page_num,
+            }
+            page_chunks = self._split_page_to_three_levels(
+                text=(doc.page_content or "").strip(),
+                base_doc=base_doc,
+                page_global_chunk_idx=page_global_chunk_idx,
+            )
+            page_global_chunk_idx += len(page_chunks)
+            documents.extend(page_chunks)
+        return documents
 
     def load_documents_from_folder(self, folder_path: str) -> list[dict]:
         """
@@ -170,7 +197,12 @@ class DocumentLoader:
 
         for filename in os.listdir(folder_path):
             file_lower = filename.lower()
-            if not (file_lower.endswith(".pdf") or file_lower.endswith((".docx", ".doc")) or file_lower.endswith((".xlsx", ".xls"))):
+            if not (
+                file_lower.endswith(".pdf")
+                or file_lower.endswith((".docx", ".doc"))
+                or file_lower.endswith((".xlsx", ".xls"))
+                or file_lower.endswith((".html", ".htm"))
+            ):
                 continue
 
             file_path = os.path.join(folder_path, filename)

@@ -311,8 +311,13 @@ async def upload_document(file: UploadFile = File(...), kb_tier: str = Form(defa
         tier = _normalize_kb_tier(kb_tier)
         filename = file.filename
         file_lower = filename.lower()
-        if not (file_lower.endswith(".pdf") or file_lower.endswith((".docx", ".doc")) or file_lower.endswith((".xlsx", ".xls"))):
-            raise HTTPException(status_code=400, detail="仅支持 PDF、Word 和 Excel 文档")
+        if not (
+            file_lower.endswith(".pdf")
+            or file_lower.endswith((".docx", ".doc"))
+            or file_lower.endswith((".xlsx", ".xls"))
+            or file_lower.endswith((".html", ".htm"))
+        ):
+            raise HTTPException(status_code=400, detail="仅支持 PDF、Word、Excel 与 HTML 文档")
 
         target_upload_dir = UPLOAD_DIR / tier
         os.makedirs(target_upload_dir, exist_ok=True)

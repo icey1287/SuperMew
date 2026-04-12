@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Graph RAG 冒烟：Dense+Sparse RRF（Milvus）+ Neo4j 图谱合并。
-从仓库根目录执行：uv run python backend/test_graph_rag_flow.py
+从仓库根目录执行：uv run python backend/scripts/test_graph_rag_flow.py
 """
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-BACKEND = Path(__file__).resolve().parent
-sys.path.insert(0, str(BACKEND))
-os.chdir(BACKEND)
+SCRIPTS_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = SCRIPTS_DIR.parent
+ROOT = BACKEND_DIR.parent
+sys.path.insert(0, str(BACKEND_DIR))
+os.chdir(BACKEND_DIR)
 
 from dotenv import load_dotenv
 

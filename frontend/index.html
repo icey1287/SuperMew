@@ -50,7 +50,7 @@
             <div v-if="activeNav === 'settings'" class="settings-panel">
                 <div class="settings-header">
                     <h2><i class="fas fa-cog"></i> 文档管理</h2>
-                    <p>知识库已拆分为简要/详细两套独立向量库；上传、列表、删除均仅作用于当前选择的库。</p>
+                    <p>知识库已拆分为简要/详细两套独立向量库；支持 PDF、Word、Excel、<strong>HTML</strong>；上传、列表、删除均仅作用于当前选择的库。</p>
                 </div>
                 <div class="kb-tier-switch">
                     <span class="kb-tier-switch-label">知识库分层：</span>
@@ -71,7 +71,7 @@
                             type="file" 
                             ref="fileInput" 
                             @change="handleFileSelect"
-                            accept=".pdf,.doc,.docx,.xls,.xlsx"
+                            accept=".pdf,.doc,.docx,.xls,.xlsx,.html,.htm"
                             style="display: none"
                         />
                         <button @click="$refs.fileInput.click()" class="upload-btn">

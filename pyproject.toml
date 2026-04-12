@@ -29,6 +29,7 @@ dependencies = [
     "openpyxl",
     "tabulate",
     "msoffcrypto-tool",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]

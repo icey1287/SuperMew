@@ -77,7 +77,7 @@ class MilvusManager:
             schema.add_field("sparse_embedding", DataType.SPARSE_FLOAT_VECTOR)
             
             # 文本和元数据字段
-            schema.add_field("text", DataType.VARCHAR, max_length=2000)
+            schema.add_field("text", DataType.VARCHAR, max_length=2400)
             schema.add_field("filename", DataType.VARCHAR, max_length=255)
             schema.add_field("file_type", DataType.VARCHAR, max_length=50)
             schema.add_field("file_path", DataType.VARCHAR, max_length=1024)
