@@ -18,6 +18,7 @@ createApp({
             isUploading: false,
             uploadProgress: '',
             uploadSteps: [],
+            uploadProgressCollapsed: false,
             activeUploadJobId: '',
             uploadPollTimer: null,
             token: localStorage.getItem('accessToken') || '',
@@ -428,6 +429,7 @@ createApp({
                 this.selectedFile = files[0];
                 this.uploadProgress = '';
                 this.uploadSteps = this.createUploadSteps();
+                this.uploadProgressCollapsed = false;
                 this.activeUploadJobId = '';
             }
         },
@@ -514,6 +516,14 @@ createApp({
                     message: step.message || ''
                 }));
             }
+            // 入库成功后自动收起步骤明细，保留摘要供用户再次展开查看。
+            if (job.status === 'completed') {
+                this.uploadProgressCollapsed = true;
+            }
+        },
+
+        toggleUploadProgressCollapsed() {
+            this.uploadProgressCollapsed = !this.uploadProgressCollapsed;
         },
 
         stopUploadJobPolling() {
@@ -569,6 +579,7 @@ createApp({
             this.isUploading = true;
             this.uploadProgress = '正在上传...';
             this.uploadSteps = this.createUploadSteps();
+            this.uploadProgressCollapsed = false;
             this.updateUploadStep('upload', 0, 'running', '准备上传');
 
             try {

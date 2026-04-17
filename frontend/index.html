@@ -99,9 +99,13 @@
                                 <i class="fas fa-upload"></i> {{ isUploading ? '上传中...' : '开始上传' }}
                             </button>
                         </div>
-                        <div v-if="uploadSteps.length" class="upload-progress">
-                            <div v-if="uploadProgress" class="upload-message">{{ uploadProgress }}</div>
-                            <div class="upload-step-list">
+                        <div v-if="uploadSteps.length" class="upload-progress" :class="{ collapsed: uploadProgressCollapsed }">
+                            <button type="button" class="upload-progress-header" @click="toggleUploadProgressCollapsed">
+                                <span v-if="uploadProgress" class="upload-message">{{ uploadProgress }}</span>
+                                <span v-else class="upload-message">上传进度</span>
+                                <span class="upload-toggle">{{ uploadProgressCollapsed ? '展开' : '收起' }}</span>
+                            </button>
+                            <div v-show="!uploadProgressCollapsed" class="upload-step-list">
                                 <div
                                     v-for="step in uploadSteps"
                                     :key="step.key"
