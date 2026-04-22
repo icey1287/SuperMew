@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextlib import contextmanager
 from typing import List, Tuple, Dict, Any, Optional
 import os
 import json
@@ -22,6 +23,8 @@ RERANK_API_KEY = os.getenv("RERANK_API_KEY")
 AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
 LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
+# 关闭后为 Dense 优先、Sparse 按序去重拼接（不做 RRF 名次融合），用于消融实验
+HYBRID_RRF_ENABLED = os.getenv("HYBRID_RRF_ENABLED", "true").lower() != "false"
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
@@ -370,7 +373,52 @@ def _compute_rrf(*result_lists: List[List[dict]], k: int = 60, top_k: int = 5) -
     return fused_docs
 
 
+def _concat_dense_sparse_candidates(
+    dense_results: List[dict],
+    sparse_results: List[dict],
+    top_k: int,
+) -> List[dict]:
+    """Dense 优先，再按 Sparse 顺序补全去重，作为关闭 RRF 时的双路候选基线。"""
+    seen: set = set()
+    out: List[dict] = []
+    for doc in dense_results + sparse_results:
+        key = doc.get("chunk_id") or doc.get("text", "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged = dict(doc)
+        out.append(merged)
+        if len(out) >= top_k:
+            break
+    for rank, doc in enumerate(out, 1):
+        doc["rrf_rank"] = rank
+        doc["rrf_score"] = float(top_k - rank + 1)
+    return out
+
+
 from tools import get_rag_config
+
+
+@contextmanager
+def _milvus_collection_scope(config: dict):
+    """按 rag_config 临时切换 brief/detailed 集合名，结束后恢复（用于多子块尺度 Milvus 索引切换）。"""
+    global _milvus_manager
+    brief_ov = (config.get("milvus_collection_brief") or "").strip()
+    detailed_ov = (config.get("milvus_collection_detailed") or "").strip()
+    if not brief_ov and not detailed_ov:
+        yield
+        return
+    old_b = _milvus_manager.collection_brief
+    old_d = _milvus_manager.collection_detailed
+    try:
+        if brief_ov:
+            _milvus_manager.collection_brief = brief_ov
+        if detailed_ov:
+            _milvus_manager.collection_detailed = detailed_ov
+        yield
+    finally:
+        _milvus_manager.collection_brief = old_b
+        _milvus_manager.collection_detailed = old_d
 
 
 def retrieve_documents(
@@ -395,9 +443,19 @@ def retrieve_documents(
         candidate_k = 15
         final_top_k = 10
         skip_rerank = False
-        
+
+    # 网格评测 / API 注入：覆盖 Top-K、候选池、是否跳过 rerank、Milvus 集合
+    if config.get("candidate_k") is not None:
+        candidate_k = int(config["candidate_k"])
+    if config.get("final_top_k") is not None:
+        final_top_k = int(config["final_top_k"])
+    if config.get("skip_rerank") is not None:
+        skip_rerank = bool(config["skip_rerank"])
+    if candidate_k < final_top_k:
+        candidate_k = final_top_k
+
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
-    
+
     dense_embedding = []
     sparse_embedding = {}
     try:
@@ -408,138 +466,151 @@ def retrieve_documents(
     except Exception as e:
         print(f"Embedding generation error: {e}")
 
-    # 1. 密集向量检索 (Dense)
-    dense_results = []
-    if dense_embedding:
-        try:
-            dense_results = _milvus_manager.dense_retrieve(
-                dense_embedding=dense_embedding,
-                top_k=candidate_k,
-                filter_expr=filter_expr,
-                kb_tier=kb_tier,
-            )
-            emit_rag_step("🎯", f"密集向量(Dense)召回", f"获取 {len(dense_results)} 个候选片段")
-        except Exception as e:
-            print(f"Dense retrieve error: {e}")
+    with _milvus_collection_scope(config):
+        # 1. 密集向量检索 (Dense)
+        dense_results = []
+        if dense_embedding:
+            try:
+                dense_results = _milvus_manager.dense_retrieve(
+                    dense_embedding=dense_embedding,
+                    top_k=candidate_k,
+                    filter_expr=filter_expr,
+                    kb_tier=kb_tier,
+                )
+                emit_rag_step("🎯", f"密集向量(Dense)召回", f"获取 {len(dense_results)} 个候选片段")
+            except Exception as e:
+                print(f"Dense retrieve error: {e}")
 
-    # 2. 稀疏向量检索 (Sparse / BM25)
-    sparse_results = []
-    if sparse_embedding:
-        try:
-            sparse_results = _milvus_manager.sparse_retrieve(
-                sparse_embedding=sparse_embedding,
-                top_k=candidate_k,
-                filter_expr=filter_expr,
-                kb_tier=kb_tier,
-            )
-            emit_rag_step("🔤", f"关键字(Sparse)召回", f"获取 {len(sparse_results)} 个候选片段")
-        except Exception as e:
-            print(f"Sparse retrieve error: {e}")
+        # 2. 稀疏向量检索 (Sparse / BM25)
+        sparse_results = []
+        if sparse_embedding:
+            try:
+                sparse_results = _milvus_manager.sparse_retrieve(
+                    sparse_embedding=sparse_embedding,
+                    top_k=candidate_k,
+                    filter_expr=filter_expr,
+                    kb_tier=kb_tier,
+                )
+                emit_rag_step("🔤", f"关键字(Sparse)召回", f"获取 {len(sparse_results)} 个候选片段")
+            except Exception as e:
+                print(f"Sparse retrieve error: {e}")
 
-    # 3. 图谱检索不进入 RRF；在向量结果确定后，按 entity_query 单独拉取 Neo4j 上下文并合并。
-    eq = (entity_query if entity_query is not None else query).strip()
+        # 3. 图谱检索不进入 RRF；在向量结果确定后，按 entity_query 单独拉取 Neo4j 上下文并合并。
+        eq = (entity_query if entity_query is not None else query).strip()
 
-    # 本地 RRF：仅 Dense + Sparse 两路
-    retrieved = _compute_rrf(dense_results, sparse_results, k=60, top_k=candidate_k)
-    emit_rag_step("🔀", "多路 RRF 混合重排", f"Dense+Sparse 两路融合 Top {len(retrieved)} 候选")
-
-    if not retrieved:
-        merged_context, graph_extra = _merge_graph_and_vector_context(
-            [], eq, include_graph=include_graph_merge
-        )
-        if graph_extra.get("graph_kb_applied"):
-            emit_rag_step(
-                "🕸️",
-                "知识图谱(Neo4j)",
-                _graph_step_detail(graph_extra) + " · 向量无命中，仅图谱上下文",
-            )
-        mode = "graph_only" if graph_extra.get("graph_kb_applied") else "failed"
-        return {
-            "docs": [],
-            "merged_context": merged_context,
-            "meta": {
-                "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
-                "rerank_applied": False,
-                "rerank_model": RERANK_MODEL,
-                "rerank_endpoint": _get_rerank_endpoint(),
-                "rerank_error": "all_retrieve_failed" if mode == "failed" else None,
-                "retrieval_mode": mode,
-                "kb_tier": kb_tier,
-                "candidate_k": candidate_k,
-                "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                "auto_merge_enabled": AUTO_MERGE_ENABLED,
-                "auto_merge_applied": False,
-                "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-                "auto_merge_replaced_chunks": 0,
-                "auto_merge_steps": 0,
-                "candidate_count": 0,
-                "dense_count": len(dense_results),
-                "sparse_count": len(sparse_results),
-                **graph_extra,
-            },
-        }
-
-    # 重新排序并使用自动合并 (Auto-merging) 与 Reranker
-    try:
-        if skip_rerank:
-            for i, doc in enumerate(retrieved[:final_top_k], 1):
-                doc["rerank_score"] = doc.get("rrf_score", 0.0)
-            reranked = retrieved[:final_top_k]
-            rerank_meta = {
-                "rerank_enabled": False,
-                "rerank_applied": False,
-                "rerank_model": None,
-                "rerank_endpoint": None,
-                "rerank_error": "skipped_by_think_mode",
-                "candidate_count": len(retrieved),
-            }
+        # 本地双路融合：默认 RRF；HYBRID_RRF_ENABLED=false 时为 Dense 优先 + Sparse 去重拼接（消融）
+        if HYBRID_RRF_ENABLED:
+            retrieved = _compute_rrf(dense_results, sparse_results, k=60, top_k=candidate_k)
+            emit_rag_step("🔀", "多路 RRF 混合重排", f"Dense+Sparse 两路融合 Top {len(retrieved)} 候选")
         else:
-            reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=final_top_k)
-            
-        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=final_top_k, kb_tier=kb_tier)
-        merged_context, graph_extra = _merge_graph_and_vector_context(
-            merged_docs, eq, include_graph=include_graph_merge
-        )
-        if graph_extra.get("graph_kb_applied"):
-            emit_rag_step(
-                "🕸️",
-                "知识图谱(Neo4j)",
-                _graph_step_detail(graph_extra) + " · 已合并向量片段",
+            retrieved = _concat_dense_sparse_candidates(
+                dense_results, sparse_results, top_k=candidate_k
             )
-        rerank_meta["retrieval_mode"] = f"hybrid_2way_rrf_{think_mode}_graph_merge"
-        rerank_meta["kb_tier"] = kb_tier
-        rerank_meta["candidate_k"] = candidate_k
-        rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-        rerank_meta["dense_count"] = len(dense_results)
-        rerank_meta["sparse_count"] = len(sparse_results)
-        rerank_meta.update(merge_meta)
-        rerank_meta.update(graph_extra)
-        return {"docs": merged_docs, "merged_context": merged_context, "meta": rerank_meta}
-    except Exception as e:
-        merged_context, graph_extra = _merge_graph_and_vector_context(
-            retrieved[:final_top_k], eq, include_graph=include_graph_merge
-        )
-        return {
-            "docs": retrieved[:final_top_k],
-            "merged_context": merged_context,
-            "meta": {
-                "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
-                "rerank_applied": False,
-                "rerank_model": RERANK_MODEL,
-                "rerank_endpoint": _get_rerank_endpoint(),
-                "rerank_error": f"process_error: {e}",
-                "retrieval_mode": f"hybrid_2way_rrf_{think_mode}_graph_merge",
-                "kb_tier": kb_tier,
-                "candidate_k": candidate_k,
-                "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                "dense_count": len(dense_results),
-                "sparse_count": len(sparse_results),
-                "auto_merge_enabled": AUTO_MERGE_ENABLED,
-                "auto_merge_applied": False,
-                "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-                "auto_merge_replaced_chunks": 0,
-                "auto_merge_steps": 0,
-                "candidate_count": len(retrieved),
-                **graph_extra,
-            },
-        }
+            emit_rag_step(
+                "🔀",
+                "双路候选（无 RRF）",
+                f"Dense 优先 + Sparse 去重拼接 Top {len(retrieved)} 候选",
+            )
+
+        _hybrid_fusion_tag = "rrf" if HYBRID_RRF_ENABLED else "norrf_concat"
+
+        if not retrieved:
+            merged_context, graph_extra = _merge_graph_and_vector_context(
+                [], eq, include_graph=include_graph_merge
+            )
+            if graph_extra.get("graph_kb_applied"):
+                emit_rag_step(
+                    "🕸️",
+                    "知识图谱(Neo4j)",
+                    _graph_step_detail(graph_extra) + " · 向量无命中，仅图谱上下文",
+                )
+            mode = "graph_only" if graph_extra.get("graph_kb_applied") else "failed"
+            return {
+                "docs": [],
+                "merged_context": merged_context,
+                "meta": {
+                    "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
+                    "rerank_applied": False,
+                    "rerank_model": RERANK_MODEL,
+                    "rerank_endpoint": _get_rerank_endpoint(),
+                    "rerank_error": "all_retrieve_failed" if mode == "failed" else None,
+                    "retrieval_mode": mode,
+                    "kb_tier": kb_tier,
+                    "candidate_k": candidate_k,
+                    "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                    "auto_merge_enabled": AUTO_MERGE_ENABLED,
+                    "auto_merge_applied": False,
+                    "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
+                    "auto_merge_replaced_chunks": 0,
+                    "auto_merge_steps": 0,
+                    "candidate_count": 0,
+                    "dense_count": len(dense_results),
+                    "sparse_count": len(sparse_results),
+                    **graph_extra,
+                },
+            }
+
+        # 重新排序并使用自动合并 (Auto-merging) 与 Reranker
+        try:
+            if skip_rerank:
+                for i, doc in enumerate(retrieved[:final_top_k], 1):
+                    doc["rerank_score"] = doc.get("rrf_score", 0.0)
+                reranked = retrieved[:final_top_k]
+                rerank_meta = {
+                    "rerank_enabled": False,
+                    "rerank_applied": False,
+                    "rerank_model": None,
+                    "rerank_endpoint": None,
+                    "rerank_error": "skipped_by_think_mode",
+                    "candidate_count": len(retrieved),
+                }
+            else:
+                reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=final_top_k)
+
+            merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=final_top_k, kb_tier=kb_tier)
+            merged_context, graph_extra = _merge_graph_and_vector_context(
+                merged_docs, eq, include_graph=include_graph_merge
+            )
+            if graph_extra.get("graph_kb_applied"):
+                emit_rag_step(
+                    "🕸️",
+                    "知识图谱(Neo4j)",
+                    _graph_step_detail(graph_extra) + " · 已合并向量片段",
+                )
+            rerank_meta["retrieval_mode"] = f"hybrid_2way_{_hybrid_fusion_tag}_{think_mode}_graph_merge"
+            rerank_meta["kb_tier"] = kb_tier
+            rerank_meta["candidate_k"] = candidate_k
+            rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+            rerank_meta["dense_count"] = len(dense_results)
+            rerank_meta["sparse_count"] = len(sparse_results)
+            rerank_meta.update(merge_meta)
+            rerank_meta.update(graph_extra)
+            return {"docs": merged_docs, "merged_context": merged_context, "meta": rerank_meta}
+        except Exception as e:
+            merged_context, graph_extra = _merge_graph_and_vector_context(
+                retrieved[:final_top_k], eq, include_graph=include_graph_merge
+            )
+            return {
+                "docs": retrieved[:final_top_k],
+                "merged_context": merged_context,
+                "meta": {
+                    "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
+                    "rerank_applied": False,
+                    "rerank_model": RERANK_MODEL,
+                    "rerank_endpoint": _get_rerank_endpoint(),
+                    "rerank_error": f"process_error: {e}",
+                    "retrieval_mode": f"hybrid_2way_{_hybrid_fusion_tag}_{think_mode}_graph_merge",
+                    "kb_tier": kb_tier,
+                    "candidate_k": candidate_k,
+                    "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                    "dense_count": len(dense_results),
+                    "sparse_count": len(sparse_results),
+                    "auto_merge_enabled": AUTO_MERGE_ENABLED,
+                    "auto_merge_applied": False,
+                    "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
+                    "auto_merge_replaced_chunks": 0,
+                    "auto_merge_steps": 0,
+                    "candidate_count": len(retrieved),
+                    **graph_extra,
+                },
+            }
