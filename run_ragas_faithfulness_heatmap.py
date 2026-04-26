@@ -62,8 +62,9 @@ _tools = importlib.import_module("tools")
 set_rag_config = _tools.set_rag_config
 
 
-TOP_K_LIST_DEFAULT = [3, 5, 7, 10]
+RETRIEVAL_DEPTH_LIST_DEFAULT = [5, 10, 15, 20]
 WINDOW_SIZES_DEFAULT = [300, 400, 500]
+FIXED_RERANK_TOPK = 3
 
 LOG = logging.getLogger("faithfulness_grid")
 
@@ -88,7 +89,7 @@ def _configure_logging(log_file: Path) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="RAGAS Faithfulness 网格热力图（Top-K × 子块窗口 W）")
+    p = argparse.ArgumentParser(description="RAGAS Faithfulness 网格热力图（Retrieval Depth × 子块窗口 W）")
     p.add_argument(
         "--csv",
         default="RAG DATA_INTRO - Copy of test.csv",
@@ -104,18 +105,18 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="参考文本列（Faithfulness 可选）；默认自动：回答要点总结 → answer_key → answer",
     )
-    p.add_argument("--limit", type=int, default=3, help="仅用前 N 条；0 表示全部（默认 15）")
+    p.add_argument("--limit", type=int, default=3, help="仅用前 N 条；0 表示全部")
     p.add_argument(
         "--skip-empty-ref",
         action="store_true",
         help="跳过「回答要点总结」与「回答」均为空的行",
     )
     p.add_argument(
-        "--topk",
+        "--depths",
         type=int,
         nargs="+",
-        default=TOP_K_LIST_DEFAULT,
-        help="Top-K 列表，默认 3 5 7 10",
+        default=RETRIEVAL_DEPTH_LIST_DEFAULT,
+        help="Retrieval depth（候选检索深度 candidate_k）列表，默认 5 10 15 20",
     )
     p.add_argument(
         "--windows",
@@ -282,7 +283,7 @@ def _faithfulness_mean(result) -> float:
 
 
 def _load_faithfulness_matrix_csv(path: Path) -> tuple[np.ndarray, list[int], list[int]]:
-    """读取 faithfulness_matrix.csv（index 形如 w300，列为 Top-K）。"""
+    """读取 faithfulness_matrix.csv（index 形如 w300，列为 retrieval depth）。"""
     df = pd.read_csv(path, index_col=0, encoding="utf-8-sig")
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -358,9 +359,9 @@ def _plot_heatmap(
     ax.set_xticklabels([str(x) for x in col_labels])
     ax.set_yticks(np.arange(len(row_labels)))
     ax.set_yticklabels([str(x) for x in row_labels])
-    ax.set_xlabel(r"Top-$K$")
+    ax.set_xlabel("Retrieval Depth")
     ax.set_ylabel(r"Window Size ($W$)")
-    ax.set_title("Interaction: Chunk Size vs. $K$ (Faithfulness)")
+    ax.set_title("Interaction: Chunk Size vs. Retrieval Depth (Faithfulness)")
 
     ax.set_xticks(np.arange(-0.5, len(col_labels), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(row_labels), 1), minor=True)
@@ -388,10 +389,10 @@ def main() -> int:
         matrix_path = out_dir / "faithfulness_matrix.csv"
         if not matrix_path.is_file():
             raise SystemExit(f"--plot-only 需要矩阵文件: {matrix_path}")
-        matrix, windows, topks = _load_faithfulness_matrix_csv(matrix_path)
+        matrix, windows, depths = _load_faithfulness_matrix_csv(matrix_path)
         png_path = out_dir / "faithfulness_heatmap.png"
         try:
-            _plot_heatmap(matrix, windows, topks, png_path, show=args.show)
+            _plot_heatmap(matrix, windows, depths, png_path, show=args.show)
         except ImportError:
             raise SystemExit("未安装 matplotlib，请: uv pip install matplotlib") from None
         print(f"热力图已写入: {png_path}", file=sys.stderr)
@@ -426,14 +427,15 @@ def main() -> int:
     metric = Faithfulness(llm=ragas_llm)
 
     windows = list(args.windows)
-    topks = list(args.topk)
-    matrix = np.full((len(windows), len(topks)), np.nan, dtype=float)
+    depths = list(args.depths)
+    matrix = np.full((len(windows), len(depths)), np.nan, dtype=float)
     rows_log: list[dict] = []
 
     LOG.info(
-        "网格 W=%s Top-K=%s | 样本行数=%s | 输出目录=%s | CSV=%s",
+        "网格 W=%s RetrievalDepth=%s（固定 final_top_k=%s） | 样本行数=%s | 输出目录=%s | CSV=%s",
         windows,
-        topks,
+        depths,
+        FIXED_RERANK_TOPK,
         len(df_all),
         out_dir,
         csv_path,
@@ -450,11 +452,12 @@ def main() -> int:
                 w,
             )
 
-        for ki, k in enumerate(topks):
+        for di, depth in enumerate(depths):
             cfg = {
                 "think_mode": "normal",
-                "final_top_k": int(k),
-                "candidate_k": _candidate_k_for_final(int(k)),
+                # 消融设置：固定 rerank top_k=3，仅改变 retrieval depth（candidate_k）
+                "final_top_k": FIXED_RERANK_TOPK,
+                "candidate_k": max(int(depth), FIXED_RERANK_TOPK),
                 # RAG 图：不打分、不重写查询，retrieve_initial 后直接生成答案（见 rag_pipeline.grade_documents_node）
                 "skip_grade_and_rewrite": True,
             }
@@ -462,8 +465,13 @@ def main() -> int:
                 cfg["milvus_collection_brief"] = brief_col
             set_rag_config(cfg)
 
-            label = f"W={w},K={k}"
-            LOG.info("---------- 单元 %s | final_top_k=%s candidate_k=%s ----------", label, k, cfg.get("candidate_k"))
+            label = f"W={w},D={depth}"
+            LOG.info(
+                "---------- 单元 %s | final_top_k=%s candidate_k=%s ----------",
+                label,
+                FIXED_RERANK_TOPK,
+                cfg.get("candidate_k"),
+            )
 
             samples = _build_samples_for_cell(
                 df_all,
@@ -475,7 +483,13 @@ def main() -> int:
             if not samples:
                 LOG.warning("[%s] 无可用样本，跳过 Faithfulness。", label)
                 rows_log.append(
-                    {"window_w": w, "top_k": k, "mean_faithfulness": None, "n_samples": 0}
+                    {
+                        "window_w": w,
+                        "retrieval_depth": depth,
+                        "fixed_top_k": FIXED_RERANK_TOPK,
+                        "mean_faithfulness": None,
+                        "n_samples": 0,
+                    }
                 )
                 continue
 
@@ -494,11 +508,12 @@ def main() -> int:
                 LOG.exception("[%s] RAGAS evaluate 失败", label)
                 raise
             mean_f = _faithfulness_mean(result)
-            matrix[wi, ki] = mean_f
+            matrix[wi, di] = mean_f
             rows_log.append(
                 {
                     "window_w": w,
-                    "top_k": k,
+                    "retrieval_depth": depth,
+                    "fixed_top_k": FIXED_RERANK_TOPK,
                     "mean_faithfulness": mean_f,
                     "n_samples": len(samples),
                 }
@@ -506,7 +521,7 @@ def main() -> int:
             LOG.info("[%s] Faithfulness 均值 = %.4f (n=%s)", label, mean_f, len(samples))
 
             # 附加保存该单元详细分（可选）
-            detail_path = out_dir / f"scores_W{w}_K{k}.json"
+            detail_path = out_dir / f"scores_W{w}_D{depth}_K{FIXED_RERANK_TOPK}.json"
             try:
                 with open(detail_path, "w", encoding="utf-8") as f:
                     json.dump(result.scores, f, ensure_ascii=False, indent=2)
@@ -521,13 +536,13 @@ def main() -> int:
     df_out.to_csv(csv_path_out, index=False, encoding="utf-8-sig")
     LOG.info("已写入汇总: %s", csv_path_out)
 
-    matrix_df = pd.DataFrame(matrix, index=[f"w{w}" for w in windows], columns=[str(k) for k in topks])
+    matrix_df = pd.DataFrame(matrix, index=[f"w{w}" for w in windows], columns=[str(d) for d in depths])
     matrix_df.to_csv(out_dir / "faithfulness_matrix.csv", encoding="utf-8-sig")
     LOG.info("已写入矩阵: %s", out_dir / "faithfulness_matrix.csv")
 
     png_path = out_dir / "faithfulness_heatmap.png"
     try:
-        _plot_heatmap(matrix, windows, topks, png_path, show=args.show)
+        _plot_heatmap(matrix, windows, depths, png_path, show=args.show)
     except ImportError:
         LOG.error("未安装 matplotlib，跳过作图。可执行: uv pip install matplotlib")
         return 1

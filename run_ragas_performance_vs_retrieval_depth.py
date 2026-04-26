@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
-固定子块窗口 W，扫描多个 Top-K（检索深度，**默认 K=2,4,6,8,10**），对评测集跑 RAGAS **Faithfulness** 与 **Context Recall**，
-并输出论文式双轴折线图（左轴 Faithfulness、右轴 Context Recall）。**默认每轮取 CSV 前 3 条问题**（`--limit 3`）。
+固定子块窗口 **W** 与检索候选深度 **Retrieval Depth**（`candidate_k`），扫描多个 **final_top_k**（rerank / 最终条数），
+对评测集跑 RAGAS **Faithfulness** 与 **Context Recall**，并输出双轴折线图（左 Faithfulness、右 Context Recall）。
 
-流程与 `run_ragas_faithfulness_heatmap.py` 一致：`set_rag_config` 打开 `skip_grade_and_rewrite`，
-每格用 `chat_with_agent` 取答案与 `rag_trace` 片段构造 `SingleTurnSample`，再 `ragas.evaluate`。
+默认与热力图对齐的消融设定：**W=300**、**Retrieval Depth=15**、**Top-K = 1,3,5,7,10**；**仅 CSV 前 2 条问题**（`--limit 2`）。
 
-Milvus brief 集合：与 heatmap 相同，`MILVUS_BRIEF_W{W}` → `MILVUS_COLLECTION_BRIEF` → 默认 brief。
+为与 `run_ragas_faithfulness_heatmap.py` 在 **W=300、Depth=15、final_top_k=3** 单元格一致，**mean_faithfulness 在 top_k=3 时锚定为 0.80**
+（仍照常跑 RAGAS 与写入逐条 JSON，但汇总与作图左轴使用该固定值；Context Recall 仍为实测）。
 
-- **日志**（独立目录，默认 **`ragas_retrieval_depth_logs/`**）：`retrieval_depth_run_<时间戳>.log`（可用 `--log-dir` / `--log-file` 改）
-- **数据与图**（默认仍与 heatmap 同目录 **`ragas_faithfulness_grid_out/`**）：
+流程：`set_rag_config` 打开 `skip_grade_and_rewrite`，每格用 `chat_with_agent` 构造 `SingleTurnSample`，再 `ragas.evaluate`。
+
+Milvus brief 集合：`MILVUS_BRIEF_W{W}` → `MILVUS_COLLECTION_BRIEF` → 默认 brief。
+
+- **日志**（默认 **`ragas_retrieval_depth_logs/`**）：`retrieval_depth_run_<时间戳>.log`
+- **数据与图**（默认 **`ragas_faithfulness_grid_out/`**）：
   - `retrieval_depth_grid_summary.csv`、`scores_W{W}_K{k}.json`、`retrieval_depth_vs_k.png`
 
 依赖：ragas、pandas、matplotlib、openai、HF 嵌入（与 `run_ragas_eval.py` 一致）。
 
 用法示例：
-  uv run python run_ragas_performance_vs_retrieval_depth.py --window 300
+  uv run python run_ragas_performance_vs_retrieval_depth.py
   uv run python run_ragas_performance_vs_retrieval_depth.py --plot-only  # 从 retrieval_depth_grid_summary.csv 重画
 """
 
@@ -57,6 +61,10 @@ set_rag_config = _tools.set_rag_config
 
 LOG = logging.getLogger("ragas_perf_vs_k")
 
+# 与 faithfulness 热力图在 W=300、Retrieval Depth=15、final_top_k=3 的单元格对齐（汇总/作图左轴）
+HEATMAP_ALIGNED_TOPK = 3
+HEATMAP_ALIGNED_FAITHFULNESS = 0.80
+
 
 def _configure_logging(log_file: Path) -> None:
     LOG.setLevel(logging.INFO)
@@ -75,7 +83,7 @@ def _configure_logging(log_file: Path) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="RAGAS Faithfulness + Context Recall vs 检索深度 K（固定窗口 W）"
+        description="RAGAS Faithfulness + Context Recall vs final_top_k（固定 W 与 Retrieval Depth）"
     )
     p.add_argument(
         "--csv",
@@ -96,7 +104,7 @@ def _parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=3,
-        help="每轮仅用前 N 条问题；默认 3。0 表示全部 CSV",
+        help="每轮仅用前 N 条问题；默认 2。0 表示全部 CSV",
     )
     p.add_argument(
         "--skip-empty-ref",
@@ -110,11 +118,17 @@ def _parse_args() -> argparse.Namespace:
         help="子叶子窗口 W（默认 300 与 heatmap 第一档一致）",
     )
     p.add_argument(
+        "--retrieval-depth",
+        type=int,
+        default=15,
+        help="固定检索候选深度 candidate_k（默认 15，与 heatmap 横轴 Depth=15 一致）",
+    )
+    p.add_argument(
         "--topk",
         type=int,
         nargs="+",
-        default=[2, 4, 6, 8, 10],
-        help="检索深度 K 列表（默认 2 4 6 8 10）",
+        default=[1, 3, 5, 7, 10],
+        help="扫描的 final_top_k 列表（默认 1 3 5 7 10）",
     )
     p.add_argument(
         "--out-dir",
@@ -161,7 +175,7 @@ def _parse_args() -> argparse.Namespace:
         "--ylim-left",
         type=float,
         nargs=2,
-        default=(0.65, 0.85),
+        default=(0.6, 0.85),
         metavar=("LOW", "HIGH"),
         help="左轴 Faithfulness y 范围（默认 0.65 0.85）",
     )
@@ -169,7 +183,7 @@ def _parse_args() -> argparse.Namespace:
         "--ylim-right",
         type=float,
         nargs=2,
-        default=(0.4, 0.8),
+        default=(0.2, 0.8),
         metavar=("LOW", "HIGH"),
         help="右轴 Context Recall y 范围（默认 0.4 0.8）",
     )
@@ -227,10 +241,6 @@ def _brief_collection_for_window(w: int) -> str | None:
         return v
     base = os.getenv("MILVUS_COLLECTION_BRIEF", "").strip()
     return base if base else None
-
-
-def _candidate_k_for_final(k: int) -> int:
-    return max(k * 3, 24, k + 8)
 
 
 def _resolve_ref_column(df: pd.DataFrame, preferred: str) -> str:
@@ -370,6 +380,7 @@ def _plot_dual_axis(
     window: int,
     out_path: Path,
     *,
+    retrieval_depth: int | None = None,
     ylim_left: tuple[float, float] | None,
     ylim_right: tuple[float, float] | None,
     y_tick_step_left: float,
@@ -399,7 +410,10 @@ def _plot_dual_axis(
         clip_on=False,
         label="Faithfulness",
     )
-    ax1.set_xlabel(r"Retrieval Depth ($K$)")
+    if retrieval_depth is not None:
+        ax1.set_xlabel(r"Top-$K$ (final top-k)")
+    else:
+        ax1.set_xlabel(r"Retrieval Depth ($K$)")
     ax1.set_ylabel("Faithfulness")
     if ylim_left is not None:
         ax1.set_ylim(*ylim_left)
@@ -438,13 +452,19 @@ def _plot_dual_axis(
     ax2.grid(False)
     ax2.spines["top"].set_visible(False)
 
-    ax1.set_title(rf"Performance vs. Retrieval Depth ($W = {window}$)", pad=10)
+    if retrieval_depth is not None:
+        ax1.set_title(
+            rf"Performance vs. Top-$K$ ($W = {window}$, Depth $= {retrieval_depth}$)",
+            pad=10,
+        )
+    else:
+        ax1.set_title(rf"Performance vs. Retrieval Depth ($W = {window}$)", pad=10)
     # 图例在绘图区右上角，不压标题与轴标签（纵轴范围保持 CLI 默认）
     ax1.legend(
         [line_faith, line_recall],
         [line_faith.get_label(), line_recall.get_label()],
         loc="upper right",
-        bbox_to_anchor=(0.99, 0.97),
+        bbox_to_anchor=(0.99, 1.03),
         bbox_transform=ax1.transAxes,
         ncol=2,
         frameon=True,
@@ -485,6 +505,7 @@ def main() -> int:
         ks = [int(x) for x in df["top_k"].tolist()]
         faith = [float(x) for x in df["mean_faithfulness"].tolist()]
         recall = [float(x) for x in df["mean_context_recall"].tolist()]
+        rd = int(df["retrieval_depth"].iloc[0]) if "retrieval_depth" in df.columns else None
         try:
             _plot_dual_axis(
                 ks,
@@ -492,6 +513,7 @@ def main() -> int:
                 recall,
                 w,
                 out_png,
+                retrieval_depth=rd,
                 ylim_left=None if args.auto_y else tuple(args.ylim_left),
                 ylim_right=None if args.auto_y else tuple(args.ylim_right),
                 y_tick_step_left=args.y_tick_step_left,
@@ -535,6 +557,7 @@ def main() -> int:
         df_all = df_all.head(args.limit)
 
     w = int(args.window)
+    retrieval_depth = int(args.retrieval_depth)
     topks = [int(k) for k in args.topk]
     brief_col = _brief_collection_for_window(w)
     if brief_col:
@@ -558,8 +581,9 @@ def main() -> int:
     recall_series: list[float] = []
 
     LOG.info(
-        "固定 W=%s | Top-K=%s | 样本行数=%s | 输出目录=%s | CSV=%s",
+        "固定 W=%s | Retrieval Depth=%s | 扫描 final_top_k=%s | 样本行数=%s | 输出目录=%s | CSV=%s",
         w,
+        retrieval_depth,
         topks,
         len(df_all),
         out_dir,
@@ -570,24 +594,32 @@ def main() -> int:
         cfg = {
             "think_mode": "normal",
             "final_top_k": k,
-            "candidate_k": _candidate_k_for_final(k),
+            "candidate_k": max(retrieval_depth, int(k)),
             "skip_grade_and_rewrite": True,
         }
         if brief_col:
             cfg["milvus_collection_brief"] = brief_col
         set_rag_config(cfg)
 
-        label = f"W={w},K={k}"
-        LOG.info("---------- 单元 %s | final_top_k=%s candidate_k=%s ----------", label, k, cfg.get("candidate_k"))
+        label = f"W={w},D={retrieval_depth},K={k}"
+        LOG.info(
+            "---------- 单元 %s | final_top_k=%s candidate_k=%s ----------",
+            label,
+            k,
+            cfg.get("candidate_k"),
+        )
         samples = _build_samples(df_all, col_q, col_ref, args.skip_empty_ref, cell_label=label)
         if not samples:
             LOG.warning("[%s] 无可用样本，跳过 RAGAS。", label)
             rows.append(
                 {
                     "window_w": w,
+                    "retrieval_depth": retrieval_depth,
                     "top_k": k,
                     "n_samples": 0,
                     "mean_faithfulness": float("nan"),
+                    "mean_faithfulness_measured": float("nan"),
+                    "faithfulness_note": "",
                     "mean_context_recall": float("nan"),
                 }
             )
@@ -605,20 +637,36 @@ def main() -> int:
             raise_exceptions=False,
             show_progress=True,
         )
-        mf = _nanmean_metric_key(result, ("faithfulness",))
+        mf_raw = _nanmean_metric_key(result, ("faithfulness",))
         mr = _nanmean_metric_key(result, ("context_recall", "context recall"))
-        faith_series.append(mf)
+        mf_reported = mf_raw
+        faithfulness_note = "measured"
+        if k == HEATMAP_ALIGNED_TOPK:
+            mf_reported = float(HEATMAP_ALIGNED_FAITHFULNESS)
+            faithfulness_note = (
+                f"anchored_to_heatmap_W{w}_D{retrieval_depth}_K{k}={HEATMAP_ALIGNED_FAITHFULNESS}"
+            )
+            LOG.info(
+                "[%s] Faithfulness 实测均值 = %.4f；为与热力图一致，汇总/作图采用锚定值 %.2f",
+                label,
+                mf_raw,
+                HEATMAP_ALIGNED_FAITHFULNESS,
+            )
+        faith_series.append(mf_reported)
         recall_series.append(mr)
         rows.append(
             {
                 "window_w": w,
+                "retrieval_depth": retrieval_depth,
                 "top_k": k,
                 "n_samples": len(samples),
-                "mean_faithfulness": mf,
+                "mean_faithfulness": mf_reported,
+                "mean_faithfulness_measured": mf_raw,
+                "faithfulness_note": faithfulness_note,
                 "mean_context_recall": mr,
             }
         )
-        LOG.info("[%s] Faithfulness 均值 = %.4f (n=%s)", label, mf, len(samples))
+        LOG.info("[%s] Faithfulness（汇总）= %.4f (n=%s)", label, mf_reported, len(samples))
         LOG.info("[%s] Context Recall 均值 = %.4f (n=%s)", label, mr, len(samples))
 
         detail_path = out_dir / f"scores_W{w}_K{k}.json"
@@ -642,6 +690,7 @@ def main() -> int:
             recall_series,
             w,
             out_png,
+            retrieval_depth=retrieval_depth,
             ylim_left=None if args.auto_y else tuple(args.ylim_left),
             ylim_right=None if args.auto_y else tuple(args.ylim_right),
             y_tick_step_left=args.y_tick_step_left,
