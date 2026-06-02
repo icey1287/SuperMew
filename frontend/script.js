@@ -33,8 +33,7 @@ createApp({
                 role: 'user',
                 admin_code: ''
             },
-            authLoading: false,
-            thinkMode: 'normal'
+            authLoading: false
         };
     },
     computed: {
@@ -43,13 +42,6 @@ createApp({
         },
         isAdmin() {
             return this.currentUser?.role === 'admin';
-        },
-        thinkModeHints() {
-            return {
-                fast: '快速：Milvus 召回约 10 块，跳过 Rerank',
-                normal: '正常：召回约 15 块，启用 Rerank，最终约 10 块',
-                deep: '深度：召回约 30 块，启用 Rerank，最终约 15 块'
-            };
         }
     },
     async mounted() {
@@ -141,10 +133,6 @@ createApp({
             const k = trace.candidate_k;
             if (trace.candidate_k_config_error) {
                 return `Milvus 候选池：${k}（${trace.candidate_k_config_error}，已回退倍数计算）`;
-            }
-            if (trace.candidate_k_source === 'think_mode') {
-                const mode = trace.think_mode || '';
-                return `Milvus 候选池：${k}（思考模式：${mode}）`;
             }
             if (trace.candidate_k_source === 'env') {
                 return `Milvus 候选池：${k}（环境变量 RETRIEVAL_CANDIDATE_K）`;
@@ -322,8 +310,7 @@ createApp({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: text,
-                        session_id: this.sessionId,
-                        think_mode: this.thinkMode
+                        session_id: this.sessionId
                     }),
                     signal: this.abortController.signal,
                 });

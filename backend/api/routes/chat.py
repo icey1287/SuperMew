@@ -16,10 +16,7 @@ router = APIRouter(tags=["chat"])
 async def chat_endpoint(request: ChatRequest, current_user: User = Depends(get_current_user)):
     try:
         session_id = request.session_id or "default_session"
-        think_mode = request.think_mode or "normal"
-        resp = chat_with_agent(
-            request.message, current_user.username, session_id, think_mode=think_mode
-        )
+        resp = chat_with_agent(request.message, current_user.username, session_id)
         if isinstance(resp, dict):
             return ChatResponse(**resp)
         return ChatResponse(response=resp)
@@ -47,12 +44,10 @@ async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depend
     async def event_generator():
         try:
             session_id = request.session_id or "default_session"
-            think_mode = request.think_mode or "normal"
             async for chunk in chat_with_agent_stream(
                 request.message,
                 current_user.username,
                 session_id,
-                think_mode=think_mode,
             ):
                 yield chunk
         except Exception as e:

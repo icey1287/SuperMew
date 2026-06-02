@@ -5,7 +5,6 @@ import json
 import requests
 from dotenv import load_dotenv
 
-from backend.chat.rag_context import get_rag_config
 from backend.indexing.milvus_client import get_milvus_store
 from backend.indexing.embedding import embedding_service as _embedding_service
 from backend.indexing.parent_chunk_store import ParentChunkStore
@@ -35,8 +34,6 @@ _RETRIEVAL_CANDIDATE_K_RAW = os.getenv("RETRIEVAL_CANDIDATE_K", "").strip()
 RETRIEVAL_TRACE_FIELDS = (
     "retrieval_pipeline",
     "retrieval_mode",
-    "kb_tier",
-    "think_mode",
     "candidate_k",
     "candidate_k_source",
     "candidate_k_config_error",
@@ -63,34 +60,6 @@ _milvus_manager = get_milvus_store()
 _parent_chunk_store = ParentChunkStore()
 
 _stepback_model = None
-
-
-def resolve_think_mode_params(think_mode: str | None) -> Dict[str, Any]:
-    """按思考模式解析候选池、精排与逻辑知识库层级（单 Milvus 集合）。"""
-    mode = (think_mode or "normal").strip().lower()
-    if mode == "fast":
-        return {
-            "candidate_k": 10,
-            "final_top_k": 10,
-            "skip_rerank": True,
-            "kb_tier": "brief",
-            "think_mode": mode,
-        }
-    if mode == "deep":
-        return {
-            "candidate_k": 30,
-            "final_top_k": 15,
-            "skip_rerank": False,
-            "kb_tier": "detailed",
-            "think_mode": mode,
-        }
-    return {
-        "candidate_k": 15,
-        "final_top_k": 10,
-        "skip_rerank": False,
-        "kb_tier": "brief",
-        "think_mode": "normal",
-    }
 
 
 def resolve_candidate_k(top_k: int) -> Tuple[int, Dict[str, Any]]:
@@ -414,73 +383,26 @@ def _finalize_retrieval(
     retrieval_mode: str,
     candidate_k: int,
     candidate_config: Dict[str, Any],
-    *,
-    skip_rerank: bool = False,
-    kb_tier: str = "brief",
-    think_mode: str = "normal",
 ) -> Dict[str, Any]:
     """生产流水线：召回候选 → Auto-merge → Rerank 截断 top_k。"""
     candidates, merge_meta = _auto_merge_candidates(retrieved)
-    if skip_rerank:
-        ranked = _sort_by_rank_score(candidates)
-        final_docs = ranked[:top_k]
-        for doc in final_docs:
-            if doc.get("rerank_score") is None:
-                doc["rerank_score"] = doc.get("score", 0.0)
-        rerank_meta = {
-            "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
-            "rerank_applied": False,
-            "rerank_model": RERANK_MODEL,
-            "rerank_endpoint": _get_rerank_endpoint(),
-            "rerank_error": "skipped_by_think_mode",
-            "candidate_count": len(candidates),
-        }
-    else:
-        final_docs, rerank_meta = _rerank_documents(query=query, docs=candidates, top_k=top_k)
-
-    mode_suffix = f"_{think_mode}" if think_mode else ""
+    final_docs, rerank_meta = _rerank_documents(query=query, docs=candidates, top_k=top_k)
     meta = {
         **rerank_meta,
         **merge_meta,
         **candidate_config,
-        "retrieval_mode": f"{retrieval_mode}{mode_suffix}",
+        "retrieval_mode": retrieval_mode,
         "retrieval_pipeline": "recall_merge_rerank",
         "candidate_k": candidate_k,
         "retrieval_top_k": top_k,
-        "kb_tier": kb_tier,
-        "think_mode": think_mode,
         "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
         "recall_count": len(retrieved),
     }
     return {"docs": final_docs, "meta": meta}
 
 
-def _resolve_retrieval_params(top_k: int) -> Tuple[int, int, bool, str, str, Dict[str, Any]]:
-    """合并思考模式与环境变量候选池配置。"""
-    runtime = get_rag_config()
-    think_mode = (runtime.get("think_mode") or "").strip().lower()
-    if think_mode:
-        mode_params = resolve_think_mode_params(think_mode)
-        candidate_k = mode_params["candidate_k"]
-        final_top_k = mode_params["final_top_k"]
-        skip_rerank = mode_params["skip_rerank"]
-        kb_tier = mode_params["kb_tier"]
-        candidate_config = {
-            "candidate_k_source": "think_mode",
-            "think_mode": mode_params["think_mode"],
-            "kb_tier": kb_tier,
-            "retrieval_candidate_multiplier": RETRIEVAL_CANDIDATE_MULTIPLIER,
-        }
-        return candidate_k, final_top_k, skip_rerank, kb_tier, mode_params["think_mode"], candidate_config
-
-    candidate_k, candidate_config = resolve_candidate_k(top_k)
-    return candidate_k, top_k, False, "brief", "normal", candidate_config
-
-
 def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
-    candidate_k, final_top_k, skip_rerank, kb_tier, think_mode, candidate_config = _resolve_retrieval_params(
-        top_k
-    )
+    candidate_k, candidate_config = resolve_candidate_k(top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:
         dense_embeddings = _embedding_service.get_embeddings([query])
@@ -496,13 +418,10 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         return _finalize_retrieval(
             query=query,
             retrieved=retrieved,
-            top_k=final_top_k,
+            top_k=top_k,
             retrieval_mode="hybrid",
             candidate_k=candidate_k,
             candidate_config=candidate_config,
-            skip_rerank=skip_rerank,
-            kb_tier=kb_tier,
-            think_mode=think_mode,
         )
     except Exception:
         try:
@@ -516,13 +435,10 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
             return _finalize_retrieval(
                 query=query,
                 retrieved=retrieved,
-                top_k=final_top_k,
+                top_k=top_k,
                 retrieval_mode="dense_fallback",
                 candidate_k=candidate_k,
                 candidate_config=candidate_config,
-                skip_rerank=skip_rerank,
-                kb_tier=kb_tier,
-                think_mode=think_mode,
             )
         except Exception:
             return {
@@ -537,9 +453,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                     "retrieval_pipeline": "recall_merge_rerank",
                     "candidate_k": candidate_k,
                     **candidate_config,
-                    "retrieval_top_k": final_top_k,
-                    "kb_tier": kb_tier,
-                    "think_mode": think_mode,
+                    "retrieval_top_k": top_k,
                     "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
                     "recall_count": 0,
                     **_empty_merge_meta(),

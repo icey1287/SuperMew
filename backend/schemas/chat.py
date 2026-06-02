@@ -6,7 +6,6 @@ from pydantic import BaseModel
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default_session"
-    think_mode: Optional[str] = "normal"
 
 
 class RetrievedChunk(BaseModel):
@@ -39,8 +38,6 @@ class RagTrace(BaseModel):
     rerank_endpoint: Optional[str] = None
     rerank_error: Optional[str] = None
     retrieval_mode: Optional[str] = None
-    kb_tier: Optional[str] = None
-    think_mode: Optional[str] = None
     retrieval_pipeline: Optional[str] = None
     candidate_k: Optional[int] = None
     candidate_k_source: Optional[str] = None

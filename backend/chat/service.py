@@ -5,11 +5,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 
 from backend.chat.runtime import agent, fast_model
 from backend.chat.storage import ConversationStorage
-from backend.chat.rag_context import (
-    clear_rag_config,
-    get_last_rag_context,
-    set_rag_config,
-)
+from backend.chat.rag_context import get_last_rag_context
 from backend.chat.streaming import set_rag_step_queue
 from backend.tools import reset_knowledge_tool_calls
 
@@ -95,9 +91,7 @@ def chat_with_agent(
     user_text: str,
     user_id: str = "default_user",
     session_id: str = "default_session",
-    think_mode: str = "normal",
 ):
-    set_rag_config({"think_mode": think_mode})
     messages, metadata = storage.load_with_meta(user_id, session_id)
     persistent_note = metadata.get("persistent_note", "")
     is_first_message = len(messages) == 0
@@ -148,7 +142,6 @@ def chat_with_agent(
         metadata=save_meta,
         extra_message_data=extra_message_data,
     )
-    clear_rag_config()
 
     return {
         "response": response_content,
@@ -160,9 +153,7 @@ async def chat_with_agent_stream(
     user_text: str,
     user_id: str = "default_user",
     session_id: str = "default_session",
-    think_mode: str = "normal",
 ):
-    set_rag_config({"think_mode": think_mode})
     messages, metadata = storage.load_with_meta(user_id, session_id)
     persistent_note = metadata.get("persistent_note", "")
     is_first_message = len(messages) == 0
@@ -281,4 +272,3 @@ async def chat_with_agent_stream(
         metadata=save_meta,
         extra_message_data=extra_message_data,
     )
-    clear_rag_config()

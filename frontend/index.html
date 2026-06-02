@@ -250,28 +250,6 @@
                         <div class="status-dot"></div>
                         <span>喵喵在线中...</span>
                     </div>
-                    <div class="header-actions">
-                        <div class="think-mode-selector">
-                            <span class="mode-label">思考模式</span>
-                            <label class="mode-radio" :title="thinkModeHints.fast">
-                                <input type="radio" v-model="thinkMode" value="fast"> 快速
-                            </label>
-                            <label class="mode-radio" :title="thinkModeHints.normal">
-                                <input type="radio" v-model="thinkMode" value="normal"> 正常
-                            </label>
-                            <label class="mode-radio" :title="thinkModeHints.deep">
-                                <input type="radio" v-model="thinkMode" value="deep"> 深度
-                            </label>
-                            <span class="think-mode-help" aria-hidden="true">
-                                <i class="fas fa-info-circle"></i>
-                                <div class="think-mode-hover-card">
-                                    <div class="think-mode-hover-line">{{ thinkModeHints.fast }}</div>
-                                    <div class="think-mode-hover-line">{{ thinkModeHints.normal }}</div>
-                                    <div class="think-mode-hover-line">{{ thinkModeHints.deep }}</div>
-                                </div>
-                            </span>
-                        </div>
-                    </div>
                 </header>
 
                 <div class="chat-container" ref="chatContainer">
@@ -357,9 +335,6 @@
                                 </div>
                                 <div v-if="msg.ragTrace.retrieval_pipeline" class="trace-line">
                                     检索流水线：{{ msg.ragTrace.retrieval_pipeline }}
-                                </div>
-                                <div v-if="msg.ragTrace.think_mode" class="trace-line">
-                                    思考模式：{{ msg.ragTrace.think_mode }}
                                 </div>
                                 <div v-if="msg.ragTrace.retrieval_mode" class="trace-line">
                                     检索模式：{{ msg.ragTrace.retrieval_mode }}

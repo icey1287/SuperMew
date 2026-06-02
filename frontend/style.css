@@ -737,65 +737,6 @@ textarea {
     white-space: nowrap;
 }
 
-/* Think mode */
-.think-mode-selector {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    background: rgba(255, 255, 255, 0.85);
-    padding: 8px 14px;
-    border-radius: 999px;
-    font-size: 0.85rem;
-    border: 1px solid #f0f0f0;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-    position: relative;
-}
-
-.mode-label {
-    color: var(--text-color);
-    font-weight: 700;
-}
-
-.mode-radio {
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--text-color);
-}
-
-.think-mode-help {
-    position: relative;
-    color: var(--text-light);
-    cursor: help;
-    margin-left: 2px;
-}
-
-.think-mode-hover-card {
-    display: none;
-    position: absolute;
-    right: 0;
-    top: calc(100% + 8px);
-    width: 280px;
-    background: var(--white);
-    border: 1px solid #eee;
-    border-radius: 12px;
-    padding: 12px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-    z-index: 30;
-    font-size: 0.78rem;
-    line-height: 1.5;
-    color: var(--text-color);
-}
-
-.think-mode-help:hover .think-mode-hover-card {
-    display: block;
-}
-
-.think-mode-hover-line + .think-mode-hover-line {
-    margin-top: 8px;
-}
-
 /* References */
 .references-section {
     margin-top: 10px;
