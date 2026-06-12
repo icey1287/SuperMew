@@ -13,14 +13,40 @@ engine = create_engine(
 )
 
 
+import re
+import unicodedata
+
+# 编译非打印 C0/C1 控制字符的正则（保留常规排版字：\t, \n, \r）
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# 编译零宽字符和不可见格式化控制字符
+_INVISIBLE_CHAR_RE = re.compile(r"[\u200b-\u200d\ufeff\u200f\u202a-\u202e]")
+
+
 def _clean_nul_chars(val):
-    """递归清除 Python 数据结构中字符串里的 \x00 (NUL) 字符以及无法转为 UTF-8 的孤立代理项字符 (Surrogates)。"""
+    """
+    递归清除 Python 数据结构中所有可能破坏底层关系驱动、造成 JSON 解析异常或乱码的非标字符。
+    1. 规范化 (Normalization)：自动规范化为标准 Unicode NFC 格式。
+    2. 清洗不可见及非排版字：抹除零宽空字符、格式强制方向符、非排版控制字符及 PUA 私有使用区方块。
+    3. 收敛并擦除代理项：利用 utf-8 ignore 安全剥离任何残损的、孤立的 UTF-16 代理。
+    """
     if isinstance(val, str):
-        val = val.replace("\x00", "")
+        # 1. 规范化为 NFC
+        val = unicodedata.normalize("NFC", val)
+        # 2. 擦除零宽、不可见控制和 BOM 字符
+        val = _INVISIBLE_CHAR_RE.sub("", val)
+        # 3. 擦除非排版 C0/C1 字符及 PUA 私有区字符
+        val = _CONTROL_CHAR_RE.sub("", val)
+        val = re.sub(r"[\ue000-\uf8ff]", "", val)
+        # 4. 转换并确保 100% 合规的 UTF-8 (等同于 PG 的 utf8mb4 标准)
         try:
-            return val.encode("utf-8", "ignore").decode("utf-8")
+            return val.encode("utf-8", "ignore").decode("utf-8", "ignore")
         except Exception:
-            return val
+            chars = []
+            for char in val:
+                if 0xD800 <= ord(char) <= 0xDFFF:
+                    continue
+                chars.append(char)
+            return "".join(chars)
     elif isinstance(val, dict):
         return {k: _clean_nul_chars(v) for k, v in val.items()}
     elif isinstance(val, list):
