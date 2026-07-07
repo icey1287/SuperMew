@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
+from backend.chat.request_context import ChatRequestContext
 from backend.rag.utils import (
     retrieve_documents,
     step_back_expand,
@@ -14,7 +15,6 @@ from backend.rag.utils import (
     retrieval_trace_fields,
     merge_retrieval_trace,
 )
-from backend.chat.streaming import emit_rag_step, set_sub_agent_group, clear_sub_agent_group
 
 API_KEY = os.getenv("ARK_API_KEY")
 MODEL = os.getenv("MODEL")
@@ -136,6 +136,8 @@ class RAGState(TypedDict):
     sub_questions: Optional[List[str]]
     is_sub_agent: bool
     sub_results: Annotated[List[dict], operator.add]
+    request_context: ChatRequestContext
+    rag_step_group: Optional[str]
 
 
 def _format_docs(docs: List[dict]) -> str:
@@ -150,14 +152,54 @@ def _format_docs(docs: List[dict]) -> str:
     return "\n\n---\n\n".join(chunks)
 
 
+def _emit(state: RAGState, icon: str, label: str, detail: str = "") -> None:
+    ctx = state["request_context"]
+    ctx.emit_rag_step(
+        icon,
+        label,
+        detail,
+        group=state.get("rag_step_group"),
+    )
+
+
+def _initial_state(
+    question: str,
+    ctx: ChatRequestContext,
+    *,
+    is_sub_agent: bool = False,
+    rag_step_group: Optional[str] = None,
+) -> dict:
+    return {
+        "question": question,
+        "query": question,
+        "context": "",
+        "docs": [],
+        "route": None,
+        "expansion_type": None,
+        "expanded_query": None,
+        "step_back_question": None,
+        "step_back_answer": None,
+        "hypothetical_doc": None,
+        "rag_trace": None,
+        "complexity": None,
+        "complexity_reason": None,
+        "sub_questions": None,
+        "is_sub_agent": is_sub_agent,
+        "sub_results": [],
+        "request_context": ctx,
+        "rag_step_group": rag_step_group,
+    }
+
+
 def retrieve_initial(state: RAGState) -> RAGState:
     query = state["question"]
-    emit_rag_step("🔍", "正在检索知识库...", f"查询: {query[:50]}")
+    _emit(state, "🔍", "正在检索知识库...", "初始检索")
     retrieved = retrieve_documents(query, top_k=5)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
     context = _format_docs(results)
-    emit_rag_step(
+    _emit(
+        state,
         "🧱",
         "三级分块检索",
         (
@@ -165,7 +207,8 @@ def retrieve_initial(state: RAGState) -> RAGState:
             f"候选 {retrieve_meta.get('candidate_k', 0)}"
         ),
     )
-    emit_rag_step(
+    _emit(
+        state,
         "🧩",
         "Auto-merging 合并",
         (
@@ -174,9 +217,9 @@ def retrieve_initial(state: RAGState) -> RAGState:
             f"替换片段: {retrieve_meta.get('auto_merge_replaced_chunks', 0)}"
         ),
     )
-    emit_rag_step("✅", f"检索完成，找到 {len(results)} 个片段", f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}")
+    _emit(state, "✅", f"检索完成，找到 {len(results)} 个片段", f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}")
     if not results:
-        emit_rag_step("⚠️", "无可用片段，跳过评估并强制 step-back 扩展检索")
+        _emit(state, "⚠️", "无可用片段，跳过评估并强制 step-back 扩展检索")
     rag_trace = {
         "tool_used": True,
         "tool_name": "search_knowledge_base",
@@ -203,7 +246,7 @@ def _route_after_initial(state: RAGState) -> Literal["grade_documents", "rewrite
 
 def grade_documents_node(state: RAGState) -> RAGState:
     grader = _get_grader_model()
-    emit_rag_step("📊", "正在评估文档相关性...")
+    _emit(state, "📊", "正在评估文档相关性...")
     if not grader:
         grade_update = {
             "grade_score": "unknown",
@@ -222,9 +265,9 @@ def grade_documents_node(state: RAGState) -> RAGState:
     score = (response.binary_score or "").strip().lower()
     route = "generate_answer" if score == "yes" else "rewrite_question"
     if route == "generate_answer":
-        emit_rag_step("✅", "文档相关性评估通过", f"评分: {score}")
+        _emit(state, "✅", "文档相关性评估通过", f"评分: {score}")
     else:
-        emit_rag_step("⚠️", "文档相关性不足，将重写查询", f"评分: {score}")
+        _emit(state, "⚠️", "文档相关性不足，将重写查询", f"评分: {score}")
     grade_update = {
         "grade_score": score,
         "grade_route": route,
@@ -238,7 +281,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
 def rewrite_question_node(state: RAGState) -> RAGState:
     question = state["question"]
     force_step_back = not state.get("docs")
-    emit_rag_step("✏️", "正在重写查询...")
+    _emit(state, "✏️", "正在重写查询...")
 
     if force_step_back:
         strategy = "step_back"
@@ -267,14 +310,14 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     hypothetical_doc = ""
 
     if strategy in ("step_back", "complex"):
-        emit_rag_step("🧠", f"使用策略: {strategy}", "生成退步问题")
+        _emit(state, "🧠", f"使用策略: {strategy}", "生成退步问题")
         step_back = step_back_expand(question)
         step_back_question = step_back.get("step_back_question", "")
         step_back_answer = step_back.get("step_back_answer", "")
         expanded_query = step_back.get("expanded_query", question)
 
     if not force_step_back and strategy in ("hyde", "complex"):
-        emit_rag_step("📝", "HyDE 假设性文档生成中...")
+        _emit(state, "📝", "HyDE 假设性文档生成中...")
         hypothetical_doc = generate_hypothetical_document(question)
 
     rag_trace = state.get("rag_trace", {}) or {}
@@ -296,7 +339,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
 
 def retrieve_expanded(state: RAGState) -> RAGState:
     strategy = state.get("expansion_type") or "step_back"
-    emit_rag_step("🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
+    _emit(state, "🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
     results: List[dict] = []
     rerank_errors = []
     retrieval_trace: dict = {}
@@ -306,7 +349,8 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=5)
         results.extend(retrieved_hyde.get("docs", []))
         hyde_meta = retrieved_hyde.get("meta", {})
-        emit_rag_step(
+        _emit(
+            state,
             "🧱",
             "HyDE 三级检索",
             (
@@ -324,7 +368,8 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         retrieved_stepback = retrieve_documents(expanded_query, top_k=5)
         results.extend(retrieved_stepback.get("docs", []))
         step_meta = retrieved_stepback.get("meta", {})
-        emit_rag_step(
+        _emit(
+            state,
             "🧱",
             "Step-back 三级检索",
             (
@@ -345,7 +390,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         item["rrf_rank"] = idx
 
     context = _format_docs(deduped)
-    emit_rag_step("✅", f"扩展检索完成，共 {len(deduped)} 个片段")
+    _emit(state, "✅", f"扩展检索完成，共 {len(deduped)} 个片段")
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update({
         "expanded_query": state.get("expanded_query") or state["question"],
@@ -388,11 +433,11 @@ DECOMPOSE_PROMPT = (
 def classify_complexity(state: RAGState) -> RAGState:
     """使用 FAST_MODEL 判断问题复杂度。"""
     question = state["question"]
-    emit_rag_step("🧭", "正在分析问题复杂度...")
+    _emit(state, "🧭", "正在分析问题复杂度...")
 
     model = _get_complexity_model()
     if not model:
-        emit_rag_step("⚠️", "复杂度模型不可用，默认简单问题")
+        _emit(state, "⚠️", "复杂度模型不可用，默认简单问题")
         return {"complexity": "simple", "complexity_reason": "model_unavailable"}
 
     prompt = COMPLEXITY_PROMPT.format(question=question)
@@ -409,9 +454,9 @@ def classify_complexity(state: RAGState) -> RAGState:
         reason = "classification_error"
 
     if complexity == "simple":
-        emit_rag_step("✅", "简单问题 → 走标准 RAG 流程", f"理由: {reason[:60]}")
+        _emit(state, "✅", "简单问题 → 走标准 RAG 流程", f"理由: {reason[:60]}")
     else:
-        emit_rag_step("🔀", "复杂问题 → 将分解为子问题并行检索", f"理由: {reason[:60]}")
+        _emit(state, "🔀", "复杂问题 → 将分解为子问题并行检索", f"理由: {reason[:60]}")
 
     return {"complexity": complexity, "complexity_reason": reason}
 
@@ -419,11 +464,11 @@ def classify_complexity(state: RAGState) -> RAGState:
 def decompose_question(state: RAGState) -> RAGState:
     """将复杂问题分解为 2-4 个独立子问题。"""
     question = state["question"]
-    emit_rag_step("🧩", "正在分解复杂问题...")
+    _emit(state, "🧩", "正在分解复杂问题...")
 
     model = _get_complexity_model()
     if not model:
-        emit_rag_step("⚠️", "分解模型不可用，使用原始问题")
+        _emit(state, "⚠️", "分解模型不可用，使用原始问题")
         return {"sub_questions": [question]}
 
     prompt = DECOMPOSE_PROMPT.format(question=question)
@@ -437,8 +482,8 @@ def decompose_question(state: RAGState) -> RAGState:
     except Exception:
         sub_qs = [question]
 
-    for i, sq in enumerate(sub_qs, 1):
-        emit_rag_step("📌", f"子问题 {i}", sq[:80])
+    for i, _sq in enumerate(sub_qs, 1):
+        _emit(state, "📌", f"子问题 {i}", "已加入并行检索")
 
     return {"sub_questions": sub_qs}
 
@@ -453,53 +498,28 @@ def _route_after_complexity(state: RAGState):
 def _fanout_sub_questions(state: RAGState):
     """将分解后的子问题通过 Send API 并行分发到 rag_sub_agent 子图。"""
     sub_qs = state.get("sub_questions") or []
+    ctx = state["request_context"]
     if not sub_qs:
         # 分解失败，回退到原有流程
-        return [Send("retrieve_initial", {
-            "question": state["question"],
-            "query": state["question"],
-            "context": "",
-            "docs": [],
-            "route": None,
-            "expansion_type": None,
-            "expanded_query": None,
-            "step_back_question": None,
-            "step_back_answer": None,
-            "hypothetical_doc": None,
-            "rag_trace": None,
-            "complexity": None,
-            "complexity_reason": None,
-            "sub_questions": None,
-            "is_sub_agent": False,
-            "sub_results": [],
-        })]
+        return [Send("retrieve_initial", _initial_state(state["question"], ctx))]
     return [
-        Send("rag_sub_agent", {
-            "question": sq,
-            "query": sq,
-            "context": "",
-            "docs": [],
-            "route": None,
-            "expansion_type": None,
-            "expanded_query": None,
-            "step_back_question": None,
-            "step_back_answer": None,
-            "hypothetical_doc": None,
-            "rag_trace": None,
-            "complexity": None,
-            "complexity_reason": None,
-            "sub_questions": None,
-            "is_sub_agent": True,
-            "sub_results": [],
-        })
-        for sq in sub_qs
+        Send(
+            "rag_sub_agent",
+            _initial_state(
+                sq,
+                ctx,
+                is_sub_agent=True,
+                rag_step_group=f"子问题 {i}",
+            ),
+        )
+        for i, sq in enumerate(sub_qs, 1)
     ]
 
 
 def synthesis(state: RAGState) -> RAGState:
     """合并所有子 Agent 检索到的文档，去重排序后输出最终上下文。"""
     sub_results = state.get("sub_results", [])
-    emit_rag_step("🔬", f"正在合成 {len(sub_results)} 个子问题的检索结果...")
+    _emit(state, "🔬", f"正在合成 {len(sub_results)} 个子问题的检索结果...")
 
     all_docs: List[dict] = []
     for result in sub_results:
@@ -511,7 +531,7 @@ def synthesis(state: RAGState) -> RAGState:
         item["rrf_rank"] = idx
 
     context = _format_docs(deduped)
-    emit_rag_step("✅", f"合成完成，共 {len(deduped)} 个去重片段")
+    _emit(state, "✅", f"合成完成，共 {len(deduped)} 个去重片段")
 
     # 合并所有子 Agent 的 rag_trace
     sub_traces = []
@@ -581,12 +601,7 @@ _rag_sub_agent_graph = build_rag_sub_agent_graph()
 def rag_sub_agent(state: RAGState) -> RAGState:
     """包装子图，将子图结果封装为 sub_results 以便主图通过 reducer 合并。"""
     question = state.get("question", "")
-    # 设置子 Agent 分组标识，使子图内所有 emit_rag_step 自动携带 group
-    set_sub_agent_group(question)
-    try:
-        result = _rag_sub_agent_graph.invoke(state)
-    finally:
-        clear_sub_agent_group()
+    result = _rag_sub_agent_graph.invoke(state)
     return {
         "sub_results": [{
             "question": question,
@@ -659,23 +674,5 @@ def build_rag_graph():
 rag_graph = build_rag_graph()
 
 
-def run_rag_graph(question: str) -> dict:
-    return rag_graph.invoke({
-        "question": question,
-        "query": question,
-        "context": "",
-        "docs": [],
-        "route": None,
-        "expansion_type": None,
-        "expanded_query": None,
-        "step_back_question": None,
-        "step_back_answer": None,
-        "hypothetical_doc": None,
-        "rag_trace": None,
-        # 复杂度路由新增字段
-        "complexity": None,
-        "complexity_reason": None,
-        "sub_questions": None,
-        "is_sub_agent": False,
-        "sub_results": [],
-    })
+def run_rag_graph(question: str, ctx: ChatRequestContext) -> dict:
+    return rag_graph.invoke(_initial_state(question, ctx))

@@ -216,10 +216,9 @@ npm run build
     - [resources.py](backend/api/resources.py)：Milvus / 上传目录等共享资源。
   - `chat/`：对话域
     - [service.py](backend/chat/service.py)：非流式 / 流式聊天入口。
-    - [runtime.py](backend/chat/runtime.py)：LangChain Agent 实例。
+    - [runtime.py](backend/chat/runtime.py)：模型客户端与每请求 Agent 创建。
+    - [request_context.py](backend/chat/request_context.py)：每请求 RAG step、RAG trace、工具预算上下文。
     - [storage.py](backend/chat/storage.py)：会话 PostgreSQL + Redis。
-    - [streaming.py](backend/chat/streaming.py)：RAG 步骤 SSE 推送（非 Agent 工具，供 pipeline 跨线程上报进度）。
-    - [rag_context.py](backend/chat/rag_context.py)：单轮 RAG trace 暂存（工具 → 会话持久化）。
   - `rag/`：检索增强
     - [pipeline.py](backend/rag/pipeline.py)：LangGraph RAG 工作流。
     - [utils.py](backend/rag/utils.py)：混合检索、Rerank、Auto-merging。
@@ -261,7 +260,7 @@ npm run build
 3. LangChain Agent 根据问题类型决定是否调用工具：
   - 天气问题 → `get_current_weather`
   - 知识问答 → `search_knowledge_base`
-4. 若命中知识库工具，进入 `rag_pipeline.py` 执行检索工作流，各阶段通过 `emit_rag_step()` 实时推送到前端。
+4. 若命中知识库工具，进入 `rag_pipeline.py` 执行检索工作流，各阶段通过 `ChatRequestContext` 实时推送到前端。
 5. 检索结果与 RAG Trace 一起返回，Agent 流式生成最终回答（逐 token 推送）。
 6. 前端 ReadableStream 逐块解析 SSE，打字机效果实时渲染。
 7. 同时消息持久化到 PostgreSQL，并通过 Redis 缓存加速历史会话回放。
@@ -355,31 +354,28 @@ npm run build
 FastAPI 运行在单线程的 asyncio Event Loop 上。为了不阻塞主线程，LangChain 通常将同步工具（如 `search_knowledge_base`）放到 `ThreadPoolExecutor` 中运行。但在子线程中，无法直接访问主线程的 `asyncio.Queue`，且 `asyncio.get_event_loop()` 通常会失败。
 
 **解决方案**：
-我们采用了 **"Global Loop Capture + Threadsafe Callback"** 模式：
+我们采用了 **"Request Context + Threadsafe Callback"** 模式：
 
-1.  **Loop 捕获 (Main Thread)**:
-    在 Agent 开始生成前，主线程调用 `set_rag_step_queue()`。此时我们捕获当前的运行循环：`_RAG_STEP_LOOP = asyncio.get_running_loop()` 并保存为全局变量。
-2.  **跨线程发射 (Worker Thread)**:
-    当 RAG 工具在子线程运行时，调用 `emit_rag_step()`。
-    函数内部使用 `_RAG_STEP_LOOP.call_soon_threadsafe(queue.put_nowait, step_data)`。
-3.  **原理**:
-    `call_soon_threadsafe` 是 asyncio 唯一允许从其他线程向 Loop 注入回调的方法。它相当于向主 Loop 的"待办事项箱"投递了一个任务（即 `queue.put_nowait`），主 Loop 会在下一次 tick 立即执行它，从而实现数据的平滑流转。
+1.  **请求上下文创建 (Service Layer)**:
+    `chat_with_agent_stream()` 为每个请求创建独立的 `ChatRequestContext`，其中保存本请求的 `output_queue` 与主事件循环。
+2.  **显式依赖注入 (Tool/RAG Layer)**:
+    运行时使用 `create_agent_for_request(ctx)` 为本请求创建 agent，并通过 `make_search_knowledge_base(ctx)` 创建捕获该 `ctx` 的专属工具。RAG pipeline 入口为 `run_rag_graph(question, ctx)`。
+3.  **跨线程发射 (Worker Thread)**:
+    RAG 节点调用 `ctx.emit_rag_step(...)`，内部使用本请求保存的 `loop.call_soon_threadsafe(queue.put_nowait, event)` 将事件投递回主 Loop。
+4.  **隔离保证**:
+    RAG step、RAG trace、知识库工具调用计数都存放在请求上下文对象中。
 
 ```python
-# 核心代码摘要 (tools.py)
-def set_rag_step_queue(queue):
-    global _RAG_STEP_QUEUE, _RAG_STEP_LOOP
-    _RAG_STEP_QUEUE = queue
-    # 关键：在主线程捕获 Loop
-    _RAG_STEP_LOOP = asyncio.get_running_loop()
+# 核心代码摘要
+ctx = ChatRequestContext.for_stream(
+    user_id=user_id,
+    session_id=session_id,
+    output_queue=output_queue,
+)
+agent = create_agent_for_request(ctx)
 
-def emit_rag_step(icon, label):
-    # 关键：从子线程安全调度回主 Loop
-    if _RAG_STEP_LOOP and not _RAG_STEP_LOOP.is_closed():
-        _RAG_STEP_LOOP.call_soon_threadsafe(
-            _RAG_STEP_QUEUE.put_nowait, 
-            {"icon": icon, "label": label}
-        )
+# RAG 节点内
+ctx.emit_rag_step("🔍", "正在检索知识库...", "初始检索")
 ```
 
 ### 2. 混合检索（Hybrid Search）深度实现
@@ -419,7 +415,8 @@ POST /chat/stream → StreamingResponse(text/event-stream)
 chat_with_agent_stream()
     │
     ├── 创建统一输出队列 (asyncio.Queue)
-    ├── 设置 _RagStepProxy → emit_rag_step() 的输出直接入队
+    ├── 创建 ChatRequestContext.for_stream(...)
+    ├── create_agent_for_request(ctx) 绑定本请求专属 tool
     ├── 启动 _agent_worker 后台任务 (asyncio.create_task)
     │     └── agent.astream(stream_mode="messages") 逐 token 产出
     │           ├── AIMessageChunk (文本) → {"type": "content"} 入队
@@ -428,7 +425,7 @@ chat_with_agent_stream()
     └── 主循环：await output_queue.get() → yield SSE
           ▲
           │ (并发) RAG 工具在线程池中执行
-          │ emit_rag_step() → loop.call_soon_threadsafe → 入队
+          │ ctx.emit_rag_step() → loop.call_soon_threadsafe → 入队
           │ {"type": "rag_step"} 立即从队列取出并推送到前端
 ```
 
@@ -440,8 +437,9 @@ chat_with_agent_stream()
 - **关键设计**：Agent 流式循环运行在 `asyncio.create_task` 后台任务中，主生成器只负责从统一 `output_queue` 取事件并 yield。这样 RAG 步骤在工具执行期间（agent 阻塞等待工具返回时）仍然可以实时推送到前端。
 
 #### 2) 实时 RAG 步骤推送 (`tools.py` + `rag_pipeline.py`)
-- `emit_rag_step(icon, label, detail)` 通过 `asyncio.get_event_loop().call_soon_threadsafe()` 将步骤从同步线程安全地推送到异步队列。
-- `_RagStepProxy` 代理对象将原始 step dict 包装为 `{"type": "rag_step", "step": {...}}` 后放入统一输出队列，**无需额外 relay 任务**。
+- `ChatRequestContext.emit_rag_step(icon, label, detail)` 通过请求创建时捕获的 `loop.call_soon_threadsafe()` 将步骤从同步线程安全地推送到本请求的异步队列。
+- `make_search_knowledge_base(ctx)` 创建本请求专属 tool，LLM 仍只看到 `query` 参数；Python closure 持有当前请求的 `ctx`。
+- `rag_pipeline.py` 通过 `run_rag_graph(question, ctx)` 接收上下文，子问题进度使用安全标签（如 `子问题 1`）分组。
 - `rag_pipeline.py` 在每个关键节点发射步骤：
   - `retrieve_initial` → "正在检索知识库..."
   - `grade_documents` → "正在评估文档相关性..."
@@ -553,9 +551,7 @@ StreamingResponse(
 ### 2026-02-19 RAG 实时思考链路修复
 - **问题**：Agent 在执行同步工具（如 `search_knowledge_base`）时，由于运行在线程池中，无法正确获取主线程的 asyncio 事件循环，导致 `emit_rag_step` 事件丢失，前端"思考中"气泡一直静止。
 - **修复**：
-  1. **Backend (`tools.py`)**：在 `set_rag_step_queue` 中显式捕获主线程的 `loop`。
-  2. **Backend (`tools.py`)**：更新 `emit_rag_step` 使用捕获的 `_RAG_STEP_LOOP.call_soon_threadsafe` 跨线程调度事件。
+  1. **Backend (`service.py`)**：为每个请求创建 `ChatRequestContext`，在其中捕获主线程 `loop` 与本请求 `output_queue`。
+  2. **Backend (`tools.py` + `rag_pipeline.py`)**：使用 per-request tool factory 与显式 `ctx` 参数跨线程调度 RAG step，避免请求间串号。
   3. **Frontend (`stores/chat.ts`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
 - **效果**：用户提问后，思考气泡内实时跳动显示检索步骤（如"🔍 正在检索知识库..." -> "📊 正在评估文档相关性..."），不再只有静态的"正在思考中..."。
-
-

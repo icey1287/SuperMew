@@ -3,11 +3,9 @@ import json
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 
-from backend.chat.runtime import agent, fast_model
+from backend.chat.request_context import ChatRequestContext
+from backend.chat.runtime import create_agent_for_request, fast_model
 from backend.chat.storage import ConversationStorage
-from backend.chat.rag_context import get_last_rag_context
-from backend.chat.streaming import set_rag_step_queue
-from backend.tools import reset_knowledge_tool_calls
 
 storage = ConversationStorage()
 
@@ -96,57 +94,61 @@ def chat_with_agent(
     persistent_note = metadata.get("persistent_note", "")
     is_first_message = len(messages) == 0
 
-    get_last_rag_context(clear=True)
-    reset_knowledge_tool_calls()
+    ctx = ChatRequestContext.for_sync(user_id=user_id, session_id=session_id)
+    ctx.reset_knowledge_tool_budget()
+    request_agent = create_agent_for_request(ctx)
 
-    context_messages = _build_context_messages(messages, persistent_note, user_text)
-    messages.append(HumanMessage(content=user_text))
-    storage.save(user_id, session_id, messages)
+    try:
+        context_messages = _build_context_messages(messages, persistent_note, user_text)
+        messages.append(HumanMessage(content=user_text))
+        storage.save(user_id, session_id, messages)
 
-    result = agent.invoke(
-        {"messages": context_messages},
-        config={"recursion_limit": 8},
-    )
+        result = request_agent.invoke(
+            {"messages": context_messages},
+            config={"recursion_limit": 8},
+        )
 
-    response_content = ""
-    if isinstance(result, dict):
-        if "output" in result:
-            response_content = result["output"]
-        elif "messages" in result and result["messages"]:
-            msg = result["messages"][-1]
-            response_content = getattr(msg, "content", str(msg))
+        response_content = ""
+        if isinstance(result, dict):
+            if "output" in result:
+                response_content = result["output"]
+            elif "messages" in result and result["messages"]:
+                msg = result["messages"][-1]
+                response_content = getattr(msg, "content", str(msg))
+            else:
+                response_content = str(result)
+        elif hasattr(result, "content"):
+            response_content = result.content
         else:
             response_content = str(result)
-    elif hasattr(result, "content"):
-        response_content = result.content
-    else:
-        response_content = str(result)
 
-    messages.append(AIMessage(content=response_content))
+        messages.append(AIMessage(content=response_content))
 
-    rag_context = get_last_rag_context(clear=True)
-    rag_trace = rag_context.get("rag_trace") if rag_context else None
+        stored_trace = ctx.take_rag_trace()
+        rag_trace = stored_trace.get("rag_trace") if stored_trace else None
 
-    save_meta = dict(metadata)
-    if is_first_message:
-        save_meta["title"] = _generate_session_title_sync(user_text)
-    save_meta["persistent_note"] = _update_persistent_note_sync(
-        persistent_note, user_text, response_content
-    )
+        save_meta = dict(metadata)
+        if is_first_message:
+            save_meta["title"] = _generate_session_title_sync(user_text)
+        save_meta["persistent_note"] = _update_persistent_note_sync(
+            persistent_note, user_text, response_content
+        )
 
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(
-        user_id,
-        session_id,
-        messages,
-        metadata=save_meta,
-        extra_message_data=extra_message_data,
-    )
+        extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+        storage.save(
+            user_id,
+            session_id,
+            messages,
+            metadata=save_meta,
+            extra_message_data=extra_message_data,
+        )
 
-    return {
-        "response": response_content,
-        "rag_trace": rag_trace,
-    }
+        return {
+            "response": response_content,
+            "rag_trace": rag_trace,
+        }
+    finally:
+        ctx.close()
 
 
 async def chat_with_agent_stream(
@@ -158,117 +160,117 @@ async def chat_with_agent_stream(
     persistent_note = metadata.get("persistent_note", "")
     is_first_message = len(messages) == 0
 
-    get_last_rag_context(clear=True)
-    reset_knowledge_tool_calls()
-
     output_queue = asyncio.Queue()
-
-    class _RagStepProxy:
-        def put_nowait(self, step):
-            output_queue.put_nowait({"type": "rag_step", "step": step})
-
-    set_rag_step_queue(_RagStepProxy())
-
-    context_messages = _build_context_messages(messages, persistent_note, user_text)
-    messages.append(HumanMessage(content=user_text))
-    storage.save(user_id, session_id, messages)
-
-    title_task = None
-    if is_first_message:
-
-        def _on_title_done(fut):
-            try:
-                title = fut.result()
-                output_queue.put_nowait(
-                    {"type": "session_title", "title": title, "session_id": session_id}
-                )
-            except Exception as e:
-                print(f"Title task error: {e}")
-
-        title_task = asyncio.create_task(generate_session_title(user_text))
-        title_task.add_done_callback(_on_title_done)
-
-    full_response = ""
-
-    async def _agent_worker():
-        nonlocal full_response
-        try:
-            async for msg, _metadata in agent.astream(
-                {"messages": context_messages},
-                stream_mode="messages",
-                config={"recursion_limit": 8},
-            ):
-                if not isinstance(msg, AIMessageChunk):
-                    continue
-                if getattr(msg, "tool_call_chunks", None):
-                    continue
-
-                content = ""
-                if isinstance(msg.content, str):
-                    content = msg.content
-                elif isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, str):
-                            content += block
-                        elif isinstance(block, dict) and block.get("type") == "text":
-                            content += block.get("text", "")
-
-                if content:
-                    full_response += content
-                    await output_queue.put({"type": "content", "content": content})
-        except Exception as e:
-            await output_queue.put({"type": "error", "content": str(e)})
-        finally:
-            await output_queue.put(None)
-
-    agent_task = asyncio.create_task(_agent_worker())
-
-    try:
-        while True:
-            event = await output_queue.get()
-            if event is None:
-                break
-            yield f"data: {json.dumps(event)}\n\n"
-    except GeneratorExit:
-        agent_task.cancel()
-        try:
-            await agent_task
-        except asyncio.CancelledError:
-            pass
-        raise
-    finally:
-        set_rag_step_queue(None)
-        if not agent_task.done():
-            agent_task.cancel()
-
-    rag_context = get_last_rag_context(clear=True)
-    rag_trace = rag_context.get("rag_trace") if rag_context else None
-
-    if rag_trace:
-        yield f"data: {json.dumps({'type': 'trace', 'rag_trace': rag_trace})}\n\n"
-
-    yield "data: [DONE]\n\n"
-
-    save_meta = dict(metadata)
-    if is_first_message and title_task is not None:
-        try:
-            save_meta["title"] = await title_task
-        except Exception:
-            pass
-
-    try:
-        save_meta["persistent_note"] = await update_persistent_note(
-            persistent_note, user_text, full_response
-        )
-    except Exception as e:
-        print(f"Update persistent note error: {e}")
-
-    messages.append(AIMessage(content=full_response))
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(
-        user_id,
-        session_id,
-        messages,
-        metadata=save_meta,
-        extra_message_data=extra_message_data,
+    ctx = ChatRequestContext.for_stream(
+        user_id=user_id,
+        session_id=session_id,
+        output_queue=output_queue,
     )
+    ctx.reset_knowledge_tool_budget()
+    request_agent = create_agent_for_request(ctx)
+
+    try:
+        context_messages = _build_context_messages(messages, persistent_note, user_text)
+        messages.append(HumanMessage(content=user_text))
+        storage.save(user_id, session_id, messages)
+
+        title_task = None
+        if is_first_message:
+
+            def _on_title_done(fut):
+                try:
+                    title = fut.result()
+                    output_queue.put_nowait(
+                        {"type": "session_title", "title": title, "session_id": session_id}
+                    )
+                except Exception as e:
+                    print(f"Title task error: {e}")
+
+            title_task = asyncio.create_task(generate_session_title(user_text))
+            title_task.add_done_callback(_on_title_done)
+
+        full_response = ""
+
+        async def _agent_worker():
+            nonlocal full_response
+            try:
+                async for msg, _metadata in request_agent.astream(
+                    {"messages": context_messages},
+                    stream_mode="messages",
+                    config={"recursion_limit": 8},
+                ):
+                    if not isinstance(msg, AIMessageChunk):
+                        continue
+                    if getattr(msg, "tool_call_chunks", None):
+                        continue
+
+                    content = ""
+                    if isinstance(msg.content, str):
+                        content = msg.content
+                    elif isinstance(msg.content, list):
+                        for block in msg.content:
+                            if isinstance(block, str):
+                                content += block
+                            elif isinstance(block, dict) and block.get("type") == "text":
+                                content += block.get("text", "")
+
+                    if content:
+                        full_response += content
+                        await output_queue.put({"type": "content", "content": content})
+            except Exception as e:
+                await output_queue.put({"type": "error", "content": str(e)})
+            finally:
+                await output_queue.put(None)
+
+        agent_task = asyncio.create_task(_agent_worker())
+
+        try:
+            while True:
+                event = await output_queue.get()
+                if event is None:
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+        except GeneratorExit:
+            agent_task.cancel()
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                pass
+            raise
+        finally:
+            if not agent_task.done():
+                agent_task.cancel()
+
+        stored_trace = ctx.take_rag_trace()
+        rag_trace = stored_trace.get("rag_trace") if stored_trace else None
+
+        if rag_trace:
+            yield f"data: {json.dumps({'type': 'trace', 'rag_trace': rag_trace})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+        save_meta = dict(metadata)
+        if is_first_message and title_task is not None:
+            try:
+                save_meta["title"] = await title_task
+            except Exception:
+                pass
+
+        try:
+            save_meta["persistent_note"] = await update_persistent_note(
+                persistent_note, user_text, full_response
+            )
+        except Exception as e:
+            print(f"Update persistent note error: {e}")
+
+        messages.append(AIMessage(content=full_response))
+        extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+        storage.save(
+            user_id,
+            session_id,
+            messages,
+            metadata=save_meta,
+            extra_message_data=extra_message_data,
+        )
+    finally:
+        ctx.close()
