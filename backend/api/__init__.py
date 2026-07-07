@@ -1,3 +1,1 @@
-from backend.api.router import router
-
-__all__ = ["router"]
+"""API package. Import the application router from backend.api.router."""

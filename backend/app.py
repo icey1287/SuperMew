@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api import router
+from backend.api.router import router
 from backend.infra.database import init_db
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"

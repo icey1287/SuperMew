@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.chat import storage
+from backend.chat.storage import storage
 from backend.db.models import User
 from backend.infra.auth import get_current_user
 from backend.schemas import (

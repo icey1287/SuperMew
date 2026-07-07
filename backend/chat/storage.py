@@ -219,3 +219,6 @@ class ConversationStorage:
             return True
         finally:
             db.close()
+
+
+storage = ConversationStorage()

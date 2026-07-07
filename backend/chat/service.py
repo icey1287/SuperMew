@@ -5,9 +5,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 
 from backend.chat.request_context import ChatRequestContext
 from backend.chat.runtime import create_agent_for_request, fast_model
-from backend.chat.storage import ConversationStorage
-
-storage = ConversationStorage()
+from backend.chat.storage import storage
 
 CONTEXT_WINDOW_MESSAGES = 6
 
