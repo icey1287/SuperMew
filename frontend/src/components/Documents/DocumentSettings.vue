@@ -56,8 +56,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  // Clean up any active pollers on settings close to avoid memory leaks
-  documentStore.stopUploadJobPolling();
+  // Upload polling belongs to the active upload job, not this settings view.
   documentStore.stopAllDeleteJobPolling();
 });
 </script>
