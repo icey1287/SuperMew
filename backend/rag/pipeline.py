@@ -138,6 +138,7 @@ class RAGState(TypedDict):
     sub_results: Annotated[List[dict], operator.add]
     request_context: ChatRequestContext
     rag_step_group: Optional[str]
+    rag_step_group_label: Optional[str]
 
 
 def _format_docs(docs: List[dict]) -> str:
@@ -159,6 +160,7 @@ def _emit(state: RAGState, icon: str, label: str, detail: str = "") -> None:
         label,
         detail,
         group=state.get("rag_step_group"),
+        group_label=state.get("rag_step_group_label"),
     )
 
 
@@ -168,6 +170,7 @@ def _initial_state(
     *,
     is_sub_agent: bool = False,
     rag_step_group: Optional[str] = None,
+    rag_step_group_label: Optional[str] = None,
 ) -> dict:
     return {
         "question": question,
@@ -188,6 +191,7 @@ def _initial_state(
         "sub_results": [],
         "request_context": ctx,
         "rag_step_group": rag_step_group,
+        "rag_step_group_label": rag_step_group_label,
     }
 
 
@@ -482,8 +486,8 @@ def decompose_question(state: RAGState) -> RAGState:
     except Exception:
         sub_qs = [question]
 
-    for i, _sq in enumerate(sub_qs, 1):
-        _emit(state, "📌", f"子问题 {i}", "已加入并行检索")
+    for i, sq in enumerate(sub_qs, 1):
+        _emit(state, "📌", f"子问题 {i}", f"{sq[:80]} 已加入并行检索")
 
     return {"sub_questions": sub_qs}
 
@@ -510,6 +514,7 @@ def _fanout_sub_questions(state: RAGState):
                 ctx,
                 is_sub_agent=True,
                 rag_step_group=f"子问题 {i}",
+                rag_step_group_label=sq,
             ),
         )
         for i, sq in enumerate(sub_qs, 1)

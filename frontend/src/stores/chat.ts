@@ -18,6 +18,7 @@ export const useChatStore = defineStore('chat', {
     appendRagStepToGroups(prev: GroupedRagStep[], step: RagStep): GroupedRagStep[] {
       const groups = prev ? [...prev] : [];
       const g = step.group || null;
+      const groupLabel = step.group_label || g;
       
       if (g) {
         const idx = groups.findIndex((grp) => grp.group === g);
@@ -25,14 +26,14 @@ export const useChatStore = defineStore('chat', {
           const existing = groups[idx];
           const updated: GroupedRagStep = {
             group: existing.group,
-            label: existing.label,
+            label: existing.label || groupLabel,
             steps: [...existing.steps, step],
             collapsed: existing.collapsed,
           };
           groups[idx] = updated;
           return groups;
         }
-        return [...groups, { group: g, label: g, steps: [step], collapsed: true }];
+        return [...groups, { group: g, label: groupLabel, steps: [step], collapsed: true }];
       }
 
       const last = groups.length > 0 ? groups[groups.length - 1] : null;

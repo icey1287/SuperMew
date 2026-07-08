@@ -54,6 +54,7 @@ class ChatRequestContext:
         detail: str = "",
         *,
         group: Optional[str] = None,
+        group_label: Optional[str] = None,
     ) -> None:
         with self._lock:
             if not self._active:
@@ -66,6 +67,8 @@ class ChatRequestContext:
         step = {"icon": icon, "label": label, "detail": detail}
         if group:
             step["group"] = group
+        if group_label:
+            step["group_label"] = group_label
 
         try:
             if not loop.is_closed():

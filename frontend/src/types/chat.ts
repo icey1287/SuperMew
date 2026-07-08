@@ -53,6 +53,7 @@ export interface RagTrace {
 export interface RagStep {
   key?: string;
   group?: string | null;
+  group_label?: string | null;
   label: string;
   icon?: string;
   detail?: string;
