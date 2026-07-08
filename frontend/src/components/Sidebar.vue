@@ -49,6 +49,7 @@ const onHistory = async () => {
   if (sessionStore.showHistorySidebar) {
     try {
       await sessionStore.fetchSessions();
+      chatStore.mergeCachedSessionsIntoHistory();
     } catch (error: any) {
       alert(error.message);
     }

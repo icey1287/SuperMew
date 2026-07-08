@@ -7,14 +7,95 @@ import type { Message, RagStep, GroupedRagStep } from '@/types/chat';
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as Message[],
+    messagesBySession: {} as Record<string, Message[]>,
     userInput: '',
     isLoading: false,
     activeNav: 'newChat' as 'newChat' | 'history' | 'settings',
     sessionId: 'session_' + Date.now(),
+    streamingSessionId: null as string | null,
     abortController: null as AbortController | null,
   }),
 
+  getters: {
+    isViewingStreamingSession(state): boolean {
+      return state.isLoading && state.streamingSessionId === state.sessionId;
+    },
+
+    isInputLocked(state): boolean {
+      return state.isLoading && state.streamingSessionId !== state.sessionId;
+    },
+  },
+
   actions: {
+    ensureSessionMessages(sessionId: string): Message[] {
+      if (!this.messagesBySession[sessionId]) {
+        this.messagesBySession[sessionId] = [];
+      }
+      return this.messagesBySession[sessionId];
+    },
+
+    setViewedSession(sessionId: string, messages?: Message[]) {
+      if (messages) {
+        this.messagesBySession[sessionId] = messages;
+      }
+      this.sessionId = sessionId;
+      this.messages = this.ensureSessionMessages(sessionId);
+      this.activeNav = 'newChat';
+    },
+
+    createSessionId(): string {
+      let nextId = 'session_' + Date.now();
+      while (this.messagesBySession[nextId]) {
+        nextId = 'session_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      }
+      return nextId;
+    },
+
+    getLocalSessionTitle(sessionId: string, messages: Message[]): string {
+      const firstUserMessage = messages.find((msg) => msg.isUser && msg.text.trim());
+      if (!firstUserMessage) return sessionId;
+      const title = firstUserMessage.text.trim();
+      return title.length > 10 ? title.substring(0, 10) + '...' : title;
+    },
+
+    mapServerMessages(messages: any[]): Message[] {
+      return (messages || []).map((msg: any) => ({
+        text: msg.content,
+        isUser: msg.type === 'human',
+        ragTrace: msg.rag_trace || null,
+      }));
+    },
+
+    mergeCachedSessionsIntoHistory() {
+      const sessionStore = useSessionStore();
+      const sessions = sessionStore.sessions.map((session) => ({
+        ...session,
+        isStreaming: this.isLoading && session.session_id === this.streamingSessionId,
+      }));
+
+      Object.entries(this.messagesBySession).forEach(([sessionId, messages]) => {
+        if (!messages.length) return;
+
+        const existingIndex = sessions.findIndex((session) => session.session_id === sessionId);
+        const existing = existingIndex >= 0 ? sessions[existingIndex] : null;
+        const localSession = {
+          session_id: sessionId,
+          title: existing?.title || this.getLocalSessionTitle(sessionId, messages),
+          message_count: Math.max(existing?.message_count || 0, messages.length),
+          updated_at: existing?.updated_at || new Date().toISOString(),
+          isStreaming: this.isLoading && sessionId === this.streamingSessionId,
+        };
+
+        if (existingIndex >= 0) {
+          sessions[existingIndex] = { ...existing, ...localSession };
+        } else {
+          sessions.unshift(localSession);
+        }
+      });
+
+      sessionStore.sessions = sessions;
+    },
+
     appendRagStepToGroups(prev: GroupedRagStep[], step: RagStep): GroupedRagStep[] {
       const groups = prev ? [...prev] : [];
       const g = step.group || null;
@@ -57,36 +138,50 @@ export const useChatStore = defineStore('chat', {
     },
 
     handleNewChat() {
-      this.messages = [];
-      this.sessionId = 'session_' + Date.now();
-      this.activeNav = 'newChat';
+      const sessionId = this.createSessionId();
+      this.messagesBySession[sessionId] = [];
+      this.setViewedSession(sessionId);
       const sessionStore = useSessionStore();
       sessionStore.showHistorySidebar = false;
     },
 
     handleClearChat() {
+      if (this.streamingSessionId === this.sessionId) {
+        alert('当前会话正在生成回答，请先终止或等待完成后再清空');
+        return;
+      }
       if (confirm('确定要清空当前对话吗？喵？')) {
-        this.messages = [];
+        this.messagesBySession[this.sessionId] = [];
+        this.messages = this.messagesBySession[this.sessionId];
       }
     },
 
     async loadSession(sessionId: string) {
-      this.sessionId = sessionId;
-      this.activeNav = 'newChat';
       const sessionStore = useSessionStore();
+      const cachedMessages = this.messagesBySession[sessionId];
+
+      this.setViewedSession(sessionId, cachedMessages || []);
       sessionStore.showHistorySidebar = false;
+
+      if (sessionId === this.streamingSessionId) {
+        this.mergeCachedSessionsIntoHistory();
+        return;
+      }
 
       try {
         const response = await api.get(`/sessions/${encodeURIComponent(sessionId)}`);
         const data = response.data;
-        this.messages = (data.messages || []).map((msg: any) => ({
-          text: msg.content,
-          isUser: msg.type === 'human',
-          ragTrace: msg.rag_trace || null,
-        }));
+        const loadedMessages = this.mapServerMessages(data.messages || []);
+        this.messagesBySession[sessionId] = loadedMessages;
+        if (this.sessionId === sessionId) {
+          this.messages = loadedMessages;
+        }
+        this.mergeCachedSessionsIntoHistory();
       } catch (error: any) {
         const errMsg = error.response?.data?.detail || error.message || '加载会话失败';
-        this.messages = [];
+        if (!cachedMessages && this.sessionId === sessionId) {
+          this.messages = [];
+        }
         throw new Error(errMsg);
       }
     },
@@ -107,30 +202,47 @@ export const useChatStore = defineStore('chat', {
       }
 
       const text = this.userInput.trim();
-      if (!text || this.isLoading) return;
+      if (!text) return;
+      if (this.isLoading) {
+        alert('当前已有回答正在生成，请先等待完成或回到该会话终止回答');
+        return;
+      }
 
-      this.messages.push({
+      const requestSessionId = this.sessionId;
+      const requestMessages = this.ensureSessionMessages(requestSessionId);
+      if (this.sessionId === requestSessionId) {
+        this.messages = requestMessages;
+      }
+
+      requestMessages.push({
         text: text,
         isUser: true,
       });
 
-      if (this.messages.length === 1) {
-        const tempTitle = text.length > 10 ? text.substring(0, 10) + '...' : text;
-        const existingSession = sessionStore.sessions.find((s) => s.session_id === this.sessionId);
-        if (!existingSession) {
+      if (requestMessages.length === 1) {
+        const tempTitle = this.getLocalSessionTitle(requestSessionId, requestMessages);
+        const existingSession = sessionStore.sessions.find((s) => s.session_id === requestSessionId);
+        if (existingSession) {
+          existingSession.title = existingSession.title || tempTitle;
+          existingSession.message_count = requestMessages.length;
+          existingSession.updated_at = new Date().toISOString();
+          existingSession.isStreaming = true;
+        } else {
           sessionStore.sessions.unshift({
-            session_id: this.sessionId,
+            session_id: requestSessionId,
             title: tempTitle,
-            message_count: 1,
+            message_count: requestMessages.length,
             updated_at: new Date().toISOString(),
+            isStreaming: true,
           });
         }
       }
 
       this.userInput = '';
       this.isLoading = true;
+      this.streamingSessionId = requestSessionId;
 
-      this.messages.push({
+      requestMessages.push({
         text: '',
         isUser: false,
         isThinking: true,
@@ -138,7 +250,8 @@ export const useChatStore = defineStore('chat', {
         ragSteps: [],
         _groupedSteps: [],
       });
-      const botMsgIdx = this.messages.length - 1;
+      const botMsgIdx = requestMessages.length - 1;
+      this.mergeCachedSessionsIntoHistory();
 
       this.abortController = new AbortController();
 
@@ -151,7 +264,7 @@ export const useChatStore = defineStore('chat', {
           },
           body: JSON.stringify({
             message: text,
-            session_id: this.sessionId,
+            session_id: requestSessionId,
           }),
           signal: this.abortController.signal,
         });
@@ -187,14 +300,20 @@ export const useChatStore = defineStore('chat', {
               try {
                 const data = JSON.parse(dataStr);
                 if (data.type === 'content') {
-                  if (this.messages[botMsgIdx].isThinking) {
-                    this.messages[botMsgIdx].isThinking = false;
+                  const botMsg = requestMessages[botMsgIdx];
+                  if (!botMsg) continue;
+                  if (botMsg.isThinking) {
+                    botMsg.isThinking = false;
                   }
-                  this.messages[botMsgIdx].text += data.content;
+                  botMsg.text += data.content;
                 } else if (data.type === 'trace') {
-                  this.messages[botMsgIdx].ragTrace = data.rag_trace;
+                  const botMsg = requestMessages[botMsgIdx];
+                  if (botMsg) {
+                    botMsg.ragTrace = data.rag_trace;
+                  }
                 } else if (data.type === 'rag_step') {
-                  const msg = this.messages[botMsgIdx];
+                  const msg = requestMessages[botMsgIdx];
+                  if (!msg) continue;
                   if (!msg.ragSteps) msg.ragSteps = [];
                   msg.ragSteps.push(data.step);
                   msg._groupedSteps = this.appendRagStepToGroups(msg._groupedSteps || [], data.step);
@@ -205,18 +324,22 @@ export const useChatStore = defineStore('chat', {
                   if (s) {
                     s.title = data.title;
                     s.updated_at = new Date().toISOString();
-                    s.message_count = this.messages.length;
+                    s.message_count = requestMessages.length;
+                    s.isStreaming = data.session_id === this.streamingSessionId;
                   } else {
                     sessionStore.sessions.unshift({
                       session_id: data.session_id,
                       title: data.title,
-                      message_count: this.messages.length,
+                      message_count: requestMessages.length,
                       updated_at: new Date().toISOString(),
+                      isStreaming: data.session_id === this.streamingSessionId,
                     });
                   }
                 } else if (data.type === 'error') {
-                  this.messages[botMsgIdx].isThinking = false;
-                  this.messages[botMsgIdx].text += `\n[Error: ${data.content}]`;
+                  const botMsg = requestMessages[botMsgIdx];
+                  if (!botMsg) continue;
+                  botMsg.isThinking = false;
+                  botMsg.text += `\n[Error: ${data.content}]`;
                 }
               } catch (e) {
                 console.warn('SSE parse error:', e);
@@ -225,20 +348,24 @@ export const useChatStore = defineStore('chat', {
           }
         }
       } catch (error: any) {
+        const botMsg = requestMessages[botMsgIdx];
+        if (!botMsg) return;
         if (error.name === 'AbortError') {
-          this.messages[botMsgIdx].isThinking = false;
-          if (!this.messages[botMsgIdx].text) {
-            this.messages[botMsgIdx].text = '(已终止回答)';
+          botMsg.isThinking = false;
+          if (!botMsg.text) {
+            botMsg.text = '(已终止回答)';
           } else {
-            this.messages[botMsgIdx].text += '\n\n_(回答已被终止)_';
+            botMsg.text += '\n\n_(回答已被终止)_';
           }
         } else {
-          this.messages[botMsgIdx].isThinking = false;
-          this.messages[botMsgIdx].text = `喵呜... 出了点问题：${error.message}`;
+          botMsg.isThinking = false;
+          botMsg.text = `喵呜... 出了点问题：${error.message}`;
         }
       } finally {
         this.isLoading = false;
+        this.streamingSessionId = null;
         this.abortController = null;
+        this.mergeCachedSessionsIntoHistory();
       }
     },
   },

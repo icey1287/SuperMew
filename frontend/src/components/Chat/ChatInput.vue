@@ -1,7 +1,7 @@
 <template>
   <div class="input-area-wrapper">
     <div class="input-area">
-      <button class="attach-btn"><i class="fas fa-paperclip"></i></button>
+      <button class="attach-btn" :disabled="chatStore.isInputLocked"><i class="fas fa-paperclip"></i></button>
       
       <textarea 
         v-model="chatStore.userInput" 
@@ -12,10 +12,11 @@
         placeholder="和喵喵说点什么吧... (Shift+Enter 换行)" 
         rows="1"
         ref="textareaRef"
+        :disabled="chatStore.isInputLocked"
       ></textarea>
       
       <button 
-        v-if="chatStore.isLoading" 
+        v-if="chatStore.isViewingStreamingSession" 
         @click="chatStore.handleStop" 
         class="send-btn stop-btn" 
         title="终止回答"
@@ -27,7 +28,8 @@
         v-else 
         @click="onSend" 
         class="send-btn" 
-        title="发送"
+        :disabled="chatStore.isLoading"
+        :title="chatStore.isLoading ? '当前已有回答正在生成' : '发送'"
       >
         <i class="fas fa-paper-plane"></i>
       </button>

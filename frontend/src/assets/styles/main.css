@@ -646,6 +646,12 @@ body {
     color: var(--primary-color);
 }
 
+.attach-btn:disabled,
+textarea:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
 textarea {
     flex: 1;
     border: none;
@@ -677,6 +683,19 @@ textarea {
 .send-btn:hover {
     transform: scale(1.1) rotate(-10deg);
     background-color: #ff8e89;
+}
+
+.send-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    transform: none;
+    background-color: var(--text-light);
+    box-shadow: none;
+}
+
+.send-btn:disabled:hover {
+    transform: none;
+    background-color: var(--text-light);
 }
 
 .footer-text {
@@ -924,6 +943,15 @@ span.cite-ref:hover {
 
 .history-item.active .session-meta {
     color: rgba(255, 255, 255, 0.8);
+}
+
+.session-status {
+    color: var(--primary-color);
+    font-weight: 700;
+}
+
+.history-item.active .session-status {
+    color: var(--white);
 }
 
 .session-body {

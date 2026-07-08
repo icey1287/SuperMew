@@ -83,4 +83,5 @@ export interface ChatSession {
   title?: string;
   message_count: number;
   updated_at: string;
+  isStreaming?: boolean;
 }

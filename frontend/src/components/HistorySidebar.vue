@@ -21,6 +21,7 @@
             <div class="session-title">{{ session.title || session.session_id }}</div>
             <div class="session-meta">
               <span>{{ session.message_count }} 条消息</span>
+              <span v-if="session.isStreaming" class="session-status">生成中</span>
               <span>{{ new Date(session.updated_at).toLocaleString() }}</span>
             </div>
           </div>
@@ -53,6 +54,11 @@ const onLoadSession = async (sessionId: string) => {
 };
 
 const onDeleteSession = async (sessionId: string) => {
+  if (chatStore.streamingSessionId === sessionId) {
+    alert('该会话正在生成回答，请先终止或等待完成后再删除');
+    return;
+  }
+
   const sessionLabel = sessionStore.sessions.find(s => s.session_id === sessionId)?.title || sessionId;
   if (!confirm(`确定要删除会话 "${sessionLabel}" 吗？`)) {
     return;
@@ -60,10 +66,11 @@ const onDeleteSession = async (sessionId: string) => {
 
   try {
     const successMsg = await sessionStore.deleteSession(sessionId);
+    delete chatStore.messagesBySession[sessionId];
     if (chatStore.sessionId === sessionId) {
-      chatStore.messages = [];
-      chatStore.sessionId = 'session_' + Date.now();
-      chatStore.activeNav = 'newChat';
+      chatStore.handleNewChat();
+    } else {
+      chatStore.mergeCachedSessionsIntoHistory();
     }
     alert(successMsg);
   } catch (error: any) {
