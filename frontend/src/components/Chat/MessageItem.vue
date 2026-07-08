@@ -1,5 +1,8 @@
 <template>
-  <div :class="['message', msg.isUser ? 'user-message' : 'bot-message']">
+  <div
+    v-if="!msg.isHitlRequest && !msg.isHitlAnswer"
+    :class="['message', msg.isUser ? 'user-message' : 'bot-message']"
+  >
     <!-- User or finished AI answer -->
     <template v-if="msg.isUser">
       <MessageContent 
@@ -10,6 +13,11 @@
     </template>
     
     <template v-else>
+      <div v-if="msg.hitlResumeText" class="hitl-resume-note">
+        <i class="fas fa-rotate-right"></i>
+        <span>已补充：{{ msg.hitlResumeText }}，继续原流程</span>
+      </div>
+
       <!-- RAG Thinking/Trace view -->
       <ThinkingTrace 
         v-if="msg.isThinking && !msg.text" 
@@ -19,7 +27,7 @@
       
       <!-- Actual response text -->
       <template v-else>
-        <MessageContent 
+        <MessageContent
           :text="msg.text" 
           :is-user="false" 
           :msg-index="msgIndex" 

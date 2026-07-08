@@ -10,9 +10,25 @@ export interface RagTrace {
   tool_used?: boolean;
   tool_name?: string;
   retrieval_stage?: string;
-  grade_score?: number;
+  grade_score?: string;
   grade_route?: string;
   rewrite_needed?: boolean;
+  retrieval_status?: string;
+  evidence_relevance?: string;
+  evidence_answerability?: string;
+  evidence_ambiguity?: string;
+  evidence_confidence?: number | null;
+  evidence_reason?: string;
+  missing_slots?: string[];
+  hitl_prompt?: string;
+  hitl_options?: string[];
+  hitl_resumed?: boolean;
+  hitl_answer?: string;
+  hitl_resume_strategy?: string;
+  hitl_resume_candidate_count?: number;
+  hitl_resume_from_status?: string;
+  hitl_resume_from_route?: string;
+  hitl_targeted_retrieved_chunks?: RetrievedChunk[];
   rewrite_strategy?: string;
   rewrite_query?: string;
   retrieval_pipeline?: string;
@@ -69,10 +85,24 @@ export interface GroupedRagStep {
   collapsed: boolean;
 }
 
+export interface HitlRequest {
+  id?: string;
+  prompt: string;
+  options?: string[];
+  route?: 'clarify' | 'scope_select' | string;
+  retrieval_status?: string;
+  original_question?: string;
+}
+
 export interface Message {
   text: string;
   isUser: boolean;
   isThinking?: boolean;
+  isHitlRequest?: boolean;
+  isHitlAnswer?: boolean;
+  hitlPrompt?: string;
+  hitlOptions?: string[];
+  hitlResumeText?: string;
   ragTrace?: RagTrace | null;
   ragSteps?: RagStep[];
   _groupedSteps?: GroupedRagStep[];

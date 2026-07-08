@@ -79,18 +79,24 @@ class ChatRequestContext:
         except Exception:
             logger.exception("Failed to emit RAG step")
 
-    def store_rag_trace(self, rag_trace: dict) -> None:
+    def store_rag_trace(self, rag_trace: dict, hitl_resume_state: Optional[dict] = None) -> None:
         if not rag_trace:
             return
         with self._lock:
             if self._active:
                 self._rag_trace = {"rag_trace": rag_trace}
+                if hitl_resume_state:
+                    self._rag_trace["hitl_resume_state"] = hitl_resume_state
 
     def take_rag_trace(self) -> Optional[dict]:
         with self._lock:
             context = self._rag_trace
             self._rag_trace = None
             return context
+
+    def peek_rag_trace(self) -> Optional[dict]:
+        with self._lock:
+            return self._rag_trace
 
     def reset_knowledge_tool_budget(self) -> None:
         with self._lock:

@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { useAuthStore } from './auth';
 import { useSessionStore } from './sessions';
 import api from '@/utils/api';
-import type { Message, RagStep, GroupedRagStep } from '@/types/chat';
+import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -14,6 +14,7 @@ export const useChatStore = defineStore('chat', {
     sessionId: 'session_' + Date.now(),
     streamingSessionId: null as string | null,
     abortController: null as AbortController | null,
+    pendingHitlBySession: {} as Record<string, HitlRequest | null>,
   }),
 
   getters: {
@@ -23,6 +24,18 @@ export const useChatStore = defineStore('chat', {
 
     isInputLocked(state): boolean {
       return state.isLoading && state.streamingSessionId !== state.sessionId;
+    },
+
+    currentPendingHitl(state): HitlRequest | null {
+      return state.pendingHitlBySession[state.sessionId] || null;
+    },
+
+    inputPlaceholder(state): string {
+      const pendingHitl = state.pendingHitlBySession[state.sessionId];
+      if (pendingHitl) {
+        return '输入自定义补充，或选择上方选项后发送...';
+      }
+      return '和喵喵说点什么吧... (Shift+Enter 换行)';
     },
   },
 
@@ -34,12 +47,73 @@ export const useChatStore = defineStore('chat', {
       return this.messagesBySession[sessionId];
     },
 
+    isHitlTrace(trace?: RagTrace | null): boolean {
+      if (!trace) return false;
+      return trace.retrieval_status === 'needs_clarification'
+        || trace.retrieval_status === 'needs_scope_selection'
+        || trace.grade_route === 'clarify'
+        || trace.grade_route === 'scope_select';
+    },
+
+    normalizeHitlRequest(hitl: any, trace?: RagTrace | null): HitlRequest {
+      const prompt = String(hitl?.prompt || trace?.hitl_prompt || '请补充一个关键信息后我继续查询。');
+      const rawOptions = hitl?.options || trace?.hitl_options || [];
+      const options = Array.isArray(rawOptions)
+        ? rawOptions.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+      return {
+        id: hitl?.id,
+        prompt,
+        options,
+        route: hitl?.route || trace?.grade_route,
+        retrieval_status: hitl?.retrieval_status || trace?.retrieval_status,
+        original_question: hitl?.original_question,
+      };
+    },
+
+    formatHitlText(hitl: HitlRequest): string {
+      const options = hitl.options || [];
+      if (!options.length) return hitl.prompt;
+      return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
+    },
+
+    derivePendingHitl(messages: Message[]): HitlRequest | null {
+      const lastMessage = messages[messages.length - 1];
+      if (!lastMessage || lastMessage.isUser || !this.isHitlTrace(lastMessage.ragTrace)) {
+        return null;
+      }
+      return this.normalizeHitlRequest(
+        {
+          prompt: lastMessage.hitlPrompt || lastMessage.ragTrace?.hitl_prompt || lastMessage.text,
+          options: lastMessage.hitlOptions || lastMessage.ragTrace?.hitl_options || [],
+        },
+        lastMessage.ragTrace
+      );
+    },
+
+    syncPendingHitlFromMessages(sessionId: string) {
+      const pendingHitl = this.derivePendingHitl(this.ensureSessionMessages(sessionId));
+      if (pendingHitl) {
+        this.pendingHitlBySession[sessionId] = pendingHitl;
+      } else {
+        delete this.pendingHitlBySession[sessionId];
+      }
+    },
+
+    selectHitlOption(option: string) {
+      this.userInput = option;
+    },
+
     setViewedSession(sessionId: string, messages?: Message[]) {
       if (messages) {
         this.messagesBySession[sessionId] = messages;
+        this.syncPendingHitlFromMessages(sessionId);
       }
       this.sessionId = sessionId;
       this.messages = this.ensureSessionMessages(sessionId);
+      if (!messages) {
+        this.syncPendingHitlFromMessages(sessionId);
+      }
       this.activeNav = 'newChat';
     },
 
@@ -59,11 +133,37 @@ export const useChatStore = defineStore('chat', {
     },
 
     mapServerMessages(messages: any[]): Message[] {
-      return (messages || []).map((msg: any) => ({
-        text: msg.content,
-        isUser: msg.type === 'human',
-        ragTrace: msg.rag_trace || null,
-      }));
+      let awaitingHitlAnswer = false;
+      let hitlResumeText: string | undefined;
+
+      return (messages || []).map((msg: any) => {
+        const ragTrace = msg.rag_trace || null;
+        const isUser = msg.type === 'human';
+        const isHitlRequest = !isUser && this.isHitlTrace(ragTrace);
+        const isHitlAnswer = isUser && awaitingHitlAnswer;
+        const resumeTextForMessage = !isUser && !isHitlRequest ? hitlResumeText : undefined;
+
+        if (isHitlRequest) {
+          awaitingHitlAnswer = true;
+          hitlResumeText = undefined;
+        } else if (isHitlAnswer) {
+          awaitingHitlAnswer = false;
+          hitlResumeText = msg.content;
+        } else if (!isUser) {
+          hitlResumeText = undefined;
+        }
+
+        return {
+          text: msg.content,
+          isUser,
+          isHitlRequest,
+          isHitlAnswer,
+          hitlPrompt: isHitlRequest ? ragTrace?.hitl_prompt || msg.content : undefined,
+          hitlOptions: isHitlRequest ? ragTrace?.hitl_options || [] : undefined,
+          hitlResumeText: resumeTextForMessage,
+          ragTrace,
+        };
+      });
     },
 
     mergeCachedSessionsIntoHistory() {
@@ -140,6 +240,7 @@ export const useChatStore = defineStore('chat', {
     handleNewChat() {
       const sessionId = this.createSessionId();
       this.messagesBySession[sessionId] = [];
+      delete this.pendingHitlBySession[sessionId];
       this.setViewedSession(sessionId);
       const sessionStore = useSessionStore();
       sessionStore.showHistorySidebar = false;
@@ -153,6 +254,7 @@ export const useChatStore = defineStore('chat', {
       if (confirm('确定要清空当前对话吗？喵？')) {
         this.messagesBySession[this.sessionId] = [];
         this.messages = this.messagesBySession[this.sessionId];
+        delete this.pendingHitlBySession[this.sessionId];
       }
     },
 
@@ -173,6 +275,7 @@ export const useChatStore = defineStore('chat', {
         const data = response.data;
         const loadedMessages = this.mapServerMessages(data.messages || []);
         this.messagesBySession[sessionId] = loadedMessages;
+        this.syncPendingHitlFromMessages(sessionId);
         if (this.sessionId === sessionId) {
           this.messages = loadedMessages;
         }
@@ -210,6 +313,7 @@ export const useChatStore = defineStore('chat', {
 
       const requestSessionId = this.sessionId;
       const requestMessages = this.ensureSessionMessages(requestSessionId);
+      const pendingHitlAtSend = this.pendingHitlBySession[requestSessionId] || null;
       if (this.sessionId === requestSessionId) {
         this.messages = requestMessages;
       }
@@ -217,7 +321,11 @@ export const useChatStore = defineStore('chat', {
       requestMessages.push({
         text: text,
         isUser: true,
+        isHitlAnswer: !!pendingHitlAtSend,
       });
+      if (pendingHitlAtSend) {
+        delete this.pendingHitlBySession[requestSessionId];
+      }
 
       if (requestMessages.length === 1) {
         const tempTitle = this.getLocalSessionTitle(requestSessionId, requestMessages);
@@ -246,6 +354,7 @@ export const useChatStore = defineStore('chat', {
         text: '',
         isUser: false,
         isThinking: true,
+        hitlResumeText: pendingHitlAtSend ? text : undefined,
         ragTrace: null,
         ragSteps: [],
         _groupedSteps: [],
@@ -254,6 +363,8 @@ export const useChatStore = defineStore('chat', {
       this.mergeCachedSessionsIntoHistory();
 
       this.abortController = new AbortController();
+      let receivedHitlRequest = false;
+      let streamHadError = false;
 
       try {
         const response = await fetch('/chat/stream', {
@@ -305,12 +416,26 @@ export const useChatStore = defineStore('chat', {
                   if (botMsg.isThinking) {
                     botMsg.isThinking = false;
                   }
+                  if (botMsg.isHitlRequest) {
+                    continue;
+                  }
                   botMsg.text += data.content;
                 } else if (data.type === 'trace') {
                   const botMsg = requestMessages[botMsgIdx];
                   if (botMsg) {
                     botMsg.ragTrace = data.rag_trace;
                   }
+                } else if (data.type === 'hitl_request') {
+                  const botMsg = requestMessages[botMsgIdx];
+                  if (!botMsg) continue;
+                  const hitl = this.normalizeHitlRequest(data.hitl, botMsg.ragTrace);
+                  receivedHitlRequest = true;
+                  this.pendingHitlBySession[requestSessionId] = hitl;
+                  botMsg.isThinking = false;
+                  botMsg.isHitlRequest = true;
+                  botMsg.hitlPrompt = hitl.prompt;
+                  botMsg.hitlOptions = hitl.options || [];
+                  botMsg.text = this.formatHitlText(hitl);
                 } else if (data.type === 'rag_step') {
                   const msg = requestMessages[botMsgIdx];
                   if (!msg) continue;
@@ -336,6 +461,7 @@ export const useChatStore = defineStore('chat', {
                     });
                   }
                 } else if (data.type === 'error') {
+                  streamHadError = true;
                   const botMsg = requestMessages[botMsgIdx];
                   if (!botMsg) continue;
                   botMsg.isThinking = false;
@@ -348,6 +474,7 @@ export const useChatStore = defineStore('chat', {
           }
         }
       } catch (error: any) {
+        streamHadError = true;
         const botMsg = requestMessages[botMsgIdx];
         if (!botMsg) return;
         if (error.name === 'AbortError') {
@@ -362,6 +489,9 @@ export const useChatStore = defineStore('chat', {
           botMsg.text = `喵呜... 出了点问题：${error.message}`;
         }
       } finally {
+        if (streamHadError && pendingHitlAtSend && !receivedHitlRequest) {
+          this.pendingHitlBySession[requestSessionId] = pendingHitlAtSend;
+        }
         this.isLoading = false;
         this.streamingSessionId = null;
         this.abortController = null;

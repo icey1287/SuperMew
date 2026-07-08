@@ -250,4 +250,114 @@ describe('chat store streaming sessions', () => {
     expect(chatStore.isLoading).toBe(false);
     expect(chatStore.streamingSessionId).toBeNull();
   });
+
+  it('turns hitl_request events into a pending HITL prompt', async () => {
+    const stream = createControlledSseFetch();
+    vi.stubGlobal('fetch', stream.fetchMock);
+    const { chatStore } = setupStores();
+
+    chatStore.userInput = '这个角色的属性是什么？';
+    const sendPromise = chatStore.handleSend();
+    await flushPromises();
+
+    stream.pushEvent({
+      type: 'trace',
+      rag_trace: {
+        retrieval_status: 'needs_clarification',
+        grade_route: 'clarify',
+        hitl_prompt: '请补充角色名',
+        hitl_options: ['丹瑾', '丹恒'],
+      },
+    });
+    await flushPromises();
+
+    stream.pushEvent({
+      type: 'hitl_request',
+      hitl: {
+        id: 'hitl-1',
+        prompt: '请补充角色名',
+        options: ['丹瑾', '丹恒'],
+        route: 'clarify',
+        retrieval_status: 'needs_clarification',
+        original_question: '这个角色的属性是什么？',
+      },
+    });
+    stream.close();
+    await sendPromise;
+
+    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
+      isThinking: false,
+      isHitlRequest: true,
+      hitlPrompt: '请补充角色名',
+      hitlOptions: ['丹瑾', '丹恒'],
+    });
+    expect(chatStore.pendingHitlBySession.session_current).toMatchObject({
+      prompt: '请补充角色名',
+      options: ['丹瑾', '丹恒'],
+    });
+    expect(chatStore.inputPlaceholder).toBe('输入自定义补充，或选择上方选项后发送...');
+  });
+
+  it('marks the next user message as a HITL answer and clears pending state after content streams', async () => {
+    const stream = createControlledSseFetch();
+    vi.stubGlobal('fetch', stream.fetchMock);
+    const { chatStore } = setupStores();
+    chatStore.pendingHitlBySession.session_current = {
+      id: 'hitl-1',
+      prompt: '请补充角色名',
+      options: ['丹瑾'],
+    };
+
+    chatStore.userInput = '丹瑾';
+    const sendPromise = chatStore.handleSend();
+    await flushPromises();
+
+    expect(chatStore.messagesBySession.session_current[0]).toMatchObject({
+      text: '丹瑾',
+      isUser: true,
+      isHitlAnswer: true,
+    });
+    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
+      isUser: false,
+      hitlResumeText: '丹瑾',
+    });
+    expect(chatStore.pendingHitlBySession.session_current).toBeUndefined();
+
+    stream.pushEvent({ type: 'content', content: '丹瑾是湮灭属性。' });
+    stream.close();
+    await sendPromise;
+
+    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
+      text: '丹瑾是湮灭属性。',
+      isThinking: false,
+      hitlResumeText: '丹瑾',
+    });
+    expect(chatStore.pendingHitlBySession.session_current).toBeUndefined();
+  });
+
+  it('maps persisted HITL answer turns as continuation state instead of normal chat turns', () => {
+    const { chatStore } = setupStores();
+
+    const messages = chatStore.mapServerMessages([
+      { type: 'human', content: '这个角色的属性是什么？' },
+      {
+        type: 'ai',
+        content: '请补充角色名',
+        rag_trace: {
+          retrieval_status: 'needs_clarification',
+          grade_route: 'clarify',
+          hitl_prompt: '请补充角色名',
+        },
+      },
+      { type: 'human', content: '丹瑾' },
+      { type: 'ai', content: '丹瑾是湮灭属性。' },
+    ]);
+
+    expect(messages[1]).toMatchObject({ isHitlRequest: true });
+    expect(messages[2]).toMatchObject({ isHitlAnswer: true });
+    expect(messages[3]).toMatchObject({
+      text: '丹瑾是湮灭属性。',
+      hitlResumeText: '丹瑾',
+    });
+  });
 });

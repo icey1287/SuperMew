@@ -1,6 +1,28 @@
 <template>
   <div class="input-area-wrapper">
-    <div class="input-area">
+    <div v-if="chatStore.currentPendingHitl" class="hitl-panel">
+      <div class="hitl-panel-header">
+        <i class="fas fa-circle-question"></i>
+        <span>需要你补充一下</span>
+      </div>
+      <div class="hitl-panel-prompt">{{ chatStore.currentPendingHitl.prompt }}</div>
+      <div
+        v-if="chatStore.currentPendingHitl.options && chatStore.currentPendingHitl.options.length"
+        class="hitl-options"
+      >
+        <button
+          v-for="option in chatStore.currentPendingHitl.options"
+          :key="option"
+          type="button"
+          class="hitl-option"
+          @click="selectHitlOption(option)"
+        >
+          {{ option }}
+        </button>
+      </div>
+    </div>
+
+    <div :class="['input-area', { 'hitl-active': chatStore.currentPendingHitl }]">
       <button class="attach-btn" :disabled="chatStore.isInputLocked"><i class="fas fa-paperclip"></i></button>
       
       <textarea 
@@ -9,7 +31,7 @@
         @compositionstart="handleCompositionStart"
         @compositionend="handleCompositionEnd"
         @input="autoResize"
-        placeholder="和喵喵说点什么吧... (Shift+Enter 换行)" 
+        :placeholder="chatStore.inputPlaceholder" 
         rows="1"
         ref="textareaRef"
         :disabled="chatStore.isInputLocked"
@@ -72,6 +94,17 @@ const resetTextareaHeight = () => {
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto';
   }
+};
+
+const focusTextarea = async () => {
+  await nextTick();
+  textareaRef.value?.focus();
+  autoResize();
+};
+
+const selectHitlOption = async (option: string) => {
+  chatStore.selectHitlOption(option);
+  await focusTextarea();
 };
 
 const onSend = async () => {

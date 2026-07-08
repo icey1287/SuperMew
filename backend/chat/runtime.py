@@ -18,6 +18,8 @@ SYSTEM_PROMPT = (
     "Do not call the same tool repeatedly in one turn. At most one knowledge tool call per turn. "
     "Once you call search_knowledge_base and receive its result, you MUST immediately produce the Final Answer based on that result. "
     "After receiving search_knowledge_base result, you MUST NOT call any tool again (including get_current_weather or search_knowledge_base). "
+    "If the tool result starts with NEEDS_CLARIFICATION or NEEDS_SCOPE_SELECTION, ask the user the requested question directly and do not answer from retrieved context. "
+    "If the tool result starts with NO_KNOWLEDGE, say the knowledge base does not contain reliable relevant information. "
     "If the retrieved context is insufficient, answer honestly that you don't know instead of making up facts. "
     "When answering based on retrieved chunks, you MUST cite the source chunks using their index numbers inline, for example [1] or [2][3]. "
     "If tool results include a Step-back Question/Answer, use that general principle to reason and answer, "

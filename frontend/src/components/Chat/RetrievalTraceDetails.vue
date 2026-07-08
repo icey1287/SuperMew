@@ -9,6 +9,33 @@
         <div v-if="msg.ragTrace.retrieval_stage" class="trace-line">
           检索阶段：{{ msg.ragTrace.retrieval_stage }}
         </div>
+        <div v-if="msg.ragTrace.retrieval_status" class="trace-line">
+          检索状态：{{ formatRetrievalStatus(msg.ragTrace.retrieval_status) }}
+        </div>
+        <div v-if="msg.ragTrace.hitl_resumed" class="trace-line">
+          HITL续跑：是
+          <span v-if="msg.ragTrace.hitl_answer">（补充：{{ msg.ragTrace.hitl_answer }}）</span>
+        </div>
+        <div v-if="msg.ragTrace.hitl_resume_strategy" class="trace-line">
+          HITL续跑策略：{{ formatHitlResumeStrategy(msg.ragTrace.hitl_resume_strategy) }}
+        </div>
+        <div v-if="msg.ragTrace.evidence_relevance || msg.ragTrace.evidence_answerability" class="trace-line">
+          证据评分：
+          相关性 {{ msg.ragTrace.evidence_relevance || '—' }} /
+          可回答性 {{ msg.ragTrace.evidence_answerability || '—' }}
+          <span v-if="msg.ragTrace.evidence_confidence !== null && msg.ragTrace.evidence_confidence !== undefined">
+            / 置信度 {{ Number(msg.ragTrace.evidence_confidence).toFixed(2) }}
+          </span>
+        </div>
+        <div v-if="msg.ragTrace.evidence_ambiguity && msg.ragTrace.evidence_ambiguity !== 'none'" class="trace-line">
+          歧义类型：{{ msg.ragTrace.evidence_ambiguity }}
+        </div>
+        <div v-if="msg.ragTrace.hitl_prompt" class="trace-line">
+          HITL提示：{{ msg.ragTrace.hitl_prompt }}
+        </div>
+        <div v-if="msg.ragTrace.hitl_options && msg.ragTrace.hitl_options.length" class="trace-line">
+          HITL选项：{{ msg.ragTrace.hitl_options.join(' / ') }}
+        </div>
         <div v-if="msg.ragTrace.grade_score" class="trace-line">
           相关性评分：{{ msg.ragTrace.grade_score }}
         </div>
@@ -204,5 +231,24 @@ const hasRetrievalFunnel = (trace: RagTrace) => {
   return trace.recall_count !== null && trace.recall_count !== undefined
     || trace.post_merge_candidate_count !== null && trace.post_merge_candidate_count !== undefined
     || trace.candidate_count !== null && trace.candidate_count !== undefined;
+};
+
+const formatRetrievalStatus = (status: string) => {
+  const labels: Record<string, string> = {
+    answerable: '可回答',
+    partial: '部分证据',
+    needs_rewrite: '需要改写',
+    needs_clarification: '需要补充条件',
+    needs_scope_selection: '需要选择方向',
+    no_knowledge: '无可用知识',
+  };
+  return labels[status] || status;
+};
+
+const formatHitlResumeStrategy = (strategy: string) => {
+  const labels: Record<string, string> = {
+    targeted_retrieval: '基于用户补充的针对性检索',
+  };
+  return labels[strategy] || strategy;
 };
 </script>

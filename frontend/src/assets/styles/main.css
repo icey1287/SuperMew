@@ -608,6 +608,74 @@ body {
     margin-bottom: 10px;
 }
 
+.hitl-panel {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border: 1px solid #f5c16c;
+    border-left-width: 4px;
+    border-radius: 8px;
+    background: #fffaf0;
+    color: var(--text-color);
+}
+
+.hitl-panel-header {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    color: #9a5b00;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.hitl-panel-prompt {
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.hitl-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.hitl-option {
+    border: 1px solid #e0b15f;
+    background: #ffffff;
+    color: #6c4800;
+    border-radius: 999px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 0.86rem;
+    cursor: pointer;
+    transition: var(--transition);
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.hitl-option:hover {
+    border-color: #bd7d00;
+    background: #fff3cf;
+}
+
+.hitl-resume-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: fit-content;
+    max-width: 100%;
+    margin-bottom: 6px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: #fffaf0;
+    color: #8a5a00;
+    border: 1px solid #f5d79a;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
 /* Input Area */
 .input-area-wrapper {
     padding: 20px 30px;
@@ -630,6 +698,11 @@ body {
     border-color: var(--primary-light);
     background-color: var(--white);
     box-shadow: 0 4px 15px rgba(255, 183, 178, 0.15);
+}
+
+.input-area.hitl-active {
+    border-color: #f5c16c;
+    background-color: #fffaf0;
 }
 
 .attach-btn {
