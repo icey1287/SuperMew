@@ -27,6 +27,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 RETRIEVAL_CANDIDATE_MULTIPLIER = _read_positive_int_env("RETRIEVAL_CANDIDATE_MULTIPLIER", 3)
 _RETRIEVAL_CANDIDATE_K_RAW = os.getenv("RETRIEVAL_CANDIDATE_K", "").strip()
+RETRIEVAL_TOP_K = _read_positive_int_env("RETRIEVAL_TOP_K", 8)
 
 
 def _read_float_env(name: str, default: float) -> float:
@@ -425,7 +426,7 @@ def _finalize_retrieval(
     return {"docs": final_docs, "meta": meta}
 
 
-def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
+def retrieve_documents(query: str, top_k: int = RETRIEVAL_TOP_K) -> Dict[str, Any]:
     candidate_k, candidate_config = resolve_candidate_k(top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:

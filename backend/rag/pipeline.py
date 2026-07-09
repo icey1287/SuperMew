@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from backend.chat.request_context import ChatRequestContext
 from backend.rag.utils import (
+    RETRIEVAL_TOP_K,
     retrieve_documents,
     step_back_expand,
     generate_hypothetical_document,
@@ -309,7 +310,7 @@ def _initial_state(
 def retrieve_initial(state: RAGState) -> RAGState:
     query = state["question"]
     _emit(state, "🔍", "正在检索知识库...", "初始检索")
-    retrieved = retrieve_documents(query, top_k=5)
+    retrieved = retrieve_documents(query, top_k=RETRIEVAL_TOP_K)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
     context = _format_docs(results)
@@ -615,7 +616,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 
     if strategy in ("hyde", "complex"):
         hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
-        retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=5)
+        retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=RETRIEVAL_TOP_K)
         results.extend(retrieved_hyde.get("docs", []))
         hyde_meta = retrieved_hyde.get("meta", {})
         _emit(
@@ -634,7 +635,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 
     if strategy in ("step_back", "complex"):
         expanded_query = state.get("expanded_query") or state["question"]
-        retrieved_stepback = retrieve_documents(expanded_query, top_k=5)
+        retrieved_stepback = retrieve_documents(expanded_query, top_k=RETRIEVAL_TOP_K)
         results.extend(retrieved_stepback.get("docs", []))
         step_meta = retrieved_stepback.get("meta", {})
         _emit(
@@ -1021,7 +1022,7 @@ def _state_from_resume(
 def _retrieve_resume_query(state: dict) -> dict:
     _emit(state, "🔎", "使用 HITL 补充进行针对性检索", "跳过复杂度判断与子问题分解")
     query = state["question"]
-    retrieved = retrieve_documents(query, top_k=5)
+    retrieved = retrieve_documents(query, top_k=RETRIEVAL_TOP_K)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
     context = _format_docs(results)

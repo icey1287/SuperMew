@@ -41,3 +41,7 @@ study = [
     "chromadb>=0.5.5",
     "bilibili-api-python>=17.0.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+exclude = ["frontend*", "tests*"]
