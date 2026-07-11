@@ -51,8 +51,8 @@ export const useChatStore = defineStore('chat', {
       if (!trace) return false;
       return trace.retrieval_status === 'needs_clarification'
         || trace.retrieval_status === 'needs_scope_selection'
-        || trace.grade_route === 'clarify'
-        || trace.grade_route === 'scope_select';
+        || trace.route === 'clarify'
+        || trace.route === 'scope_select';
     },
 
     normalizeHitlRequest(hitl: any, trace?: RagTrace | null): HitlRequest {
@@ -65,7 +65,7 @@ export const useChatStore = defineStore('chat', {
         id: hitl?.id,
         prompt,
         options,
-        route: hitl?.route || trace?.grade_route,
+        route: hitl?.route || trace?.route,
         retrieval_status: hitl?.retrieval_status || trace?.retrieval_status,
         original_question: hitl?.original_question,
       };
@@ -354,6 +354,7 @@ export const useChatStore = defineStore('chat', {
         text: '',
         isUser: false,
         isThinking: true,
+        thinkingStartedAt: Date.now(),
         hitlResumeText: pendingHitlAtSend ? text : undefined,
         ragTrace: null,
         ragSteps: [],

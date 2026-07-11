@@ -78,17 +78,62 @@ async def _collect_stream(*args, **kwargs):
 
 
 class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
+    def test_first_persistent_note_bootstraps_trimmed_history(self):
+        fake_model = Mock()
+        fake_model.invoke.return_value = Mock(content="summary")
+        history = [
+            HumanMessage(content="第一轮问题"),
+            AIMessage(content="第一轮回答"),
+        ]
+
+        with patch.object(service, "fast_model", fake_model):
+            note = service._update_persistent_note_sync(
+                "",
+                "最新问题",
+                "最新回答",
+                history_messages=history,
+            )
+
+        prompt = fake_model.invoke.call_args.args[0][0].content
+        self.assertEqual("summary", note)
+        self.assertIn("用户：第一轮问题", prompt)
+        self.assertIn("AI：第一轮回答", prompt)
+
+    async def test_stream_immediately_reports_progress_and_skips_note_for_short_chat(self):
+        fake_storage = FakeStorage()
+        update_note = AsyncMock(return_value="updated note")
+
+        def make_agent(ctx):
+            return FakeStreamAgent(ctx, chunks=["直接回答"])
+
+        with (
+            patch.object(service, "storage", fake_storage),
+            patch.object(service, "create_agent_for_request", make_agent),
+            patch.object(service, "generate_session_title", Mock(return_value="短问题")),
+            patch.object(service, "update_persistent_note", update_note),
+        ):
+            chunks = await _collect_stream("你好", "u", "s")
+
+        events = _parse_sse_events(chunks)
+        self.assertEqual("rag_step", events[0].get("type"))
+        self.assertEqual("请求已接收，正在准备回答", events[0]["step"]["label"])
+        update_note.assert_not_called()
+
     async def test_stream_hitl_request_persists_pending_state_without_content(self):
         trace = {
             "retrieval_status": "needs_clarification",
-            "grade_route": "clarify",
+            "route": "clarify",
             "hitl_prompt": "请补充角色名",
             "hitl_options": ["丹瑾", "丹恒"],
         }
         resume_state = {
-            "version": 1,
             "question": "这个角色的属性是什么？",
-            "candidate_docs": [{"filename": "chars.pdf", "text": "丹瑾属性信息"}],
+            "route": "clarify",
+            "retrieval_status": "needs_clarification",
+            "rewrite_count": 0,
+            "complexity": "simple",
+            "complexity_reason": "unit",
+            "sub_questions": [],
         }
         fake_storage = FakeStorage()
         update_note = AsyncMock(return_value="updated note")
@@ -104,7 +149,7 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(service, "storage", fake_storage),
             patch.object(service, "create_agent_for_request", make_agent),
-            patch.object(service, "generate_session_title", AsyncMock(return_value="角色问题")),
+            patch.object(service, "generate_session_title", Mock(return_value="角色问题")),
             patch.object(service, "update_persistent_note", update_note),
         ):
             chunks = await _collect_stream("这个角色的属性是什么？", "u", "s")
@@ -133,10 +178,15 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
             "route": "clarify",
             "retrieval_status": "needs_clarification",
             "answers": [],
+            "created_at": "2026-07-11T00:00:00+00:00",
             "resume_state": {
-                "version": 1,
                 "question": "这个角色的属性是什么？",
-                "candidate_docs": [{"filename": "chars.pdf", "text": "丹瑾是湮灭属性。"}],
+                "route": "clarify",
+                "retrieval_status": "needs_clarification",
+                "rewrite_count": 0,
+                "complexity": "simple",
+                "complexity_reason": "unit",
+                "sub_questions": [],
             },
         }
         fake_storage = FakeStorage(
@@ -151,7 +201,7 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
             "docs": [{"filename": "chars.pdf", "page_number": 1, "text": "丹瑾是湮灭属性。"}],
             "retrieval_status": "answerable",
             "route": "answer",
-            "rag_trace": {"retrieval_status": "answerable", "grade_route": "answer"},
+            "rag_trace": {"retrieval_status": "answerable", "route": "answer"},
         })
         create_agent_mock = Mock(side_effect=AssertionError("agent should not be created on HITL resume"))
 

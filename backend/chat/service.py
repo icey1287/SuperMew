@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 from backend.chat.request_context import ChatRequestContext
 from backend.chat.runtime import create_agent_for_request, fast_model, model
 from backend.chat.storage import storage
+from backend.schemas.chat import PendingHitlState, normalize_rag_trace
 
 CONTEXT_WINDOW_MESSAGES = 6
 PENDING_HITL_KEY = "pending_hitl"
@@ -19,13 +20,13 @@ def _is_hitl_trace(rag_trace: dict | None) -> bool:
     if not isinstance(rag_trace, dict):
         return False
     status = rag_trace.get("retrieval_status")
-    route = rag_trace.get("grade_route") or rag_trace.get("route")
+    route = rag_trace.get("route")
     return status in HITL_STATUSES or route in HITL_ROUTES
 
 
 def _hitl_route_from_trace(rag_trace: dict) -> str:
     status = rag_trace.get("retrieval_status")
-    route = rag_trace.get("grade_route") or rag_trace.get("route")
+    route = rag_trace.get("route")
     if status == "needs_scope_selection" or route == "scope_select":
         return "scope_select"
     return "clarify"
@@ -75,20 +76,19 @@ def _build_pending_hitl(
     prompt = _hitl_prompt_from_trace(rag_trace)
     options = _hitl_options_from_trace(rag_trace)
     route = _hitl_route_from_trace(rag_trace)
-    return {
-        "id": uuid4().hex,
-        "original_question": original_question,
-        "prompt": prompt,
-        "options": options,
-        "route": route,
-        "retrieval_status": (
+    return PendingHitlState(
+        id=uuid4().hex,
+        original_question=original_question,
+        prompt=prompt,
+        options=options,
+        route=route,
+        retrieval_status=(
             "needs_scope_selection" if route == "scope_select" else "needs_clarification"
         ),
-        "answers": previous_answers or [],
-        "rag_trace": rag_trace,
-        "resume_state": resume_state,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+        answers=previous_answers or [],
+        resume_state=resume_state,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    ).model_dump()
 
 
 def _build_hitl_event(pending_hitl: dict) -> dict:
@@ -124,11 +124,20 @@ def _build_hitl_resume_query(pending_hitl: dict, user_text: str) -> str:
     return "\n".join(lines)
 
 
+def _current_pending_hitl(value: dict | None) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return PendingHitlState.model_validate(value).model_dump()
+    except ValueError:
+        return None
+
+
 def _pending_resume_state(pending_hitl: dict | None) -> dict | None:
     if not isinstance(pending_hitl, dict):
         return None
     resume_state = pending_hitl.get("resume_state")
-    return resume_state if isinstance(resume_state, dict) else None
+    return dict(resume_state) if isinstance(resume_state, dict) else None
 
 
 def _extract_ai_content(msg) -> str:
@@ -206,7 +215,7 @@ def _answer_resumed_rag_sync(pending_hitl: dict, user_answer: str, rag_result: d
     docs = rag_result.get("docs") or []
     trace = rag_result.get("rag_trace") or {}
     status = rag_result.get("retrieval_status") or trace.get("retrieval_status")
-    route = rag_result.get("route") or trace.get("grade_route")
+    route = rag_result.get("route") or trace.get("route")
     if status == "no_knowledge" or route == "no_knowledge" or not docs:
         return _no_knowledge_response()
     res = model.invoke(_build_resume_answer_messages(pending_hitl, user_answer, docs))
@@ -235,39 +244,53 @@ def _build_context_messages(
     return context_messages
 
 
+def _should_update_persistent_note(messages: list, current_note: str) -> bool:
+    """Only pay for note maintenance once short-term context actually starts trimming."""
+    return bool(current_note) or len(messages) > CONTEXT_WINDOW_MESSAGES
+
+
 async def update_persistent_note(
     current_note: str,
     user_text: str,
     ai_response: str,
+    history_messages: list | None = None,
 ) -> str:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
-        lambda: _update_persistent_note_sync(current_note, user_text, ai_response),
+        lambda: _update_persistent_note_sync(
+            current_note,
+            user_text,
+            ai_response,
+            history_messages=history_messages,
+        ),
     )
 
 
-def _generate_session_title_sync(user_text: str) -> str:
+def generate_session_title(user_text: str) -> str:
+    compact_title = " ".join(user_text.split()).strip(" \t\r\n。！？!?，,；;：:")
+    return compact_title[:16] or "新会话"
+
+
+def _update_persistent_note_sync(
+    current_note: str,
+    user_text: str,
+    ai_response: str,
+    *,
+    history_messages: list | None = None,
+) -> str:
     try:
-        prompt = (
-            "请根据用户的首次提问，生成一个简短的对话标题（控制在 10 个字以内，不要标点）。\n"
-            f"用户提问：{user_text}"
-        )
-        res = fast_model.invoke([HumanMessage(content=prompt)])
-        title = (res.content or "").strip().strip('"').strip("。")
-        return title or "新会话"
-    except Exception as e:
-        print(f"Title generation error: {e}")
-        return "新会话"
-
-
-async def generate_session_title(user_text: str) -> str:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: _generate_session_title_sync(user_text))
-
-
-def _update_persistent_note_sync(current_note: str, user_text: str, ai_response: str) -> str:
-    try:
+        history_text = ""
+        if history_messages:
+            history_lines = []
+            for message in history_messages:
+                role = "用户" if isinstance(message, HumanMessage) else "AI"
+                history_lines.append(f"{role}：{_extract_ai_content(message)}")
+            history_text = (
+                "\n\n▼ 首次建立笔记时需要一并概括的此前对话：\n"
+                + "\n".join(history_lines)
+                + "\n\n"
+            )
         prompt = (
             "你是一个【Context Manager Agent】(上下文管理器)，负责维护多轮对话中的「持久化笔记」。\n"
             "笔记是模型在有限上下文窗口下的长效工作记忆，记录已解决的问题与关键事实。\n\n"
@@ -276,6 +299,7 @@ def _update_persistent_note_sync(current_note: str, user_text: str, ai_response:
             "2. 过滤噪音，控制在 500 字以内，用简明条目输出。\n"
             "3. 若信息冲突，保留最可靠或最新版本。\n\n"
             f"▼ 现有笔记：\n{current_note if current_note else '无'}\n\n"
+            f"{history_text}"
             f"▼ 最新一轮对话：\n用户：{user_text}\nAI：{ai_response}\n\n"
             "请直接输出更新后的笔记（纯文本，不要解释或 Markdown 代码块）："
         )
@@ -294,7 +318,9 @@ def chat_with_agent(
     messages, metadata = storage.load_with_meta(user_id, session_id)
     persistent_note = metadata.get("persistent_note", "")
     is_first_message = len(messages) == 0
-    pending_hitl = metadata.get(PENDING_HITL_KEY)
+    stored_pending_hitl = metadata.get(PENDING_HITL_KEY)
+    pending_hitl = _current_pending_hitl(stored_pending_hitl)
+    invalid_pending_hitl = stored_pending_hitl is not None and pending_hitl is None
     is_hitl_resume = isinstance(pending_hitl, dict)
     resume_state = _pending_resume_state(pending_hitl)
     effective_user_text = (
@@ -320,7 +346,9 @@ def chat_with_agent(
 
         if is_hitl_resume and resume_state:
             rag_result = _resume_rag_from_hitl_sync(pending_hitl, user_text, ctx)
-            rag_trace = rag_result.get("rag_trace") if isinstance(rag_result, dict) else None
+            rag_trace = normalize_rag_trace(
+                rag_result.get("rag_trace") if isinstance(rag_result, dict) else None
+            )
             next_pending_hitl = None
             if _is_hitl_trace(rag_trace):
                 next_pending_hitl = _build_pending_hitl(
@@ -358,7 +386,7 @@ def chat_with_agent(
                 response_content = str(result)
 
             stored_trace = ctx.take_rag_trace()
-            rag_trace = stored_trace.get("rag_trace") if stored_trace else None
+            rag_trace = normalize_rag_trace(stored_trace.get("rag_trace") if stored_trace else None)
             resume_state_from_trace = stored_trace.get("hitl_resume_state") if stored_trace else None
             next_pending_hitl = None
             if _is_hitl_trace(rag_trace):
@@ -374,16 +402,22 @@ def chat_with_agent(
                 )
 
         save_meta = dict(metadata)
+        if invalid_pending_hitl:
+            save_meta[PENDING_HITL_KEY] = None
         if is_first_message:
-            save_meta["title"] = _generate_session_title_sync(user_text)
+            save_meta["title"] = generate_session_title(user_text)
         if next_pending_hitl:
             save_meta[PENDING_HITL_KEY] = next_pending_hitl
         else:
             if is_hitl_resume:
                 save_meta[PENDING_HITL_KEY] = None
-            save_meta["persistent_note"] = _update_persistent_note_sync(
-                persistent_note, effective_user_text, response_content
-            )
+            if _should_update_persistent_note(messages, persistent_note):
+                save_meta["persistent_note"] = _update_persistent_note_sync(
+                    persistent_note,
+                    effective_user_text,
+                    response_content,
+                    history_messages=messages[:-1] if not persistent_note else None,
+                )
 
         messages.append(AIMessage(content=response_content))
         extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
@@ -408,10 +442,24 @@ async def chat_with_agent_stream(
     user_id: str = "default_user",
     session_id: str = "default_session",
 ):
+    initial_step = {
+        "type": "rag_step",
+        "step": {
+            "icon": "📨",
+            "label": "请求已接收，正在准备回答",
+            "detail": "",
+            "elapsed_ms": 0,
+            "stage_elapsed_ms": 0,
+        },
+    }
+    yield f"data: {json.dumps(initial_step)}\n\n"
+
     messages, metadata = storage.load_with_meta(user_id, session_id)
     persistent_note = metadata.get("persistent_note", "")
     is_first_message = len(messages) == 0
-    pending_hitl = metadata.get(PENDING_HITL_KEY)
+    stored_pending_hitl = metadata.get(PENDING_HITL_KEY)
+    pending_hitl = _current_pending_hitl(stored_pending_hitl)
+    invalid_pending_hitl = stored_pending_hitl is not None and pending_hitl is None
     is_hitl_resume = isinstance(pending_hitl, dict)
     resume_state = _pending_resume_state(pending_hitl)
     effective_user_text = (
@@ -459,7 +507,9 @@ async def chat_with_agent_stream(
                 yield f"data: {json.dumps(event)}\n\n"
 
             rag_result = await resume_future
-            rag_trace = rag_result.get("rag_trace") if isinstance(rag_result, dict) else None
+            rag_trace = normalize_rag_trace(
+                rag_result.get("rag_trace") if isinstance(rag_result, dict) else None
+            )
             next_pending_hitl = None
             full_response = ""
 
@@ -498,16 +548,22 @@ async def chat_with_agent_stream(
             yield "data: [DONE]\n\n"
 
             save_meta = dict(metadata)
+            if invalid_pending_hitl:
+                save_meta[PENDING_HITL_KEY] = None
             if next_pending_hitl:
                 save_meta[PENDING_HITL_KEY] = next_pending_hitl
             else:
                 save_meta[PENDING_HITL_KEY] = None
-                try:
-                    save_meta["persistent_note"] = await update_persistent_note(
-                        persistent_note, effective_user_text, full_response
-                    )
-                except Exception as e:
-                    print(f"Update persistent note error: {e}")
+                if _should_update_persistent_note(messages, persistent_note):
+                    try:
+                        save_meta["persistent_note"] = await update_persistent_note(
+                            persistent_note,
+                            effective_user_text,
+                            full_response,
+                            history_messages=messages[:-1] if not persistent_note else None,
+                        )
+                    except Exception as e:
+                        print(f"Update persistent note error: {e}")
 
             messages.append(AIMessage(content=full_response))
             extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
@@ -523,20 +579,10 @@ async def chat_with_agent_stream(
         request_agent = create_agent_for_request(ctx)
         context_messages = _build_context_messages(messages[:-1], persistent_note, effective_user_text)
 
-        title_task = None
+        session_title = None
         if is_first_message:
-
-            def _on_title_done(fut):
-                try:
-                    title = fut.result()
-                    output_queue.put_nowait(
-                        {"type": "session_title", "title": title, "session_id": session_id}
-                    )
-                except Exception as e:
-                    print(f"Title task error: {e}")
-
-            title_task = asyncio.create_task(generate_session_title(user_text))
-            title_task.add_done_callback(_on_title_done)
+            session_title = generate_session_title(user_text)
+            yield f"data: {json.dumps({'type': 'session_title', 'title': session_title, 'session_id': session_id})}\n\n"
 
         full_response = ""
         agent_error = None
@@ -566,7 +612,9 @@ async def chat_with_agent_stream(
 
                     if content:
                         stored_trace = ctx.peek_rag_trace()
-                        rag_trace = stored_trace.get("rag_trace") if stored_trace else None
+                        rag_trace = normalize_rag_trace(
+                            stored_trace.get("rag_trace") if stored_trace else None
+                        )
                         if _is_hitl_trace(rag_trace):
                             continue
                         full_response += content
@@ -597,7 +645,7 @@ async def chat_with_agent_stream(
                 agent_task.cancel()
 
         stored_trace = ctx.take_rag_trace()
-        rag_trace = stored_trace.get("rag_trace") if stored_trace else None
+        rag_trace = normalize_rag_trace(stored_trace.get("rag_trace") if stored_trace else None)
         resume_state_from_trace = stored_trace.get("hitl_resume_state") if stored_trace else None
         next_pending_hitl = None
         hitl_response_content = ""
@@ -622,11 +670,10 @@ async def chat_with_agent_stream(
         yield "data: [DONE]\n\n"
 
         save_meta = dict(metadata)
-        if is_first_message and title_task is not None:
-            try:
-                save_meta["title"] = await title_task
-            except Exception:
-                pass
+        if invalid_pending_hitl:
+            save_meta[PENDING_HITL_KEY] = None
+        if session_title:
+            save_meta["title"] = session_title
 
         if next_pending_hitl:
             save_meta[PENDING_HITL_KEY] = next_pending_hitl
@@ -634,12 +681,16 @@ async def chat_with_agent_stream(
         else:
             if is_hitl_resume and not agent_error:
                 save_meta[PENDING_HITL_KEY] = None
-            try:
-                save_meta["persistent_note"] = await update_persistent_note(
-                    persistent_note, effective_user_text, full_response
-                )
-            except Exception as e:
-                print(f"Update persistent note error: {e}")
+            if _should_update_persistent_note(messages, persistent_note):
+                try:
+                    save_meta["persistent_note"] = await update_persistent_note(
+                        persistent_note,
+                        effective_user_text,
+                        full_response,
+                        history_messages=messages[:-1] if not persistent_note else None,
+                    )
+                except Exception as e:
+                    print(f"Update persistent note error: {e}")
 
         messages.append(AIMessage(content=full_response))
         extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]

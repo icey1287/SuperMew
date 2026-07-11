@@ -1512,6 +1512,20 @@ span.cite-ref:hover {
     font-size: 0.88rem;
 }
 
+.thinking-elapsed {
+    margin-left: auto;
+    color: var(--text-light, #999);
+    font-size: 0.76rem;
+    white-space: nowrap;
+}
+
+.thinking-hint {
+    color: var(--text-light, #888);
+    font-size: 0.8rem;
+    line-height: 1.45;
+    padding-left: 27px;
+}
+
 /* Thinking trace lines — RAG progress inside thinking bubble */
 .thinking-trace-lines {
     display: flex;
@@ -1549,6 +1563,13 @@ span.cite-ref:hover {
     color: var(--text-light, #999);
     font-size: 0.8rem;
     margin-left: 2px;
+}
+
+.thinking-trace-time {
+    margin-left: auto;
+    color: var(--text-light, #aaa);
+    font-size: 0.75rem;
+    white-space: nowrap;
 }
 
 /* 子 Agent 步骤分组 */

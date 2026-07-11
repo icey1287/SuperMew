@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from backend.db.models import ChatMessage, ChatSession, User
 from backend.infra.cache import cache
 from backend.infra.database import SessionLocal
+from backend.schemas.chat import normalize_rag_trace
 
 
 class ConversationStorage:
@@ -31,6 +32,15 @@ class ConversationStorage:
             elif msg_type == "system":
                 messages.append(SystemMessage(content=content))
         return messages
+
+    @staticmethod
+    def _normalize_message_records(records: list[dict]) -> list[dict]:
+        normalized = []
+        for record in records:
+            current = dict(record)
+            current["rag_trace"] = normalize_rag_trace(record.get("rag_trace"))
+            normalized.append(current)
+        return normalized
 
     def save(
         self,
@@ -67,7 +77,7 @@ class ConversationStorage:
                 rag_trace = None
                 if extra_message_data and idx < len(extra_message_data):
                     extra = extra_message_data[idx] or {}
-                    rag_trace = extra.get("rag_trace")
+                    rag_trace = normalize_rag_trace(extra.get("rag_trace"))
 
                 db.add(
                     ChatMessage(
@@ -163,7 +173,10 @@ class ConversationStorage:
     def get_session_messages(self, user_id: str, session_id: str) -> list[dict]:
         cached = cache.get_json(self._messages_cache_key(user_id, session_id))
         if cached is not None:
-            return cached
+            normalized = self._normalize_message_records(cached)
+            if normalized != cached:
+                cache.set_json(self._messages_cache_key(user_id, session_id), normalized)
+            return normalized
 
         db = SessionLocal()
         try:
@@ -189,7 +202,7 @@ class ConversationStorage:
                     "type": row.message_type,
                     "content": row.content,
                     "timestamp": row.timestamp.isoformat(),
-                    "rag_trace": row.rag_trace,
+                    "rag_trace": normalize_rag_trace(row.rag_trace),
                 }
                 for row in rows
             ]

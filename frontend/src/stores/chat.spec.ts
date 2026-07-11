@@ -264,7 +264,7 @@ describe('chat store streaming sessions', () => {
       type: 'trace',
       rag_trace: {
         retrieval_status: 'needs_clarification',
-        grade_route: 'clarify',
+        route: 'clarify',
         hitl_prompt: '请补充角色名',
         hitl_options: ['丹瑾', '丹恒'],
       },
@@ -345,7 +345,7 @@ describe('chat store streaming sessions', () => {
         content: '请补充角色名',
         rag_trace: {
           retrieval_status: 'needs_clarification',
-          grade_route: 'clarify',
+          route: 'clarify',
           hitl_prompt: '请补充角色名',
         },
       },

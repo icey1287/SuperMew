@@ -123,8 +123,8 @@ npm run build
 
 ## 关键创新点
 - **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配。
-- **自适应问题分解与并行 Sub-Agent 图流程**：主图利用 LLM 分类器自动研判提问复杂度。简单问题直接检索；复杂问题通过 LLM 拆解为 2-4 个独立子问题，利用 LangGraph 的 `Send` API 并行启动子 Agent 完整流程，最终在 Synthesis 节点进行去重合成，解决多跳跨域召回痛点。
-- **纠错型 RAG（Corrective RAG）与多策略自适应重写**：检索后引入结构化评分器，判断文档与问题的相关性（Yes/No）。当评分过低或无结果时，智能重写路由在退步问题扩展（`step_back`）、假设性文档生成（`hyde`）和综合扩展（`complex`）间自适应选择，实施二次重度扩展检索。
+- **低延迟复杂度规划与并行 Sub-Agent 流程**：明显的单事实问题由本地规则直接进入检索；其余问题由 FAST_MODEL 一次完成复杂度判断和 2-4 个子问题规划。复杂问题通过 LangGraph `Send` 并行执行各子问题的“检索 → 证据评判”，最终在 Synthesis 节点去重合成。
+- **纠错型 RAG（Corrective RAG）与单选查询重写**：检索后由独立的 GRADE_MODEL 结构化判断证据相关性、可回答性与歧义。证据不足时，FAST_MODEL 在一次结构化调用中选择 Step-back 或 HyDE，只执行选中的一次重写检索和一次复评。
 - **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
 - **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
 - **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果。
@@ -137,7 +137,7 @@ npm run build
 - **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
 - **工具可扩展**：天气查询示例 + 知识库检索，便于按需增添第三方 API 或企业数据源。
 - **RAG 过程可观测**：记录检索、评分、重写与来源信息，前端可展开查看每一步细节。
-- **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
+- **查询重写体系**：证据不足时由 FAST_MODEL 在 Step-back 与 HyDE 中单选一种，并只执行一次二次检索，控制模型调用次数与最坏延迟。
 - **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
 - **实时思考链路展示**：通过 `asyncio` 事件循环穿透技术，实现 Agent 在执行 RAG、评分、重写等同步工具时，实时向前端推送思考步骤（Searching -> Grading -> Rewriting），彻底解决"静默思考"问题。
 
@@ -260,30 +260,35 @@ npm run build
 3. LangChain Agent 根据问题类型决定是否调用工具：
   - 天气问题 → `get_current_weather`
   - 知识问答 → `search_knowledge_base`
-4. 若命中知识库工具，进入 `rag_pipeline.py` 执行检索工作流，各阶段通过 `ChatRequestContext` 实时推送到前端。
+4. 若命中知识库工具，进入 `backend/rag/pipeline.py` 执行检索工作流，各阶段通过 `ChatRequestContext` 实时推送到前端。
 5. 检索结果与 RAG Trace 一起返回，Agent 流式生成最终回答（逐 token 推送）。
 6. 前端 ReadableStream 逐块解析 SSE，打字机效果实时渲染。
 7. 同时消息持久化到 PostgreSQL，并通过 Redis 缓存加速历史会话回放。
 
 ### 2) RAG 全链路（重点）
-1. **初次召回**：`retrieve_initial`
+1. **复杂度规划**：`classify_complexity`
+  - 明显的短单事实问题由本地规则直接判为 simple，不调用模型。
+  - 其余问题由 FAST_MODEL 一次完成 simple/complex 判断；complex 结果同时给出 2-4 个子问题，不再追加拆题调用。
+2. **检索执行**
+  - simple：进入 `retrieve_initial`，执行一次标准检索。
+  - complex：通过 LangGraph `Send` 并行执行各子问题的“检索 → 证据评判”，随后由 `synthesis` 去重合成。
   - 调用 `retrieve_documents`。
   - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF），候选池大小由 `RETRIEVAL_CANDIDATE_K` 或 `RETRIEVAL_CANDIDATE_MULTIPLIER` 决定。
   - 在完整候选上对叶子块执行 Auto-merging（L3→L2→L1），父块从 DocStore 读取。
   - 对合并后的片段走 Jina Rerank 精排并截断 `top_k`（流水线：`recall_merge_rerank`）。
-2. **相关性打分门控**：`grade_documents`
-  - 使用结构化输出打分 `yes/no`。
-  - `yes` 直接进入生成回答；`no` 进入重写阶段。
-3. **查询重写路由**：`rewrite_question`
-  - 在 `step_back / hyde / complex` 中选择策略。
-  - 生成 `rewrite_query`、`step_back_question`、`hypothetical_doc` 等中间结果。
-4. **二次召回**：`retrieve_expanded`
-  - 对重写后的查询（或 HyDE 文档）再次检索。
-  - 同样执行 L3 召回 → Auto-merging → Rerank；多路结果按 `chunk_id` 去重（保留更高分）后返回上下文。
-5. **答案生成**：Agent 结合上下文生成最终回答。
-6. **可观测追踪**：返回 `rag_trace`，包括
+3. **证据评判与路由**：`grade_documents`
+  - GRADE_MODEL 一次输出相关性、可回答性、歧义、置信度和 `route`。
+  - 路由仅进入回答、一次重写、HITL 澄清/范围选择或无知识结束；评判失败会显式报错，不切换到其他实现。
+4. **Step-back / HyDE 单选重写**：`rewrite_question`
+  - FAST_MODEL 在一次结构化调用中选择一种方式并生成对应内容。
+  - Step-back：生成更抽象的退步问题，与原问题组成 `rewritten_query`。
+  - HyDE：生成仅用于检索的假设性答案文档，与原问题组成 `rewritten_query`；该文档不作为回答证据。
+5. **二次召回**：`retrieve_rewritten`
+  - 对 `rewritten_query` 再执行一次 L3 召回 → Auto-merging → Rerank。
+6. **答案生成**：Agent 结合上下文生成最终回答。
+7. **可观测追踪**：返回 `rag_trace`，包括
   - 评分结果与路由决策
-  - 重写策略与重写内容
+  - `rewrite_method`、`step_back_question` / `hyde_document` 与 `rewritten_query`
   - 初次/二次检索结果
   - 三级检索与合并信息（`leaf_retrieve_level`、`auto_merge_*`）
   - 检索分数 `score` 与精排分数 `rerank_score`
@@ -316,9 +321,9 @@ npm run build
 
 ## 环境变量
 需在仓库根目录或运行环境配置：
-- 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`
+- 模型相关：`ARK_API_KEY`、`MODEL`、`FAST_MODEL`、`GRADE_MODEL`、`BASE_URL`。`FAST_MODEL` 负责复杂度规划及 Step-back / HyDE 单选重写；`GRADE_MODEL` 专门负责证据评判。两者都是显式必需配置，不会相互替代或回退到 `MODEL`。
 - 稠密向量：`EMBEDDING_MODEL`、`EMBEDDING_DEVICE`、`DENSE_EMBEDDING_DIM`（需与 Milvus 集合 `dense_embedding` 维度一致）
-- 密集与稀疏：由 Milvus 原生支持的内部分词与 BM25 函数自动处理，无需手动配置客户端 `BM25_STATE_PATH`
+- 密集与稀疏：Dense 由本地 embedding 生成；Sparse 由 Milvus 中文 analyzer 与 BM25 Function 自动生成和维护
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
@@ -431,20 +436,20 @@ chat_with_agent_stream()
 
 ### 后端实现
 
-#### 1) 流式生成 (`agent.py`)
+#### 1) 流式生成 (`backend/chat/service.py`)
 - 使用 LangGraph `agent.astream(stream_mode="messages")` 获取逐 token 的 `AIMessageChunk`。
 - 过滤 `tool_call_chunks`，只转发文本内容给前端。
 - **关键设计**：Agent 流式循环运行在 `asyncio.create_task` 后台任务中，主生成器只负责从统一 `output_queue` 取事件并 yield。这样 RAG 步骤在工具执行期间（agent 阻塞等待工具返回时）仍然可以实时推送到前端。
 
-#### 2) 实时 RAG 步骤推送 (`tools.py` + `rag_pipeline.py`)
+#### 2) 实时 RAG 步骤推送 (`backend/tools/knowledge.py` + `backend/rag/pipeline.py`)
 - `ChatRequestContext.emit_rag_step(icon, label, detail)` 通过请求创建时捕获的 `loop.call_soon_threadsafe()` 将步骤从同步线程安全地推送到本请求的异步队列。
 - `make_search_knowledge_base(ctx)` 创建本请求专属 tool，LLM 仍只看到 `query` 参数；Python closure 持有当前请求的 `ctx`。
-- `rag_pipeline.py` 通过 `run_rag_graph(question, ctx)` 接收上下文，子问题进度使用安全标签（如 `子问题 1`）分组。
-- `rag_pipeline.py` 在每个关键节点发射步骤：
+- `backend/rag/pipeline.py` 通过 `run_rag_graph(question, ctx)` 接收上下文，子问题进度使用安全标签（如 `子问题 1`）分组。
+- `backend/rag/pipeline.py` 在每个关键节点发射步骤：
   - `retrieve_initial` → "正在检索知识库..."
   - `grade_documents` → "正在评估文档相关性..."
-  - `rewrite_question` → "正在重写查询..."（含策略选择）
-  - `retrieve_expanded` → "使用扩展查询重新检索..."
+  - `rewrite_question` → "选择 Step-back / HyDE 重写方式"
+  - `retrieve_rewritten` → 使用本轮选中的唯一方式重新检索
 
 #### 3) SSE 协议格式
 每个事件格式：`data: {JSON}\n\n`，类型字段：
@@ -454,7 +459,7 @@ chat_with_agent_stream()
 - `error`：错误信息
 - `[DONE]`：流结束标记
 
-#### 4) StreamingResponse 配置 (`api.py`)
+#### 4) StreamingResponse 配置 (`backend/api/routes/chat.py`)
 ```python
 StreamingResponse(
     event_generator(),
@@ -501,7 +506,7 @@ StreamingResponse(
 ## 更新日志
 
 ### 2026-06-12 全面迁移至 Milvus 2.5+ 原生 BM25 与事务级可靠删除
-- **服务端原生 BM25**：重构并迁移至 Milvus 2.5+ 内置中文分词器与 BM25 Pipeline 函数。完全移除客户端的手写分词、稀疏特征向量计算及 `bm25_state.json` 状态文件，极大降低客户端负担。
+- **服务端原生 BM25**：使用 Milvus 2.5+ 内置中文分词器与 BM25 Pipeline Function，稀疏特征和统计由向量库自动维护。
 - **Schema 自动升级**：优化 `ensure_collection` 逻辑，支持自动检测旧版 Schema 并进行 drop 与无缝重建升级。
 - **事务性一键删除**：实现高可靠、强一致性的 `delete_document_transactionally` 删除协调器，一键清理 Milvus 向量数据、PostgreSQL 级联分块记录和 Redis 热缓存，避免产生任何悬空脏数据。
 - **企业级文本净化**：升级文本清洗逻辑，通过 Unicode NFC 标准规范化和 PUA/C0/C1 等非打印/零宽/孤立代理项的彻底过滤，解决 PostgreSQL 与 Milvus 的字符集兼容性报错。
@@ -512,25 +517,19 @@ StreamingResponse(
 - **高阶交互界面**：增加流式上传进度详情卡片、上传成功后卡片自动折叠、References 参考文献精美折叠展示、Thinking 气泡流畅过度等。
 
 ### 2026-06-03 自适应复杂问题分解、并行 Sub-Agent 与精排门控
-- **提问复杂度分类**：内置 LLM 分类路由，简单问题直发检索，复杂问题通过 LLM 拆解为 2-4 个高覆盖、互不重叠的独立子问题。
-- **并行子 Agent 推理**：利用 LangGraph 的 `Send` API 并行发起到独立的子图流程（`rag_sub_agent`），使每个子问题分别执行完整的 retrieve、grade、rewrite 判定。
+- **低延迟复杂度规划**：明显的单事实问题由本地规则直接进入检索；其余问题由 FAST_MODEL 一次完成复杂度判断，并在 complex 时同时给出 2-4 个子问题。
+- **并行子 Agent 检索**：利用 LangGraph 的 `Send` API 并行调用 `rag_sub_agent`，每个子问题只执行 retrieve 与 grade，避免不可达的嵌套图和二次改写。
 - **子步骤完美分组**：前端界面重新适配并行子流程，在 RAG Step 的 SSE 数据中为子问题建立独立分组标签展示，避免交错重复建组与视觉混淆。
-- **精排阈值与 Step-back 强制路由**：加入 `RERANK_MIN_SCORE` 准入门槛过滤噪音。当精排过滤后结果为空时，强制执行 step-back 扩展重写，保证长尾问题的基本召回兜底。
+- **精排与明确路由**：`RERANK_MIN_SCORE` 过滤噪音；空检索直接结束，有相关信号但证据不足时才执行唯一一次 Step-back / HyDE 单选重写。
 
 ### 2026-06-02 通用 RAG 能力强化与后端生命周期重构
-- **通用 RAG 功能增强**：新增思考模式切换、会话摘要长期记忆（Context Manager Notes）、智能会话标题自主生成，以及多源参考文献的可视化折叠展示卡片。
+- **通用 RAG 功能增强**：提供会话摘要长期记忆（Context Manager Notes）、首问本地截断标题，以及多源参考文献的可视化折叠展示卡片。
 - **gRPC 连接生命周期优化**：Milvus 数据库客户端访问由全局连接池改为短生命周期会话（`session()` contextmanager），按请求建立短连接会话，彻底规避连接因长期挂起产生的失效 gRPC channel 问题。
 - **后端分层重组与包依赖解耦**：彻底重构 backend 代码目录包结构，剔除 re-export 导出机制，解决因交叉导入产生的循环依赖，并统一环境加载规范。
 
 ### 2026-06-01 召回-合并-精排（Rerank）流水线重构
 - **模块化 Pipeline**：重构 RAG 底层实现，将 RAG 流程收拢为高可控的“召回 -> 自动合并 -> 语义重排”流水线，收口统一的参数配置与多级 RAG Trace 追踪。
 - **去重合并高分保留**：修复了在执行 L3 -> L2/L1 叶子向上合并时，在循环内聚合 Rank 分数的算法，防止去重过程中丢失高置信度召回分。
-
-### 2026-04-08 本地嵌入与 BM25 持久化
-- **稠密向量**：由兼容 API 改为 `langchain_huggingface` 本地模型（默认 `BAAI/bge-m3`），支持 `EMBEDDING_MODEL` / `EMBEDDING_DEVICE`；Milvus `dense_embedding` 维度与 `DENSE_EMBEDDING_DIM` 对齐（默认 1024）。
-- **BM25 统计**：`词表 vocab + 文档频次 doc_freq + 文档数 N` 持久化至 `data/bm25_state.json`（可选 `BM25_STATE_PATH`）；每个叶子 chunk 视为一篇文档，入库时 **increment_add**，删除文档或覆盖上传前按文件名从 Milvus 拉取 chunk 文本后 **increment_remove**；`embedding_service` 在 `api` 与 `rag_utils` 间单例共享，避免写入与检索状态分裂。
-- **Milvus 查询**：单次 `query` 的 `limit` 受服务端窗口限制（如 16384），新增 **`query_all`** 分页拉取，供删除/覆盖前取回全文以同步 BM25；修复单次 `limit=100000` 导致的 RPC 报错。
-- **说明**：README「环境变量」「文档入库」「混合检索」「数据目录」等已同步为上述行为；`data/` 下 `bm25_state.json` 通常被 git 忽略，空库仅有 Milvus 无状态文件时需自行重建或重导。
 
 ### 2026-03-21 后端服务建设升级（认证 + 数据库 + 缓存）
 - 新增认证与权限模块：注册、登录、JWT、管理员权限控制。
@@ -552,6 +551,6 @@ StreamingResponse(
 - **问题**：Agent 在执行同步工具（如 `search_knowledge_base`）时，由于运行在线程池中，无法正确获取主线程的 asyncio 事件循环，导致 `emit_rag_step` 事件丢失，前端"思考中"气泡一直静止。
 - **修复**：
   1. **Backend (`service.py`)**：为每个请求创建 `ChatRequestContext`，在其中捕获主线程 `loop` 与本请求 `output_queue`。
-  2. **Backend (`tools.py` + `rag_pipeline.py`)**：使用 per-request tool factory 与显式 `ctx` 参数跨线程调度 RAG step，避免请求间串号。
+  2. **Backend (`backend/tools/knowledge.py` + `backend/rag/pipeline.py`)**：使用 per-request tool factory 与显式 `ctx` 参数跨线程调度 RAG step，避免请求间串号。
   3. **Frontend (`stores/chat.ts`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
 - **效果**：用户提问后，思考气泡内实时跳动显示检索步骤（如"🔍 正在检索知识库..." -> "📊 正在评估文档相关性..."），不再只有静态的"正在思考中..."。

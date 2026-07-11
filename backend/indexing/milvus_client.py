@@ -329,9 +329,6 @@ class MilvusStore:
         self._run(_drop)
 
 
-# 兼容旧名；全项目共用同一无状态 Store 实例即可（不缓存连接）
-MilvusManager = MilvusStore
-
 _store: MilvusStore | None = None
 
 

@@ -46,6 +46,8 @@ class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event_a["step"]["icon"], "A")
             self.assertEqual(event_a["step"]["group"], "group A")
             self.assertEqual(event_a["step"]["group_label"], "真实子问题 A")
+            self.assertGreaterEqual(event_a["step"]["elapsed_ms"], 0)
+            self.assertGreaterEqual(event_a["step"]["stage_elapsed_ms"], 0)
             self.assertEqual(event_b["type"], "rag_step")
             self.assertEqual(event_b["step"]["icon"], "B")
             self.assertEqual(event_b["step"]["group"], "group B")

@@ -1,30 +1,28 @@
 from typing import Annotated, Any, Literal, TypedDict, List, Optional
 import operator
 import os
+import re
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from backend.chat.request_context import ChatRequestContext
+from backend.schemas.chat import HitlResumeState, normalize_rag_sub_trace
 from backend.rag.utils import (
     RETRIEVAL_TOP_K,
     retrieve_documents,
-    step_back_expand,
-    generate_hypothetical_document,
+    rewrite_query_once,
     dedupe_documents,
     retrieval_trace_fields,
-    merge_retrieval_trace,
 )
 
 API_KEY = os.getenv("ARK_API_KEY")
-MODEL = os.getenv("MODEL")
 BASE_URL = os.getenv("BASE_URL")
-GRADE_MODEL = os.getenv("GRADE_MODEL", "gpt-4.1")
-FAST_MODEL = os.getenv("FAST_MODEL") or MODEL
+FAST_MODEL = os.getenv("FAST_MODEL")
+GRADE_MODEL = os.getenv("GRADE_MODEL")
 
 _grader_model = None
-_router_model = None
 _complexity_model = None
 
 
@@ -42,22 +40,6 @@ def _get_grader_model():
             stream_usage=True,
         )
     return _grader_model
-
-
-def _get_router_model():
-    global _router_model
-    if not API_KEY or not MODEL:
-        return None
-    if _router_model is None:
-        _router_model = init_chat_model(
-            model=MODEL,
-            model_provider="openai",
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            temperature=0,
-            stream_usage=True,
-        )
-    return _router_model
 
 
 def _get_complexity_model():
@@ -121,12 +103,6 @@ class EvidenceGrade(BaseModel):
     reason: str = ""
 
 
-class RewriteStrategy(BaseModel):
-    """Choose a query expansion strategy."""
-
-    strategy: Literal["step_back", "hyde", "complex"]
-
-
 class ComplexityResult(BaseModel):
     """问题复杂度分类结果。"""
 
@@ -134,14 +110,9 @@ class ComplexityResult(BaseModel):
         description="问题复杂度：'simple' 为简单问题，'complex' 为复杂问题"
     )
     reason: str = Field(default="", description="分类理由")
-
-
-class SubQuestions(BaseModel):
-    """复杂问题分解后的子问题列表。"""
-
     sub_questions: List[str] = Field(
-        description="2-4 个独立子问题，每个聚焦原问题的一个方面",
-        min_length=1,
+        default_factory=list,
+        description="复杂问题对应的 2-4 个可独立检索子问题；简单问题留空",
         max_length=4,
     )
 
@@ -161,11 +132,10 @@ class RAGState(TypedDict):
     hitl_prompt: Optional[str]
     hitl_options: Optional[List[str]]
     rewrite_count: int
-    expansion_type: Optional[str]
-    expanded_query: Optional[str]
+    rewrite_method: Optional[str]
+    rewritten_query: Optional[str]
     step_back_question: Optional[str]
-    step_back_answer: Optional[str]
-    hypothetical_doc: Optional[str]
+    hyde_document: Optional[str]
     rag_trace: Optional[dict]
     # 复杂度路由新增字段
     complexity: Optional[str]
@@ -214,40 +184,25 @@ def _is_hitl_result(result: dict | None) -> bool:
         return False
     trace = result.get("rag_trace") or {}
     status = result.get("retrieval_status") or trace.get("retrieval_status")
-    route = result.get("route") or trace.get("grade_route")
+    route = result.get("route") or trace.get("route")
     return status in ("needs_clarification", "needs_scope_selection") or route in ("clarify", "scope_select")
 
 
 def _build_hitl_resume_state(result: dict) -> dict:
     trace = result.get("rag_trace") or {}
-    candidate_docs = (
-        trace.get("hitl_candidate_chunks")
-        or trace.get("initial_retrieved_chunks")
-        or trace.get("retrieved_chunks")
-        or []
-    )
-    return {
-        "version": 1,
-        "question": result.get("question") or trace.get("query") or "",
-        "query": result.get("query") or trace.get("query") or "",
-        "route": result.get("route") or trace.get("grade_route"),
-        "retrieval_status": result.get("retrieval_status") or trace.get("retrieval_status"),
-        "rewrite_count": int(result.get("rewrite_count") or trace.get("rewrite_count") or 0),
-        "complexity": result.get("complexity") or trace.get("complexity"),
-        "complexity_reason": result.get("complexity_reason") or trace.get("complexity_reason"),
-        "sub_questions": result.get("sub_questions") or trace.get("sub_questions") or [],
-        "candidate_docs": _copy_jsonable_docs(candidate_docs),
-        "sub_traces": trace.get("sub_traces") or [],
-        "rag_trace": {
-            key: value
-            for key, value in trace.items()
-            if key not in {"request_context"}
-        },
-    }
+    return HitlResumeState(
+        question=result.get("question") or trace.get("query") or "",
+        route=result.get("route") or trace.get("route"),
+        retrieval_status=result.get("retrieval_status") or trace.get("retrieval_status"),
+        rewrite_count=int(result.get("rewrite_count") or 0),
+        complexity=result.get("complexity") or trace.get("complexity"),
+        complexity_reason=result.get("complexity_reason") or trace.get("complexity_reason"),
+        sub_questions=result.get("sub_questions") or trace.get("sub_questions") or [],
+    ).model_dump()
 
 
 def _refined_question_for_hitl(resume_state: dict, user_answer: str) -> str:
-    question = resume_state.get("question") or resume_state.get("query") or ""
+    question = resume_state.get("question") or ""
     answer = user_answer.strip()
     if not question:
         return answer
@@ -290,11 +245,10 @@ def _initial_state(
         "hitl_prompt": "",
         "hitl_options": [],
         "rewrite_count": 0,
-        "expansion_type": None,
-        "expanded_query": None,
+        "rewrite_method": None,
+        "rewritten_query": None,
         "step_back_question": None,
-        "step_back_answer": None,
-        "hypothetical_doc": None,
+        "hyde_document": None,
         "rag_trace": None,
         "complexity": None,
         "complexity_reason": None,
@@ -340,10 +294,11 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "tool_used": True,
         "tool_name": "search_knowledge_base",
         "query": query,
-        "expanded_query": query,
         "retrieved_chunks": results,
         "initial_retrieved_chunks": results,
         "retrieval_stage": "initial",
+        "complexity": state.get("complexity"),
+        "complexity_reason": state.get("complexity_reason"),
         **retrieval_trace_fields(retrieve_meta),
     }
     return {
@@ -399,18 +354,7 @@ def _grade_for_no_docs() -> EvidenceGrade:
     )
 
 
-def _fallback_grade_for_docs() -> EvidenceGrade:
-    return EvidenceGrade(
-        relevance="strong",
-        answerability="sufficient",
-        ambiguity="none",
-        route="answer",
-        confidence=0.5,
-        reason="grader_unavailable",
-    )
-
-
-def _normalize_grade_route(grade: EvidenceGrade, state: RAGState) -> str:
+def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     docs = state.get("docs") or []
     rewrite_count = int(state.get("rewrite_count") or 0)
     is_sub_agent = bool(state.get("is_sub_agent"))
@@ -466,10 +410,7 @@ def _grade_update(grade: EvidenceGrade, route: str) -> dict:
         "missing_slots": grade.missing_slots,
         "hitl_prompt": hitl_prompt,
         "hitl_options": grade.hitl_options,
-        # Keep legacy trace fields for existing UI/history compatibility.
-        "grade_score": f"{grade.relevance}/{grade.answerability}",
-        "grade_route": route,
-        "rewrite_needed": route == "rewrite",
+        "route": route,
     }
 
 
@@ -481,19 +422,15 @@ def grade_documents_node(state: RAGState) -> RAGState:
     else:
         grader = _get_grader_model()
         if not grader:
-            grade = _fallback_grade_for_docs()
-        else:
-            question = state["question"]
-            context = state.get("context", "")
-            prompt = EVIDENCE_GRADE_PROMPT.format(question=question, context=context)
-            try:
-                grade = grader.with_structured_output(EvidenceGrade).invoke(
-                    [{"role": "user", "content": prompt}]
-                )
-            except Exception:
-                grade = _fallback_grade_for_docs()
+            raise RuntimeError("GRADE_MODEL is required for evidence grading")
+        question = state["question"]
+        context = state.get("context", "")
+        prompt = EVIDENCE_GRADE_PROMPT.format(question=question, context=context)
+        grade = grader.with_structured_output(EvidenceGrade).invoke(
+            [{"role": "user", "content": prompt}]
+        )
 
-    route = _normalize_grade_route(grade, state)
+    route = _resolve_route(grade, state)
     grade_update = _grade_update(grade, route)
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update(grade_update)
@@ -525,8 +462,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
 
     if route in ("no_knowledge", "clarify", "scope_select"):
         if route in ("clarify", "scope_select") and docs:
-            rag_trace["hitl_candidate_chunks"] = _copy_jsonable_docs(docs)
-        rag_trace["retrieved_chunks"] = []
+            rag_trace["retrieved_chunks"] = []
         update.update({"docs": [], "context": ""})
 
     return update
@@ -541,8 +477,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
         rag_trace = state.get("rag_trace", {}) or {}
         rag_trace.update({
             "retrieval_status": "no_knowledge",
-            "grade_route": "no_knowledge",
-            "rewrite_needed": False,
+            "route": "no_knowledge",
             "evidence_reason": "rewrite_budget_exhausted",
         })
         _emit(state, "⛔", "改写预算已用完，停止检索")
@@ -554,127 +489,81 @@ def rewrite_question_node(state: RAGState) -> RAGState:
             "rag_trace": rag_trace,
         }
 
-    router = _get_router_model()
-    strategy = "step_back"
-    if router:
-        prompt = (
-            "请根据用户问题选择最合适的查询扩展策略，仅输出策略名。\n"
-            "- step_back：包含具体名称、日期、代码等细节，需要先理解通用概念的问题。\n"
-            "- hyde：模糊、概念性、需要解释或定义的问题。\n"
-            "- complex：多步骤、需要分解或综合多种信息的复杂问题。\n"
-            f"用户问题：{question}"
-        )
-        try:
-            decision = router.with_structured_output(RewriteStrategy).invoke(
-                [{"role": "user", "content": prompt}]
-            )
-            strategy = decision.strategy
-        except Exception:
-            strategy = "step_back"
+    _emit(state, "🧠", "选择 Step-back / HyDE 重写方式")
+    rewrite = rewrite_query_once(question)
+    rewrite_method = (rewrite.get("rewrite_method") or "").strip()
+    step_back_question = (rewrite.get("step_back_question") or "").strip()
+    hyde_document = (rewrite.get("hyde_document") or "").strip()
+    rewritten_query = (rewrite.get("rewritten_query") or "").strip()
+    if rewrite_method not in ("step_back", "hyde") or not rewritten_query:
+        raise ValueError("Query rewriting returned an incomplete result")
+    if rewrite_method == "step_back" and (not step_back_question or hyde_document):
+        raise ValueError("Step-back rewriting returned an invalid result")
+    if rewrite_method == "hyde" and (not hyde_document or step_back_question):
+        raise ValueError("HyDE rewriting returned an invalid result")
 
-    expanded_query = question
-    step_back_question = ""
-    step_back_answer = ""
-    hypothetical_doc = ""
-
-    if strategy in ("step_back", "complex"):
-        _emit(state, "🧠", f"使用策略: {strategy}", "生成退步问题")
-        step_back = step_back_expand(question)
-        step_back_question = step_back.get("step_back_question", "")
-        step_back_answer = step_back.get("step_back_answer", "")
-        expanded_query = step_back.get("expanded_query", question)
-
-    if strategy in ("hyde", "complex"):
-        _emit(state, "📝", "HyDE 假设性文档生成中...")
-        hypothetical_doc = generate_hypothetical_document(question)
+    method_label = "Step-back" if rewrite_method == "step_back" else "HyDE"
+    _emit(state, "✅", f"已选择 {method_label} 重写", "本轮只执行这一种重写检索")
 
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update({
-        "rewrite_strategy": strategy,
-        "rewrite_query": expanded_query,
-        "grade_skipped": False,
+        "rewrite_method": rewrite_method,
+        "rewritten_query": rewritten_query,
         "rewrite_count": rewrite_count + 1,
     })
+    if step_back_question:
+        rag_trace["step_back_question"] = step_back_question
+    if hyde_document:
+        rag_trace["hyde_document"] = hyde_document
 
     return {
-        "expansion_type": strategy,
-        "expanded_query": expanded_query,
+        "rewrite_method": rewrite_method,
+        "rewritten_query": rewritten_query,
         "step_back_question": step_back_question,
-        "step_back_answer": step_back_answer,
-        "hypothetical_doc": hypothetical_doc,
+        "hyde_document": hyde_document,
         "rewrite_count": rewrite_count + 1,
         "rag_trace": rag_trace,
     }
 
 
-def retrieve_expanded(state: RAGState) -> RAGState:
-    strategy = state.get("expansion_type") or "step_back"
-    _emit(state, "🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
-    results: List[dict] = []
-    rerank_errors = []
-    retrieval_trace: dict = {}
-
-    if strategy in ("hyde", "complex"):
-        hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
-        retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=RETRIEVAL_TOP_K)
-        results.extend(retrieved_hyde.get("docs", []))
-        hyde_meta = retrieved_hyde.get("meta", {})
-        _emit(
-            state,
-            "🧱",
-            "HyDE 三级检索",
-            (
-                f"L{hyde_meta.get('leaf_retrieve_level', 3)} 召回，"
-                f"候选 {hyde_meta.get('candidate_k', 0)}，"
-                f"合并替换 {hyde_meta.get('auto_merge_replaced_chunks', 0)}"
-            ),
-        )
-        if hyde_meta.get("rerank_error"):
-            rerank_errors.append(f"hyde:{hyde_meta.get('rerank_error')}")
-        retrieval_trace = merge_retrieval_trace(retrieval_trace, hyde_meta)
-
-    if strategy in ("step_back", "complex"):
-        expanded_query = state.get("expanded_query") or state["question"]
-        retrieved_stepback = retrieve_documents(expanded_query, top_k=RETRIEVAL_TOP_K)
-        results.extend(retrieved_stepback.get("docs", []))
-        step_meta = retrieved_stepback.get("meta", {})
-        _emit(
-            state,
-            "🧱",
-            "Step-back 三级检索",
-            (
-                f"L{step_meta.get('leaf_retrieve_level', 3)} 召回，"
-                f"候选 {step_meta.get('candidate_k', 0)}，"
-                f"合并替换 {step_meta.get('auto_merge_replaced_chunks', 0)}"
-            ),
-        )
-        if step_meta.get("rerank_error"):
-            rerank_errors.append(f"step_back:{step_meta.get('rerank_error')}")
-        retrieval_trace = merge_retrieval_trace(retrieval_trace, step_meta)
-
-    deduped = dedupe_documents(results)
-
-    # 扩展阶段可能合并了多路召回（如 hyde + step_back），
-    # 这里统一重排展示名次，避免出现 1,2,3,4,5,4,5 这类重复名次。
-    for idx, item in enumerate(deduped, 1):
-        item["rrf_rank"] = idx
-
-    context = _format_docs(deduped)
-    _emit(state, "✅", f"扩展检索完成，共 {len(deduped)} 个片段")
+def retrieve_rewritten(state: RAGState) -> RAGState:
+    rewrite_method = (state.get("rewrite_method") or "").strip()
+    if rewrite_method not in ("step_back", "hyde"):
+        raise ValueError("rewrite_method is required for rewritten retrieval")
+    rewritten_query = (state.get("rewritten_query") or "").strip()
+    if not rewritten_query:
+        raise ValueError("rewritten_query is required for rewritten retrieval")
+    method_label = "Step-back" if rewrite_method == "step_back" else "HyDE"
+    _emit(state, "🔄", f"使用 {method_label} 查询重新检索...")
+    retrieved = retrieve_documents(rewritten_query, top_k=RETRIEVAL_TOP_K)
+    results = retrieved.get("docs", [])
+    retrieve_meta = retrieved.get("meta", {})
+    context = _format_docs(results)
+    _emit(
+        state,
+        "🧱",
+        f"{method_label} 三级检索",
+        (
+            f"L{retrieve_meta.get('leaf_retrieve_level', 3)} 召回，"
+            f"候选 {retrieve_meta.get('candidate_k', 0)}，"
+            f"合并替换 {retrieve_meta.get('auto_merge_replaced_chunks', 0)}"
+        ),
+    )
+    _emit(state, "✅", f"重写检索完成，共 {len(results)} 个片段")
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update({
-        "expanded_query": state.get("expanded_query") or state["question"],
-        "step_back_question": state.get("step_back_question", ""),
-        "step_back_answer": state.get("step_back_answer", ""),
-        "hypothetical_doc": state.get("hypothetical_doc", ""),
-        "expansion_type": strategy,
-        "retrieved_chunks": deduped,
-        "expanded_retrieved_chunks": deduped,
-        "retrieval_stage": "expanded",
-        "rerank_error": "; ".join(rerank_errors) if rerank_errors else retrieval_trace.get("rerank_error"),
-        **retrieval_trace,
+        "rewrite_method": rewrite_method,
+        "rewritten_query": rewritten_query,
+        "retrieved_chunks": results,
+        "rewrite_retrieved_chunks": results,
+        "retrieval_stage": "rewritten",
+        **retrieval_trace_fields(retrieve_meta),
     })
-    return {"docs": deduped, "context": context, "rag_trace": rag_trace}
+    if state.get("step_back_question"):
+        rag_trace["step_back_question"] = state["step_back_question"]
+    if state.get("hyde_document"):
+        rag_trace["hyde_document"] = state["hyde_document"]
+    return {"docs": results, "context": context, "rag_trace": rag_trace}
 
 
 # ---------------------------------------------------------------------------
@@ -682,22 +571,111 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 # ---------------------------------------------------------------------------
 
 COMPLEXITY_PROMPT = (
-    "你是一个问题复杂度分类器。请判断用户问题的复杂度。\n\n"
-    "【简单问题】：事实查询、定义查询、单一信息点查询、明确的 yes/no 问题、"
+    "你是一个问题复杂度规划器。请判断用户问题的复杂度。\n\n"
+    "【简单问题】：事实查询、定义查询、单一信息点查询、明确的二选一问题、"
     "某个具体属性/参数/规格的查询。\n"
     "【复杂问题】：需要跨文档综合、多角度分析、比较对比、多步骤推理、"
     "需要综合多个信息源才能完整回答的问题。\n\n"
     "用户问题：{question}\n\n"
-    "请输出分类结果。"
+    "如果是复杂问题，请同时给出 2-4 个互不重叠、可独立检索的子问题；"
+    "如果是简单问题，sub_questions 留空。"
 )
 
-DECOMPOSE_PROMPT = (
-    "请将以下复杂问题分解为 2-4 个独立的子问题。\n"
-    "每个子问题应聚焦于原问题的一个明确方面，能独立通过知识库检索获得答案。\n"
-    "子问题之间应覆盖原问题的核心维度，避免重叠。\n\n"
-    "原问题：{question}\n\n"
-    "请输出子问题列表。"
+_SIMPLE_QUERY_MARKERS = (
+    "是什么",
+    "是谁",
+    "哪里",
+    "何时",
+    "多少",
+    "是否",
+    "哪个",
+    "哪种",
+    "属性",
+    "参数",
+    "规格",
+    "定义",
+    "含义",
+    "what is",
+    "who is",
+    "where is",
+    "when is",
+    "how many",
+    "which",
 )
+
+_COMPLEX_QUERY_MARKERS = (
+    "比较",
+    "对比",
+    "区别",
+    "差异",
+    "优缺点",
+    "优势",
+    "劣势",
+    "分析",
+    "总结",
+    "综合",
+    "原因",
+    "成因",
+    "影响",
+    "方案",
+    "步骤",
+    "如何",
+    "为什么",
+    "以及",
+    "同时",
+    "并且",
+    "和",
+    "与",
+    "谁更",
+    "compare",
+    "versus",
+    "difference",
+    "different",
+    "analyze",
+    "summarize",
+    "trade-off",
+    "pros and cons",
+    "why ",
+    "how ",
+    "complex",
+)
+
+_QUERY_DIMENSION_MARKERS = (
+    "属性",
+    "武器",
+    "定位",
+    "技能",
+    "机制",
+    "参数",
+    "规格",
+    "性能",
+    "价格",
+    "优点",
+    "缺点",
+    "作用",
+)
+
+
+def _simple_question_fast_path_reason(question: str) -> Optional[str]:
+    """Return a reason only when a local rule can confidently classify a simple query."""
+    normalized = re.sub(r"\s+", " ", (question or "").strip()).lower()
+    if not normalized or len(normalized) > 48:
+        return None
+    if any(marker in normalized for marker in _COMPLEX_QUERY_MARKERS):
+        return None
+    if "、" in normalized:
+        return None
+    if re.search(r"[\u4e00-\u9fff]", normalized) and normalized.count(" ") >= 2:
+        return None
+    if sum(marker in normalized for marker in _QUERY_DIMENSION_MARKERS) >= 2:
+        return None
+    if sum(normalized.count(mark) for mark in ("?", "？", ";", "；")) > 1:
+        return None
+    if any(marker in normalized for marker in _SIMPLE_QUERY_MARKERS):
+        return "obvious_simple_fast_path:single_fact_marker"
+    if len(normalized.rstrip("?？。.!！")) <= 18:
+        return "obvious_simple_fast_path:short_single_intent"
+    return None
 
 
 def classify_complexity(state: RAGState) -> RAGState:
@@ -705,73 +683,66 @@ def classify_complexity(state: RAGState) -> RAGState:
     question = state["question"]
     _emit(state, "🧭", "正在分析问题复杂度...")
 
+    fast_path_reason = _simple_question_fast_path_reason(question)
+    if fast_path_reason:
+        _emit(state, "⚡", "快速判断为简单问题 → 走标准 RAG 流程")
+        return {"complexity": "simple", "complexity_reason": fast_path_reason}
+
     model = _get_complexity_model()
     if not model:
-        _emit(state, "⚠️", "复杂度模型不可用，默认简单问题")
-        return {"complexity": "simple", "complexity_reason": "model_unavailable"}
+        raise RuntimeError("FAST_MODEL is required for complexity planning")
 
     prompt = COMPLEXITY_PROMPT.format(question=question)
-    try:
-        result = model.with_structured_output(ComplexityResult).invoke(
-            [{"role": "user", "content": prompt}]
-        )
-        complexity = (result.complexity or "simple").strip().lower()
-        reason = (result.reason or "").strip()
-        if complexity not in ("simple", "complex"):
-            complexity = "simple"
-    except Exception:
-        complexity = "simple"
-        reason = "classification_error"
+    result = model.with_structured_output(ComplexityResult).invoke(
+        [{"role": "user", "content": prompt}]
+    )
+    complexity = (result.complexity or "simple").strip().lower()
+    reason = (result.reason or "").strip()
+    sub_questions = [
+        item.strip()
+        for item in (result.sub_questions or [])
+        if item and item.strip()
+    ][:4]
+    if complexity not in ("simple", "complex"):
+        raise ValueError(f"Unsupported complexity result: {complexity}")
+    if complexity == "complex" and not sub_questions:
+        raise ValueError("Complexity planner returned no sub-questions")
 
     if complexity == "simple":
         _emit(state, "✅", "简单问题 → 走标准 RAG 流程", f"理由: {reason[:60]}")
     else:
         _emit(state, "🔀", "复杂问题 → 将分解为子问题并行检索", f"理由: {reason[:60]}")
 
-    return {"complexity": complexity, "complexity_reason": reason}
+    return {
+        "complexity": complexity,
+        "complexity_reason": reason,
+        "sub_questions": sub_questions if complexity == "complex" else [],
+    }
 
 
-def decompose_question(state: RAGState) -> RAGState:
-    """将复杂问题分解为 2-4 个独立子问题。"""
-    question = state["question"]
-    _emit(state, "🧩", "正在分解复杂问题...")
-
-    model = _get_complexity_model()
-    if not model:
-        _emit(state, "⚠️", "分解模型不可用，使用原始问题")
-        return {"sub_questions": [question]}
-
-    prompt = DECOMPOSE_PROMPT.format(question=question)
-    try:
-        result = model.with_structured_output(SubQuestions).invoke(
-            [{"role": "user", "content": prompt}]
-        )
-        sub_qs = [sq.strip() for sq in (result.sub_questions or []) if sq.strip()]
-        if not sub_qs:
-            sub_qs = [question]
-    except Exception:
-        sub_qs = [question]
-
-    for i, sq in enumerate(sub_qs, 1):
+def prepare_sub_questions(state: RAGState) -> RAGState:
+    """Emit the sub-questions produced by the complexity planner."""
+    planned_sub_questions = [
+        item.strip()
+        for item in (state.get("sub_questions") or [])
+        if item and item.strip()
+    ]
+    for i, sq in enumerate(planned_sub_questions, 1):
         _emit(state, "📌", f"子问题 {i}", f"{sq[:80]} 已加入并行检索")
-
-    return {"sub_questions": sub_qs}
+    return {"sub_questions": planned_sub_questions}
 
 
 def _route_after_complexity(state: RAGState):
-    """复杂度路由：simple 走原有流程，complex 先分解再并行检索。"""
+    """简单问题直接检索，复杂问题并行检索规划出的子问题。"""
     if state.get("complexity") == "complex":
-        return "decompose_question"
+        return "prepare_sub_questions"
     return "retrieve_initial"
 
 
 def _fanout_sub_questions(state: RAGState):
-    """将分解后的子问题通过 Send API 并行分发到 rag_sub_agent 子图。"""
+    """将规划出的子问题通过 Send API 并行分发到 rag_sub_agent。"""
     sub_qs = state.get("sub_questions") or []
     ctx = state["request_context"]
-    if not sub_qs:
-        # 分解失败，回退到原有流程
-        return [Send("retrieve_initial", _initial_state(state["question"], ctx))]
     return [
         Send(
             "rag_sub_agent",
@@ -815,7 +786,9 @@ def synthesis(state: RAGState) -> RAGState:
     for result in sub_results:
         trace = result.get("rag_trace")
         if trace:
-            sub_traces.append(trace)
+            normalized_trace = normalize_rag_sub_trace(trace)
+            if normalized_trace:
+                sub_traces.append(normalized_trace)
 
     original_trace = state.get("rag_trace") or {}
     has_docs = bool(deduped)
@@ -848,17 +821,11 @@ def synthesis(state: RAGState) -> RAGState:
                 if option not in hitl_options:
                     hitl_options.append(option)
 
-    hitl_candidate_chunks: List[dict] = []
-    if not has_docs and hitl_traces:
-        for trace in hitl_traces:
-            hitl_candidate_chunks.extend(trace.get("hitl_candidate_chunks") or [])
-
     rag_trace = {
         **original_trace,
         "tool_used": True,
         "tool_name": "search_knowledge_base",
         "query": state["question"],
-        "expanded_query": state["question"],
         "retrieved_chunks": deduped,
         "retrieval_stage": "synthesis",
         "complexity": "complex",
@@ -871,11 +838,9 @@ def synthesis(state: RAGState) -> RAGState:
         "evidence_relevance": "strong" if has_docs else "none",
         "evidence_answerability": "partial" if retrieval_status == "partial" else ("sufficient" if has_docs else "none"),
         "evidence_confidence": None,
-        "grade_route": "answer" if has_docs else (hitl_route or "no_knowledge"),
-        "rewrite_needed": False,
+        "route": "answer" if has_docs else (hitl_route or "no_knowledge"),
         "hitl_prompt": hitl_prompt,
         "hitl_options": hitl_options,
-        "hitl_candidate_chunks": _copy_jsonable_docs(hitl_candidate_chunks),
     }
 
     return {
@@ -889,48 +854,19 @@ def synthesis(state: RAGState) -> RAGState:
     }
 
 
-# ---------------------------------------------------------------------------
-# 子 Agent RAG 子图（每个子问题独立运行完整 RAG 流程）
-# ---------------------------------------------------------------------------
-
-def build_rag_sub_agent_graph():
-    """构建子 Agent RAG 子图：retrieve → grade → rewrite → retrieve_expanded。"""
-    sub_graph = StateGraph(RAGState)
-    sub_graph.add_node("retrieve_initial", retrieve_initial)
-    sub_graph.add_node("grade_documents", grade_documents_node)
-    sub_graph.add_node("rewrite_question", rewrite_question_node)
-    sub_graph.add_node("retrieve_expanded", retrieve_expanded)
-
-    sub_graph.set_entry_point("retrieve_initial")
-    sub_graph.add_edge("retrieve_initial", "grade_documents")
-    sub_graph.add_conditional_edges(
-        "grade_documents",
-        _route_after_grade,
-        {
-            "rewrite_question": "rewrite_question",
-            "end": END,
-        },
-    )
-    sub_graph.add_edge("rewrite_question", "retrieve_expanded")
-    sub_graph.add_edge("retrieve_expanded", "grade_documents")
-    return sub_graph.compile()
-
-
-# 子 Agent 子图实例（模块级单例）
-_rag_sub_agent_graph = build_rag_sub_agent_graph()
-
-
 def rag_sub_agent(state: RAGState) -> RAGState:
-    """包装子图，将子图结果封装为 sub_results 以便主图通过 reducer 合并。"""
+    """Run the only reachable sub-agent path directly: retrieve → grade."""
     question = state.get("question", "")
-    result = _rag_sub_agent_graph.invoke(state)
+    result = dict(state)
+    result.update(retrieve_initial(result))
+    result.update(grade_documents_node(result))
     trace = result.get("rag_trace") or {}
     return {
         "sub_results": [{
             "question": question,
             "docs": result.get("docs", []),
             "retrieval_status": result.get("retrieval_status") or trace.get("retrieval_status"),
-            "route": result.get("route") or trace.get("grade_route"),
+            "route": result.get("route") or trace.get("route"),
             "rag_trace": trace,
         }],
     }
@@ -945,31 +881,30 @@ def build_rag_graph():
 
     # 节点注册
     graph.add_node("classify_complexity", classify_complexity)
-    graph.add_node("decompose_question", decompose_question)
+    graph.add_node("prepare_sub_questions", prepare_sub_questions)
     graph.add_node("retrieve_initial", retrieve_initial)
     graph.add_node("grade_documents", grade_documents_node)
     graph.add_node("rewrite_question", rewrite_question_node)
-    graph.add_node("retrieve_expanded", retrieve_expanded)
+    graph.add_node("retrieve_rewritten", retrieve_rewritten)
     graph.add_node("rag_sub_agent", rag_sub_agent)
     graph.add_node("synthesis", synthesis)
 
     # 入口：复杂度分类
     graph.set_entry_point("classify_complexity")
 
-    # 复杂度路由：simple → 原有流程，complex → decompose_question
+    # 简单问题直接检索；复杂问题使用规划器一次产出的子问题。
     graph.add_conditional_edges(
         "classify_complexity",
         _route_after_complexity,
         {
             "retrieve_initial": "retrieve_initial",
-            "decompose_question": "decompose_question",
+            "prepare_sub_questions": "prepare_sub_questions",
         },
     )
 
-    # 分解节点 → 通过 Send API 并行分发到 rag_sub_agent
-    graph.add_conditional_edges("decompose_question", _fanout_sub_questions)
+    graph.add_conditional_edges("prepare_sub_questions", _fanout_sub_questions)
 
-    # 原有简单路径
+    # 简单问题路径
     graph.add_edge("retrieve_initial", "grade_documents")
     graph.add_conditional_edges(
         "grade_documents",
@@ -979,8 +914,8 @@ def build_rag_graph():
             "end": END,
         },
     )
-    graph.add_edge("rewrite_question", "retrieve_expanded")
-    graph.add_edge("retrieve_expanded", "grade_documents")
+    graph.add_edge("rewrite_question", "retrieve_rewritten")
+    graph.add_edge("retrieve_rewritten", "grade_documents")
 
     # 并行子 Agent → 合成
     graph.add_edge("rag_sub_agent", "synthesis")
@@ -997,23 +932,30 @@ def _state_from_resume(
     user_answer: str,
     ctx: ChatRequestContext,
 ) -> dict:
-    refined_question = _refined_question_for_hitl(resume_state, user_answer)
-    rag_trace = dict(resume_state.get("rag_trace") or {})
-    rag_trace.update({
+    current_resume_state = HitlResumeState.model_validate(resume_state).model_dump()
+    refined_question = _refined_question_for_hitl(current_resume_state, user_answer)
+    rag_trace = {
+        "tool_used": True,
+        "tool_name": "search_knowledge_base",
         "query": refined_question,
-        "expanded_query": refined_question,
         "hitl_resumed": True,
         "hitl_answer": user_answer,
-        "hitl_resume_from_status": resume_state.get("retrieval_status"),
-        "hitl_resume_from_route": resume_state.get("route"),
-    })
+        "hitl_resume_from_status": current_resume_state["retrieval_status"],
+        "hitl_resume_from_route": current_resume_state["route"],
+    }
+    if current_resume_state.get("complexity"):
+        rag_trace["complexity"] = current_resume_state["complexity"]
+    if current_resume_state.get("complexity_reason"):
+        rag_trace["complexity_reason"] = current_resume_state["complexity_reason"]
+    if current_resume_state.get("sub_questions"):
+        rag_trace["sub_questions"] = current_resume_state["sub_questions"]
     state = _initial_state(refined_question, ctx)
     state.update({
         "query": refined_question,
-        "rewrite_count": int(resume_state.get("rewrite_count") or 0),
-        "complexity": resume_state.get("complexity"),
-        "complexity_reason": resume_state.get("complexity_reason"),
-        "sub_questions": resume_state.get("sub_questions") or [],
+        "rewrite_count": current_resume_state["rewrite_count"],
+        "complexity": current_resume_state.get("complexity"),
+        "complexity_reason": current_resume_state.get("complexity_reason"),
+        "sub_questions": current_resume_state.get("sub_questions") or [],
         "rag_trace": rag_trace,
     })
     return state
@@ -1051,7 +993,6 @@ def _retrieve_resume_query(state: dict) -> dict:
         "tool_used": True,
         "tool_name": "search_knowledge_base",
         "query": query,
-        "expanded_query": query,
         "retrieved_chunks": results,
         "hitl_targeted_retrieved_chunks": results,
         "hitl_resumed": True,

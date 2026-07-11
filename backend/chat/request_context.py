@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Optional
+
+from backend.schemas.chat import HitlResumeState, normalize_rag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,8 @@ class ChatRequestContext:
     _active: bool = True
     _rag_trace: Optional[dict] = None
     _knowledge_tool_slots_used: int = 0
+    _started_at: float = field(default_factory=time.monotonic)
+    _last_step_at: Optional[float] = None
 
     @classmethod
     def for_stream(
@@ -61,10 +66,21 @@ class ChatRequestContext:
                 return
             if self.output_queue is None or self.loop is None:
                 return
+            now = time.monotonic()
+            last_step_at = self._last_step_at or self._started_at
+            elapsed_ms = max(int((now - self._started_at) * 1000), 0)
+            stage_elapsed_ms = max(int((now - last_step_at) * 1000), 0)
+            self._last_step_at = now
             queue = self.output_queue
             loop = self.loop
 
-        step = {"icon": icon, "label": label, "detail": detail}
+        step = {
+            "icon": icon,
+            "label": label,
+            "detail": detail,
+            "elapsed_ms": elapsed_ms,
+            "stage_elapsed_ms": stage_elapsed_ms,
+        }
         if group:
             step["group"] = group
         if group_label:
@@ -80,13 +96,16 @@ class ChatRequestContext:
             logger.exception("Failed to emit RAG step")
 
     def store_rag_trace(self, rag_trace: dict, hitl_resume_state: Optional[dict] = None) -> None:
-        if not rag_trace:
+        current_trace = normalize_rag_trace(rag_trace)
+        if not current_trace:
             return
         with self._lock:
             if self._active:
-                self._rag_trace = {"rag_trace": rag_trace}
+                self._rag_trace = {"rag_trace": current_trace}
                 if hitl_resume_state:
-                    self._rag_trace["hitl_resume_state"] = hitl_resume_state
+                    self._rag_trace["hitl_resume_state"] = HitlResumeState.model_validate(
+                        hitl_resume_state
+                    ).model_dump()
 
     def take_rag_trace(self) -> Optional[dict]:
         with self._lock:

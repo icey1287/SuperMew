@@ -36,20 +36,8 @@
         <div v-if="msg.ragTrace.hitl_options && msg.ragTrace.hitl_options.length" class="trace-line">
           HITL选项：{{ msg.ragTrace.hitl_options.join(' / ') }}
         </div>
-        <div v-if="msg.ragTrace.grade_score" class="trace-line">
-          相关性评分：{{ msg.ragTrace.grade_score }}
-        </div>
-        <div v-if="msg.ragTrace.grade_route" class="trace-line">
-          评分决策：{{ msg.ragTrace.grade_route }}
-        </div>
-        <div v-if="msg.ragTrace.rewrite_needed !== null && msg.ragTrace.rewrite_needed !== undefined" class="trace-line">
-          是否需要重写：{{ msg.ragTrace.rewrite_needed ? '是' : '否' }}
-        </div>
-        <div v-if="msg.ragTrace.rewrite_strategy" class="trace-line">
-          重写策略：{{ msg.ragTrace.rewrite_strategy }}
-        </div>
-        <div v-if="msg.ragTrace.rewrite_query" class="trace-line">
-          重写查询：{{ msg.ragTrace.rewrite_query }}
+        <div v-if="msg.ragTrace.route" class="trace-line">
+          评分决策：{{ msg.ragTrace.route }}
         </div>
         <div v-if="msg.ragTrace.retrieval_pipeline" class="trace-line">
           检索流水线：{{ msg.ragTrace.retrieval_pipeline }}
@@ -97,17 +85,17 @@
         <div v-if="msg.ragTrace.rerank_error" class="trace-line">
           Rerank状态：{{ msg.ragTrace.rerank_error }}
         </div>
-        <div v-if="msg.ragTrace.expansion_type" class="trace-line">
-          扩展策略：{{ msg.ragTrace.expansion_type }}
+        <div v-if="msg.ragTrace.rewrite_method" class="trace-line">
+          查询重写方式：{{ formatRewriteMethod(msg.ragTrace.rewrite_method) }}
         </div>
         <div v-if="msg.ragTrace.step_back_question" class="trace-line">
           退步问题：{{ msg.ragTrace.step_back_question }}
         </div>
-        <div v-if="msg.ragTrace.expanded_query" class="trace-line">
-          扩展查询：{{ msg.ragTrace.expanded_query }}
+        <div v-if="msg.ragTrace.hyde_document" class="trace-line">
+          HyDE 假设文档：{{ msg.ragTrace.hyde_document }}
         </div>
-        <div v-if="msg.ragTrace.hypothetical_doc" class="trace-line">
-          HyDE 文档：{{ msg.ragTrace.hypothetical_doc }}
+        <div v-if="msg.ragTrace.rewritten_query" class="trace-line">
+          重写检索查询：{{ msg.ragTrace.rewritten_query }}
         </div>
         
         <!-- 复杂度路由信息 -->
@@ -147,9 +135,8 @@
                 子问题 {{ stIdx + 1 }}：{{ msg.ragTrace.sub_questions?.[stIdx] || st.query || '—' }}
               </div>
               <div v-if="st.retrieval_stage" class="trace-line">检索阶段：{{ st.retrieval_stage }}</div>
-              <div v-if="st.rewrite_strategy" class="trace-line">重写策略：{{ st.rewrite_strategy }}</div>
               <div v-if="st.retrieval_mode" class="trace-line">检索模式：{{ st.retrieval_mode }}</div>
-              <div v-if="st.grade_score" class="trace-line">相关性评分：{{ st.grade_score }}</div>
+              <div v-if="st.route" class="trace-line">评分决策：{{ st.route }}</div>
               <div v-if="st.retrieved_chunks && st.retrieved_chunks.length" class="sub-trace-chunks">
                 检索到 {{ st.retrieved_chunks.length }} 个片段
               </div>
@@ -176,10 +163,10 @@
           </ul>
         </div>
         
-        <div v-if="msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length" class="sources">
+        <div v-if="msg.ragTrace.rewrite_retrieved_chunks && msg.ragTrace.rewrite_retrieved_chunks.length" class="sources">
           <div class="sources-title">重写后检索结果</div>
           <ul class="sources-list">
-            <li v-for="(chunk, sIndex) in msg.ragTrace.expanded_retrieved_chunks" :key="sIndex" class="source-item">
+            <li v-for="(chunk, sIndex) in msg.ragTrace.rewrite_retrieved_chunks" :key="sIndex" class="source-item">
               <div class="source-title-line">
                 <span class="source-file">{{ chunk.filename }}</span>
                 <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
@@ -250,5 +237,13 @@ const formatHitlResumeStrategy = (strategy: string) => {
     targeted_retrieval: '基于用户补充的针对性检索',
   };
   return labels[strategy] || strategy;
+};
+
+const formatRewriteMethod = (method: string) => {
+  const labels: Record<string, string> = {
+    step_back: 'Step-back',
+    hyde: 'HyDE',
+  };
+  return labels[method] || method;
 };
 </script>

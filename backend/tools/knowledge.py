@@ -28,7 +28,7 @@ def make_search_knowledge_base(ctx: ChatRequestContext):
         ctx.store_rag_trace(rag_trace, hitl_resume_state)
 
         status = rag_trace.get("retrieval_status") if isinstance(rag_trace, dict) else None
-        route = rag_trace.get("grade_route") if isinstance(rag_trace, dict) else None
+        route = rag_trace.get("route") if isinstance(rag_trace, dict) else None
         if status == "needs_clarification" or route == "clarify":
             prompt = rag_trace.get("hitl_prompt") or "I found related knowledge, but need one more detail before answering."
             return f"NEEDS_CLARIFICATION: {prompt}"
