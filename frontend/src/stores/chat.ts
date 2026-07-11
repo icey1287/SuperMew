@@ -40,6 +40,13 @@ export const useChatStore = defineStore('chat', {
   },
 
   actions: {
+    resetWorkspace() {
+      if (this.abortController) {
+        this.abortController.abort();
+      }
+      this.$reset();
+    },
+
     ensureSessionMessages(sessionId: string): Message[] {
       if (!this.messagesBySession[sessionId]) {
         this.messagesBySession[sessionId] = [];

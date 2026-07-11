@@ -2,8 +2,11 @@
   <div class="input-area-wrapper">
     <div v-if="chatStore.currentPendingHitl" class="hitl-panel">
       <div class="hitl-panel-header">
-        <i class="fas fa-circle-question"></i>
-        <span>需要你补充一下</span>
+        <span class="hitl-icon"><i class="fa-solid fa-circle-question"></i></span>
+        <span>
+          <strong>需要你补充一下</strong>
+          <small>喵喵会沿着你的选择继续原来的检索流程</small>
+        </span>
       </div>
       <div class="hitl-panel-prompt">{{ chatStore.currentPendingHitl.prompt }}</div>
       <div
@@ -23,45 +26,62 @@
     </div>
 
     <div :class="['input-area', { 'hitl-active': chatStore.currentPendingHitl }]">
-      <button class="attach-btn" :disabled="chatStore.isInputLocked"><i class="fas fa-paperclip"></i></button>
-      
-      <textarea 
-        v-model="chatStore.userInput" 
+      <button
+        class="attach-btn"
+        type="button"
+        title="当前版本暂不支持聊天附件"
+        aria-label="聊天附件暂不可用"
+        disabled
+      >
+        <i class="fa-solid fa-paperclip"></i>
+      </button>
+
+      <textarea
+        ref="textareaRef"
+        v-model="chatStore.userInput"
+        class="chat-input-textarea"
+        :placeholder="chatStore.inputPlaceholder"
+        :disabled="chatStore.isInputLocked"
+        rows="1"
         @keydown="handleKeyDown"
         @compositionstart="handleCompositionStart"
         @compositionend="handleCompositionEnd"
         @input="autoResize"
-        :placeholder="chatStore.inputPlaceholder" 
-        rows="1"
-        ref="textareaRef"
-        :disabled="chatStore.isInputLocked"
       ></textarea>
-      
-      <button 
-        v-if="chatStore.isViewingStreamingSession" 
-        @click="chatStore.handleStop" 
-        class="send-btn stop-btn" 
+
+      <button
+        v-if="chatStore.isViewingStreamingSession"
+        type="button"
+        class="send-btn stop-btn"
         title="终止回答"
+        aria-label="终止回答"
+        @click="chatStore.handleStop"
       >
-        <i class="fas fa-stop"></i>
+        <i class="fa-solid fa-stop"></i>
       </button>
-      
-      <button 
-        v-else 
-        @click="onSend" 
-        class="send-btn" 
+
+      <button
+        v-else
+        type="button"
+        class="send-btn"
         :disabled="chatStore.isLoading"
         :title="chatStore.isLoading ? '当前已有回答正在生成' : '发送'"
+        aria-label="发送消息"
+        @click="onSend"
       >
-        <i class="fas fa-paper-plane"></i>
+        <i class="fa-regular fa-paper-plane"></i>
       </button>
     </div>
-    <div class="footer-text">AI 生成的内容可能包含错误，请仔细甄别。</div>
+
+    <div class="input-footer">
+      <span>AI 生成内容可能有误，重要结论请结合引用复核。</span>
+      <span><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
+import { nextTick, ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
 
 const chatStore = useChatStore();
@@ -84,16 +104,13 @@ const handleKeyDown = (event: KeyboardEvent) => {
 };
 
 const autoResize = () => {
-  if (textareaRef.value) {
-    textareaRef.value.style.height = 'auto';
-    textareaRef.value.style.height = textareaRef.value.scrollHeight + 'px';
-  }
+  if (!textareaRef.value) return;
+  textareaRef.value.style.height = 'auto';
+  textareaRef.value.style.height = Math.min(textareaRef.value.scrollHeight, 140) + 'px';
 };
 
 const resetTextareaHeight = () => {
-  if (textareaRef.value) {
-    textareaRef.value.style.height = 'auto';
-  }
+  if (textareaRef.value) textareaRef.value.style.height = 'auto';
 };
 
 const focusTextarea = async () => {
@@ -110,9 +127,7 @@ const selectHitlOption = async (option: string) => {
 const onSend = async () => {
   const text = chatStore.userInput.trim();
   if (!text || chatStore.isLoading || isComposing.value) return;
-
   await chatStore.handleSend();
-  
   await nextTick();
   resetTextareaHeight();
 };

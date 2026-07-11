@@ -19,7 +19,7 @@
         <div v-if="grp.group" class="step-group">
           <div class="step-group-header" @click="toggleGroup(gIdx)">
             <span class="step-group-arrow" :class="{ collapsed: grp.collapsed }">▶</span>
-            <span class="step-group-label">🧵 子问题：{{ grp.label }}</span>
+            <span class="step-group-label"><i class="fa-solid fa-code-branch"></i> 子问题：{{ grp.label }}</span>
             <span class="step-group-count">{{ grp.steps.length }} 步</span>
           </div>
           <div v-show="!grp.collapsed" class="step-group-body">
@@ -69,7 +69,7 @@ const waitingHint = computed(() => {
   if (elapsedSeconds.value >= 15) {
     return '上游模型或检索服务响应较慢，你可以继续等待，也可以随时终止回答。';
   }
-  if (elapsedSeconds.value >= 6) {
+  if (elapsedSeconds.value >= 10) {
     return '仍在处理中，复杂问题的检索与证据评估可能需要更久。';
   }
   return '';
