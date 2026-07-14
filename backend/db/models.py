@@ -129,6 +129,7 @@ class Run(Base):
     user_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     assistant_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     supersedes_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_event_sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     owner_worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

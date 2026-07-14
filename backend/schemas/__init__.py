@@ -36,6 +36,7 @@ from backend.schemas.runs import (
     ThreadCreateRequest,
     ThreadResponse,
 )
+from backend.schemas.events import RunEventsResponse
 
 __all__ = [
     "RegisterRequest",
@@ -68,4 +69,5 @@ __all__ = [
     "RunCreateRequest",
     "RunResponse",
     "RunCreateResponse",
+    "RunEventsResponse",
 ]

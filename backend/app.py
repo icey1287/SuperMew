@@ -1,4 +1,5 @@
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.api.router import router
 from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
+from backend.events.outbox import default_publisher
 from backend.infra.database import init_db
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
@@ -34,7 +36,17 @@ def create_app() -> FastAPI:
     async def lifespan(_: FastAPI):
         settings.validate_startup()
         init_db()
-        yield
+        stop_event = asyncio.Event()
+        publisher_task = asyncio.create_task(default_publisher.run(stop_event))
+        try:
+            yield
+        finally:
+            stop_event.set()
+            try:
+                await asyncio.wait_for(publisher_task, timeout=3)
+            except TimeoutError:
+                publisher_task.cancel()
+            await default_publisher.close()
 
     app = FastAPI(title="SuperMew API", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings

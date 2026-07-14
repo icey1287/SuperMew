@@ -88,6 +88,22 @@ class RunSettings(_EnvSettings):
         default="reject",
         validation_alias="RUN_MULTITASK_STRATEGY",
     )
+    event_poll_interval_seconds: float = Field(
+        default=0.25,
+        ge=0.05,
+        validation_alias="RUN_EVENT_POLL_INTERVAL_SECONDS",
+    )
+    redis_stream_maxlen: int = Field(
+        default=10000,
+        ge=100,
+        validation_alias="RUN_EVENT_STREAM_MAXLEN",
+    )
+    outbox_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        validation_alias="OUTBOX_BATCH_SIZE",
+    )
 
 
 class SecuritySettings(_EnvSettings):

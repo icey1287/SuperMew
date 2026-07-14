@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
 from backend.db.models import ChatMessage, ChatSession, Run, User, utcnow
+from backend.events.generated.run_event_v1 import RunEventType
+from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
 from backend.runs.state import (
     ACTIVE_RUN_STATUSES,
@@ -351,6 +353,18 @@ class RunRepository:
                 run.user_message_id = user_message.id
                 run.assistant_message_id = assistant_message.id
                 run.fencing_token = thread.version
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread_id,
+                    event_type=RunEventType.RUN_CREATED,
+                    data={
+                        "status": run.status,
+                        "user_message_id": user_message.id,
+                        "assistant_message_id": assistant_message.id,
+                        "multitask_strategy": run.multitask_strategy,
+                    },
+                )
                 db.flush()
                 return RunReservation(
                     run=self._record(run, thread_id),
@@ -494,6 +508,17 @@ class RunRepository:
                 run.fencing_token += 1
                 run.lease_expires_at = now + timedelta(seconds=lease_seconds)
                 run.started_at = run.started_at or now
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread.session_id,
+                    event_type=RunEventType.RUN_STARTED,
+                    data={
+                        "status": run.status,
+                        "worker_id": worker_id,
+                        "fencing_token": run.fencing_token,
+                    },
+                )
                 db.flush()
                 return self._record(run, thread.session_id)
         finally:
@@ -532,6 +557,13 @@ class RunRepository:
                     db.query(ChatSession)
                     .filter(ChatSession.id == run.thread_ref_id)
                     .first()
+                )
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread.session_id,
+                    event_type=RunEventType.RUN_WAITING_INPUT,
+                    data={"status": run.status},
                 )
                 return self._record(run, thread.session_id)
         finally:
@@ -682,6 +714,50 @@ class RunRepository:
                     assistant.updated_at = now
                 thread.version += 1
                 thread.updated_at = now
+                if input_tokens or output_tokens or Decimal(str(cost)) != Decimal("0"):
+                    append_event_in_session(
+                        db,
+                        run=run,
+                        thread_id=thread.session_id,
+                        event_type=RunEventType.USAGE_UPDATED,
+                        data={
+                            "input_tokens": run.input_tokens,
+                            "output_tokens": run.output_tokens,
+                            "cost": str(run.cost),
+                        },
+                    )
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread.session_id,
+                    event_type=RunEventType.MESSAGE_COMPLETED,
+                    data={
+                        "message_id": run.assistant_message_id,
+                        "content": content,
+                        "status": (
+                            assistant.status
+                            if assistant
+                            else self._message_status(target, partial)
+                        ),
+                        "rag_trace": rag_trace,
+                    },
+                )
+                terminal_type = {
+                    RunStatus.SUCCEEDED.value: RunEventType.RUN_COMPLETED,
+                    RunStatus.FAILED.value: RunEventType.RUN_FAILED,
+                    RunStatus.CANCELLED.value: RunEventType.RUN_CANCELLED,
+                }[target]
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread.session_id,
+                    event_type=terminal_type,
+                    data={
+                        "status": run.status,
+                        "error_code": run.error_code,
+                        "assistant_message_id": run.assistant_message_id,
+                    },
+                )
                 db.flush()
                 self._promote_next_queued(db, thread, now)
                 db.flush()
