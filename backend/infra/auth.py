@@ -1,7 +1,7 @@
-import os
 import base64
 import hashlib
 import hmac
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
@@ -11,12 +11,14 @@ from sqlalchemy.orm import Session
 
 from backend.infra.database import SessionLocal
 from backend.db.models import User
+from backend.core.settings import get_settings
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-secret")
-ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
-ADMIN_INVITE_CODE = os.getenv("ADMIN_INVITE_CODE", "")
-PBKDF2_ROUNDS = int(os.getenv("PASSWORD_PBKDF2_ROUNDS", "310000"))
+_settings = get_settings().security
+SECRET_KEY = _settings.jwt_secret_key.get_secret_value()
+ALGORITHM = _settings.jwt_algorithm
+ACCESS_TOKEN_EXPIRE_MINUTES = _settings.access_token_expire_minutes
+ADMIN_INVITE_CODE = _settings.admin_invite_code.get_secret_value()
+PBKDF2_ROUNDS = _settings.password_pbkdf2_rounds
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -54,7 +56,9 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
         try:
             from passlib.context import CryptContext
 
-            legacy_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
+            legacy_context = CryptContext(
+                schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto"
+            )
             return legacy_context.verify(plain_password, password_hash)
         except Exception:
             return False
@@ -97,7 +101,9 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     return user
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无效或过期的认证令牌",
@@ -119,7 +125,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员权限不足")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="管理员权限不足"
+        )
     return current_user
 
 

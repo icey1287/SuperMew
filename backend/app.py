@@ -1,6 +1,10 @@
-import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
+
+# 兼容直接执行 backend/app.py 时在导入 backend 包前修正 sys.path。
+# ruff: noqa: E402
 
 # 支持 `python backend/app.py` 与 `uvicorn backend.app:app` 两种启动方式
 _ROOT = Path(__file__).resolve().parent.parent
@@ -16,25 +20,41 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.router import router
+from backend.core.errors import install_exception_handlers
+from backend.core.settings import get_settings
 from backend.infra.database import init_db
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Cute Cat Bot API")
+    settings = get_settings()
 
-    @app.on_event("startup")
-    async def _startup_init_db():
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        settings.validate_startup()
         init_db()
+        yield
+
+    app = FastAPI(title="SuperMew API", version="1.0.0", lifespan=lifespan)
+    app.state.settings = settings
+    install_exception_handlers(app)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=settings.security.cors_origins,
+        allow_credentials=settings.security.cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _request_id(request, call_next):
+        request_id = request.headers.get("X-Request-ID") or uuid4().hex
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     @app.middleware("http")
     async def _no_cache(request, call_next):
@@ -49,7 +69,9 @@ def create_app() -> FastAPI:
     app.include_router(router)
 
     if FRONTEND_DIR.exists():
-        app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
+        app.mount(
+            "/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static"
+        )
 
     return app
 
@@ -59,4 +81,5 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", 8000)))
+    settings = get_settings()
+    uvicorn.run(app, host=settings.app.host, port=settings.app.port)
