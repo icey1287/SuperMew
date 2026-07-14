@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Callable
 from uuid import uuid4
@@ -15,7 +15,13 @@ from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
 from backend.db.models import ChatMessage, ChatSession, Run, User, utcnow
 from backend.infra.database import SessionLocal
-from backend.runs.state import ACTIVE_RUN_STATUSES, MultitaskStrategy, RunStatus
+from backend.runs.state import (
+    ACTIVE_RUN_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    MultitaskStrategy,
+    RunStatus,
+    can_transition,
+)
 
 
 SessionFactory = Callable[[], Session]
@@ -33,6 +39,17 @@ class RunRecord:
     user_message_id: int
     assistant_message_id: int
     supersedes_run_id: str | None
+    model_name: str
+    on_disconnect: str
+    owner_worker_id: str | None
+    lease_expires_at: str | None
+    deadline_at: str | None
+    started_at: str | None
+    finished_at: str | None
+    error_code: str | None
+    input_tokens: int
+    output_tokens: int
+    cost: str
     created_at: str
     updated_at: str
 
@@ -79,6 +96,19 @@ class RunRepository:
             user_message_id=int(run.user_message_id or 0),
             assistant_message_id=int(run.assistant_message_id or 0),
             supersedes_run_id=run.supersedes_run_id,
+            model_name=run.model_name,
+            on_disconnect=run.on_disconnect,
+            owner_worker_id=run.owner_worker_id,
+            lease_expires_at=(
+                run.lease_expires_at.isoformat() if run.lease_expires_at else None
+            ),
+            deadline_at=run.deadline_at.isoformat() if run.deadline_at else None,
+            started_at=run.started_at.isoformat() if run.started_at else None,
+            finished_at=run.finished_at.isoformat() if run.finished_at else None,
+            error_code=run.error_code,
+            input_tokens=run.input_tokens,
+            output_tokens=run.output_tokens,
+            cost=str(run.cost),
             created_at=run.created_at.isoformat(),
             updated_at=run.updated_at.isoformat(),
         )
@@ -340,6 +370,359 @@ class RunRepository:
             ) from exc
         finally:
             db.close()
+
+    def create_thread(
+        self,
+        *,
+        username: str,
+        thread_id: str,
+        title: str | None = None,
+    ) -> dict:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                user = db.query(User).filter(User.username == username).first()
+                if not user:
+                    raise AppError(
+                        ErrorCode.AUTHENTICATION_REQUIRED,
+                        "用户不存在或已失效",
+                        status_code=401,
+                    )
+                thread = self._get_or_create_thread(db, user, thread_id, title=title)
+                if title and not (thread.metadata_json or {}).get("title"):
+                    thread.metadata_json = {
+                        **(thread.metadata_json or {}),
+                        "title": title,
+                    }
+                return {
+                    "thread_id": thread.session_id,
+                    "title": (thread.metadata_json or {}).get("title")
+                    or thread.session_id,
+                    "status": thread.status,
+                    "version": thread.version,
+                    "message_count": thread.message_count,
+                    "created_at": thread.created_at.isoformat(),
+                    "updated_at": thread.updated_at.isoformat(),
+                }
+        finally:
+            db.close()
+
+    def get(self, *, username: str, run_id: str) -> RunRecord:
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(Run, ChatSession)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .join(User, User.id == Run.user_id)
+                .filter(Run.id == run_id, User.username == username)
+                .first()
+            )
+            if not row:
+                raise AppError(
+                    ErrorCode.RUN_NOT_FOUND,
+                    "Run 不存在",
+                    status_code=404,
+                )
+            run, thread = row
+            return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _assert_fencing(run: Run, fencing_token: int | None) -> None:
+        if fencing_token is not None and run.fencing_token != fencing_token:
+            raise AppError(
+                ErrorCode.RUN_STATE_CONFLICT,
+                "Run fencing token 已失效",
+                status_code=409,
+                safe_details={"current_fencing_token": run.fencing_token},
+            )
+
+    @staticmethod
+    def _transition(run: Run, target: RunStatus | str) -> None:
+        target_value = RunStatus(target).value
+        if not can_transition(run.status, target_value):
+            raise AppError(
+                ErrorCode.RUN_STATE_CONFLICT,
+                f"Run 不能从 {run.status} 转换到 {target_value}",
+                status_code=409,
+            )
+        run.status = target_value
+        run.updated_at = utcnow()
+
+    def claim(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        lease_seconds: int | None = None,
+    ) -> RunRecord:
+        now = utcnow()
+        lease_seconds = lease_seconds or get_settings().worker.lease_seconds
+        db = self._session_factory()
+        try:
+            with db.begin():
+                run = db.query(Run).filter(Run.id == run_id).with_for_update().first()
+                if not run:
+                    raise AppError(
+                        ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
+                    )
+                thread = (
+                    db.query(ChatSession)
+                    .filter(ChatSession.id == run.thread_ref_id)
+                    .first()
+                )
+                if run.status == RunStatus.RUNNING.value:
+                    if run.owner_worker_id == worker_id and (
+                        not run.lease_expires_at or run.lease_expires_at >= now
+                    ):
+                        return self._record(run, thread.session_id)
+                    if run.lease_expires_at and run.lease_expires_at >= now:
+                        raise AppError(
+                            ErrorCode.RUN_ACTIVE,
+                            "Run 已被其他 worker 持有",
+                            status_code=409,
+                        )
+                elif run.status != RunStatus.PENDING.value:
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        f"状态为 {run.status} 的 Run 不能领取",
+                        status_code=409,
+                    )
+                self._transition(run, RunStatus.RUNNING)
+                run.owner_worker_id = worker_id
+                run.fencing_token += 1
+                run.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                run.started_at = run.started_at or now
+                db.flush()
+                return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    def heartbeat(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        fencing_token: int,
+        lease_seconds: int | None = None,
+    ) -> RunRecord:
+        lease_seconds = lease_seconds or get_settings().worker.lease_seconds
+        db = self._session_factory()
+        try:
+            with db.begin():
+                run = db.query(Run).filter(Run.id == run_id).with_for_update().first()
+                if not run:
+                    raise AppError(
+                        ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
+                    )
+                self._assert_fencing(run, fencing_token)
+                if (
+                    run.owner_worker_id != worker_id
+                    or run.status != RunStatus.RUNNING.value
+                ):
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "当前 worker 不再拥有该 Run",
+                        status_code=409,
+                    )
+                run.lease_expires_at = utcnow() + timedelta(seconds=lease_seconds)
+                run.updated_at = utcnow()
+                thread = (
+                    db.query(ChatSession)
+                    .filter(ChatSession.id == run.thread_ref_id)
+                    .first()
+                )
+                return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    def set_waiting_input(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        fencing_token: int,
+    ) -> RunRecord:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                run = db.query(Run).filter(Run.id == run_id).with_for_update().first()
+                if not run:
+                    raise AppError(
+                        ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
+                    )
+                self._assert_fencing(run, fencing_token)
+                if run.owner_worker_id != worker_id:
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "当前 worker 不再拥有该 Run",
+                        status_code=409,
+                    )
+                self._transition(run, RunStatus.WAITING_INPUT)
+                run.lease_expires_at = None
+                thread = (
+                    db.query(ChatSession)
+                    .filter(ChatSession.id == run.thread_ref_id)
+                    .first()
+                )
+                return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _message_status(target: str, partial: bool) -> str:
+        if partial:
+            return "incomplete"
+        if target == RunStatus.SUCCEEDED.value:
+            return "completed"
+        if target == RunStatus.CANCELLED.value:
+            return "cancelled"
+        return "failed"
+
+    def _promote_next_queued(
+        self, db: Session, thread: ChatSession, now: datetime
+    ) -> None:
+        queued = (
+            db.query(Run)
+            .filter(
+                Run.thread_ref_id == thread.id,
+                Run.status == RunStatus.QUEUED.value,
+            )
+            .order_by(Run.created_at.asc())
+            .with_for_update()
+            .first()
+        )
+        if not queued:
+            return
+        queued.status = RunStatus.PENDING.value
+        queued.updated_at = now
+        if queued.assistant_message_id:
+            message = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == queued.assistant_message_id)
+                .first()
+            )
+            if message:
+                message.status = "streaming"
+                message.updated_at = now
+
+    def finalize(
+        self,
+        *,
+        run_id: str,
+        target_status: RunStatus | str,
+        content: str,
+        fencing_token: int | None = None,
+        error_code: str | None = None,
+        error_detail_redacted: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost: Decimal | str | float = Decimal("0"),
+        rag_trace: dict | None = None,
+        partial: bool = False,
+        _lease_expired_before: datetime | None = None,
+    ) -> RunRecord:
+        target = RunStatus(target_status).value
+        if target not in TERMINAL_RUN_STATUSES:
+            raise ValueError("finalize target must be terminal")
+        now = utcnow()
+        db = self._session_factory()
+        try:
+            with db.begin():
+                run = db.query(Run).filter(Run.id == run_id).with_for_update().first()
+                if not run:
+                    raise AppError(
+                        ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
+                    )
+                thread = (
+                    db.query(ChatSession)
+                    .filter(ChatSession.id == run.thread_ref_id)
+                    .with_for_update()
+                    .first()
+                )
+                assistant = (
+                    db.query(ChatMessage)
+                    .filter(ChatMessage.id == run.assistant_message_id)
+                    .with_for_update()
+                    .first()
+                )
+                self._assert_fencing(run, fencing_token)
+                if _lease_expired_before is not None and (
+                    run.status
+                    not in {RunStatus.RUNNING.value, RunStatus.CANCELLING.value}
+                    or run.lease_expires_at is None
+                    or run.lease_expires_at >= _lease_expired_before
+                ):
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "Run lease 已续期或已被其他 worker 接管",
+                        status_code=409,
+                    )
+                if run.status in TERMINAL_RUN_STATUSES:
+                    if run.status != target:
+                        raise AppError(
+                            ErrorCode.RUN_STATE_CONFLICT,
+                            f"Run 已终结为 {run.status}",
+                            status_code=409,
+                        )
+                    return self._record(run, thread.session_id)
+                self._transition(run, target)
+                run.finished_at = now
+                run.lease_expires_at = None
+                run.error_code = error_code
+                run.error_detail_redacted = error_detail_redacted
+                run.input_tokens = max(0, input_tokens)
+                run.output_tokens = max(0, output_tokens)
+                run.cost = Decimal(str(cost))
+                if assistant:
+                    assistant.content = content
+                    assistant.status = self._message_status(target, partial)
+                    assistant.rag_trace = rag_trace
+                    assistant.updated_at = now
+                thread.version += 1
+                thread.updated_at = now
+                db.flush()
+                self._promote_next_queued(db, thread, now)
+                db.flush()
+                return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    def reconcile_orphans(self, *, now: datetime | None = None) -> list[str]:
+        now = now or utcnow()
+        db = self._session_factory()
+        recovered: list[str] = []
+        try:
+            candidates = (
+                db.query(Run.id, Run.fencing_token)
+                .filter(
+                    Run.status.in_(
+                        [RunStatus.RUNNING.value, RunStatus.CANCELLING.value]
+                    ),
+                    Run.lease_expires_at.is_not(None),
+                    Run.lease_expires_at < now,
+                )
+                .all()
+            )
+        finally:
+            db.close()
+        for run_id, fencing_token in candidates:
+            try:
+                self.finalize(
+                    run_id=run_id,
+                    target_status=RunStatus.FAILED,
+                    content="运行所属 worker 已失联，任务未完成。",
+                    error_code="ORPHAN_RUN",
+                    error_detail_redacted="worker lease expired",
+                    fencing_token=fencing_token,
+                    partial=True,
+                    _lease_expired_before=now,
+                )
+                recovered.append(run_id)
+            except AppError:
+                continue
+        return recovered
 
 
 repository = RunRepository()

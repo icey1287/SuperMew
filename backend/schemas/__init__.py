@@ -29,6 +29,13 @@ from backend.schemas.documents import (
     DocumentUploadStartResponse,
     UploadStepInfo,
 )
+from backend.schemas.runs import (
+    RunCreateRequest,
+    RunCreateResponse,
+    RunResponse,
+    ThreadCreateRequest,
+    ThreadResponse,
+)
 
 __all__ = [
     "RegisterRequest",
@@ -56,4 +63,9 @@ __all__ = [
     "DocumentDeleteStartResponse",
     "DocumentDeleteJobResponse",
     "DocumentDeleteResponse",
+    "ThreadCreateRequest",
+    "ThreadResponse",
+    "RunCreateRequest",
+    "RunResponse",
+    "RunCreateResponse",
 ]

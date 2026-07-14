@@ -1,0 +1,170 @@
+import unittest
+from datetime import timedelta
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend.core.errors import AppError, ErrorCode
+from backend.db.models import Base, ChatMessage, Run, User, utcnow
+from backend.runs.repository import RunRepository
+from backend.runs.service import RunService
+from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
+
+
+class RunServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        with self.Session.begin() as db:
+            db.add_all(
+                [
+                    User(username="alice", password_hash="hash", role="user"),
+                    User(username="bob", password_hash="hash", role="user"),
+                ]
+            )
+        self.repository = RunRepository(self.Session)
+        self.service = RunService(self.repository)
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def create(self, key="request-1", **kwargs):
+        return self.service.create_run(
+            username="alice",
+            thread_id="thread-1",
+            message=kwargs.pop("message", "hello"),
+            idempotency_key=key,
+            **kwargs,
+        )
+
+    def test_run_lifecycle_finalizes_message_and_run_together(self):
+        reservation = self.create()
+        claimed = self.service.claim_run(
+            run_id=reservation.run.id, worker_id="worker-1"
+        )
+        completed = self.service.complete_run(
+            run_id=claimed.id,
+            content="answer",
+            fencing_token=claimed.fencing_token,
+            input_tokens=10,
+            output_tokens=5,
+            cost="0.001",
+        )
+
+        self.assertEqual(RunStatus.SUCCEEDED, completed.status)
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == completed.id).one()
+            message = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == run.assistant_message_id)
+                .one()
+            )
+            self.assertEqual("succeeded", run.status)
+            self.assertEqual("answer", message.content)
+            self.assertEqual("completed", message.status)
+
+        repeated = self.service.complete_run(
+            run_id=claimed.id,
+            content="answer",
+            fencing_token=claimed.fencing_token,
+        )
+        self.assertEqual(completed.id, repeated.id)
+
+    def test_stale_fencing_token_cannot_finalize(self):
+        reservation = self.create()
+        claimed = self.service.claim_run(
+            run_id=reservation.run.id, worker_id="worker-1"
+        )
+        with self.assertRaises(AppError) as raised:
+            self.service.complete_run(
+                run_id=claimed.id,
+                content="stale",
+                fencing_token=reservation.run.fencing_token,
+            )
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, raised.exception.code)
+
+    def test_terminal_run_promotes_oldest_queued_run(self):
+        first = self.create("request-1")
+        second = self.create(
+            "request-2",
+            message="second",
+            multitask_strategy=MultitaskStrategy.ENQUEUE,
+        )
+        self.assertEqual(RunStatus.QUEUED, second.run.status)
+
+        claimed = self.service.claim_run(run_id=first.run.id, worker_id="worker-1")
+        self.service.complete_run(
+            run_id=first.run.id,
+            content="done",
+            fencing_token=claimed.fencing_token,
+        )
+
+        promoted = self.service.get_run(username="alice", run_id=second.run.id)
+        self.assertEqual(RunStatus.PENDING, promoted.status)
+        with self.Session() as db:
+            assistant = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == promoted.assistant_message_id)
+                .one()
+            )
+            self.assertEqual("streaming", assistant.status)
+
+    def test_orphan_reconciler_marks_partial_failure(self):
+        reservation = self.create()
+        claimed = self.repository.claim(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+            lease_seconds=1,
+        )
+        recovered = self.service.reconcile_orphans(now=utcnow() + timedelta(seconds=2))
+        self.assertEqual([claimed.id], recovered)
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == claimed.id).one()
+            assistant = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == run.assistant_message_id)
+                .one()
+            )
+            self.assertEqual("failed", run.status)
+            self.assertEqual("incomplete", assistant.status)
+
+    def test_heartbeat_prevents_orphan_recovery(self):
+        reservation = self.create()
+        claimed = self.repository.claim(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+            lease_seconds=1,
+        )
+        self.repository.heartbeat(
+            run_id=claimed.id,
+            worker_id="worker-1",
+            fencing_token=claimed.fencing_token,
+            lease_seconds=30,
+        )
+        recovered = self.service.reconcile_orphans(
+            now=utcnow() + timedelta(seconds=2)
+        )
+        self.assertEqual([], recovered)
+
+    def test_run_ownership_is_enforced(self):
+        reservation = self.create()
+        with self.assertRaises(AppError) as raised:
+            self.service.get_run(username="bob", run_id=reservation.run.id)
+        self.assertEqual(ErrorCode.RUN_NOT_FOUND, raised.exception.code)
+
+    def test_state_machine_rejects_invalid_edge(self):
+        reservation = self.create()
+        with self.assertRaises(AppError) as raised:
+            self.service.complete_run(run_id=reservation.run.id, content="too soon")
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, raised.exception.code)
+        self.assertFalse(can_transition("pending", "succeeded"))
+
+
+if __name__ == "__main__":
+    unittest.main()

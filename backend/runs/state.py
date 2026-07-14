@@ -30,3 +30,41 @@ TERMINAL_RUN_STATUSES = {
     RunStatus.FAILED.value,
     RunStatus.CANCELLED.value,
 }
+
+
+ALLOWED_TRANSITIONS = {
+    RunStatus.QUEUED.value: {
+        RunStatus.PENDING.value,
+        RunStatus.CANCELLED.value,
+    },
+    RunStatus.PENDING.value: {
+        RunStatus.RUNNING.value,
+        RunStatus.CANCELLING.value,
+        RunStatus.CANCELLED.value,
+        RunStatus.FAILED.value,
+    },
+    RunStatus.RUNNING.value: {
+        RunStatus.WAITING_INPUT.value,
+        RunStatus.CANCELLING.value,
+        RunStatus.SUCCEEDED.value,
+        RunStatus.FAILED.value,
+        RunStatus.CANCELLED.value,
+    },
+    RunStatus.WAITING_INPUT.value: {
+        RunStatus.RUNNING.value,
+        RunStatus.CANCELLING.value,
+        RunStatus.CANCELLED.value,
+        RunStatus.FAILED.value,
+    },
+    RunStatus.CANCELLING.value: {
+        RunStatus.CANCELLED.value,
+        RunStatus.FAILED.value,
+    },
+    RunStatus.SUCCEEDED.value: set(),
+    RunStatus.FAILED.value: set(),
+    RunStatus.CANCELLED.value: set(),
+}
+
+
+def can_transition(current: str, target: str) -> bool:
+    return current == target or target in ALLOWED_TRANSITIONS.get(current, set())
