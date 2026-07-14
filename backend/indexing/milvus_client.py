@@ -1,4 +1,5 @@
 """Milvus 访问层：无状态 Store + 短生命周期 gRPC 连接（避免长期持有失效 channel）。"""
+
 from __future__ import annotations
 
 import os
@@ -6,7 +7,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, TypeVar
 
-from pymilvus import AnnSearchRequest, DataType, MilvusClient, RRFRanker, Function, FunctionType
+from pymilvus import (
+    AnnSearchRequest,
+    DataType,
+    MilvusClient,
+    RRFRanker,
+    Function,
+    FunctionType,
+)
+
+from backend.security.milvus_filters import in_filter
 
 QUERY_MAX_LIMIT = 16384
 T = TypeVar("T")
@@ -36,7 +46,9 @@ class MilvusSettings:
 
 
 @contextmanager
-def milvus_client_session(settings: MilvusSettings | None = None) -> Iterator[MilvusClient]:
+def milvus_client_session(
+    settings: MilvusSettings | None = None,
+) -> Iterator[MilvusClient]:
     """一次 RPC 会话：创建连接，用完后关闭，不缓存 gRPC channel。"""
     cfg = settings or MilvusSettings.from_env()
     client = MilvusClient(uri=cfg.uri, timeout=cfg.timeout)
@@ -71,7 +83,9 @@ class MilvusStore:
             yield client
 
     @staticmethod
-    def ensure_collection(client: MilvusClient, collection_name: str, dense_dim: int) -> None:
+    def ensure_collection(
+        client: MilvusClient, collection_name: str, dense_dim: int
+    ) -> None:
         if client.has_collection(collection_name):
             return
 
@@ -157,7 +171,9 @@ class MilvusStore:
 
         return self._run(_query)
 
-    def query_all(self, filter_expr: str = "", output_fields: list[str] | None = None) -> list:
+    def query_all(
+        self, filter_expr: str = "", output_fields: list[str] | None = None
+    ) -> list:
         """分页拉取；单次 session 内完成，避免每页新建连接。"""
         fields = output_fields or ["filename", "file_type"]
         expr = _normalize_filter(filter_expr)
@@ -187,9 +203,8 @@ class MilvusStore:
         ids = [item for item in chunk_ids if item]
         if not ids:
             return []
-        quoted_ids = ", ".join(f'"{item}"' for item in ids)
         return self.query(
-            filter_expr=f"chunk_id in [{quoted_ids}]",
+            filter_expr=in_filter("chunk_id", ids),
             output_fields=[
                 "text",
                 "filename",
@@ -252,19 +267,21 @@ class MilvusStore:
         formatted_results = []
         for hits in results:
             for hit in hits:
-                formatted_results.append({
-                    "id": hit.get("id"),
-                    "text": hit.get("text", ""),
-                    "filename": hit.get("filename", ""),
-                    "file_type": hit.get("file_type", ""),
-                    "page_number": hit.get("page_number", 0),
-                    "chunk_id": hit.get("chunk_id", ""),
-                    "parent_chunk_id": hit.get("parent_chunk_id", ""),
-                    "root_chunk_id": hit.get("root_chunk_id", ""),
-                    "chunk_level": hit.get("chunk_level", 0),
-                    "chunk_idx": hit.get("chunk_idx", 0),
-                    "score": hit.get("distance", 0.0),
-                })
+                formatted_results.append(
+                    {
+                        "id": hit.get("id"),
+                        "text": hit.get("text", ""),
+                        "filename": hit.get("filename", ""),
+                        "file_type": hit.get("file_type", ""),
+                        "page_number": hit.get("page_number", 0),
+                        "chunk_id": hit.get("chunk_id", ""),
+                        "parent_chunk_id": hit.get("parent_chunk_id", ""),
+                        "root_chunk_id": hit.get("root_chunk_id", ""),
+                        "chunk_level": hit.get("chunk_level", 0),
+                        "chunk_idx": hit.get("chunk_idx", 0),
+                        "score": hit.get("distance", 0.0),
+                    }
+                )
         return formatted_results
 
     def dense_retrieve(
@@ -298,24 +315,30 @@ class MilvusStore:
         formatted_results = []
         for hits in results:
             for hit in hits:
-                formatted_results.append({
-                    "id": hit.get("id"),
-                    "text": hit.get("entity", {}).get("text", ""),
-                    "filename": hit.get("entity", {}).get("filename", ""),
-                    "file_type": hit.get("entity", {}).get("file_type", ""),
-                    "page_number": hit.get("entity", {}).get("page_number", 0),
-                    "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
-                    "parent_chunk_id": hit.get("entity", {}).get("parent_chunk_id", ""),
-                    "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
-                    "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
-                    "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
-                    "score": hit.get("distance", 0.0),
-                })
+                formatted_results.append(
+                    {
+                        "id": hit.get("id"),
+                        "text": hit.get("entity", {}).get("text", ""),
+                        "filename": hit.get("entity", {}).get("filename", ""),
+                        "file_type": hit.get("entity", {}).get("file_type", ""),
+                        "page_number": hit.get("entity", {}).get("page_number", 0),
+                        "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
+                        "parent_chunk_id": hit.get("entity", {}).get(
+                            "parent_chunk_id", ""
+                        ),
+                        "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
+                        "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
+                        "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
+                        "score": hit.get("distance", 0.0),
+                    }
+                )
         return formatted_results
 
     def delete(self, filter_expr: str):
         return self._run(
-            lambda client: client.delete(collection_name=self.collection_name, filter=filter_expr)
+            lambda client: client.delete(
+                collection_name=self.collection_name, filter=filter_expr
+            )
         )
 
     def has_collection(self) -> bool:

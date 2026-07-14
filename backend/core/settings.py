@@ -173,6 +173,21 @@ class StorageSettings(_EnvSettings):
         ge=1.0,
         validation_alias="PARSER_TIMEOUT_SECONDS",
     )
+    max_archive_entries: int = Field(
+        default=5000,
+        ge=1,
+        validation_alias="MAX_ARCHIVE_ENTRIES",
+    )
+    max_uncompressed_bytes: int = Field(
+        default=250 * 1024 * 1024,
+        ge=1024,
+        validation_alias="MAX_UNCOMPRESSED_BYTES",
+    )
+    max_compression_ratio: float = Field(
+        default=100.0,
+        ge=1.0,
+        validation_alias="MAX_COMPRESSION_RATIO",
+    )
 
 
 class WorkerSettings(_EnvSettings):
