@@ -51,6 +51,7 @@ ALLOWED_TRANSITIONS = {
         RunStatus.CANCELLED.value,
     },
     RunStatus.WAITING_INPUT.value: {
+        RunStatus.PENDING.value,
         RunStatus.RUNNING.value,
         RunStatus.CANCELLING.value,
         RunStatus.CANCELLED.value,

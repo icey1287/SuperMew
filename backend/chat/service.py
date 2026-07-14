@@ -3,7 +3,12 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+)
 
 from backend.chat.request_context import ChatRequestContext
 from backend.chat.runtime import create_agent_for_request, fast_model, model
@@ -83,12 +88,14 @@ def _build_pending_hitl(
         options=options,
         route=route,
         retrieval_status=(
-            "needs_scope_selection" if route == "scope_select" else "needs_clarification"
+            "needs_scope_selection"
+            if route == "scope_select"
+            else "needs_clarification"
         ),
         answers=previous_answers or [],
         resume_state=resume_state,
         created_at=datetime.now(timezone.utc).isoformat(),
-    ).model_dump()
+    ).model_dump(exclude_none=True)
 
 
 def _build_hitl_event(pending_hitl: dict) -> dict:
@@ -117,10 +124,12 @@ def _build_hitl_resume_query(pending_hitl: dict, user_text: str) -> str:
     if previous_answers:
         lines.append("此前用户已补充：")
         lines.extend(f"- {answer}" for answer in previous_answers)
-    lines.extend([
-        f"本轮用户补充：{user_text}",
-        "请基于以上补充形成完整查询，并按原来的 Agent/RAG 流程继续。",
-    ])
+    lines.extend(
+        [
+            f"本轮用户补充：{user_text}",
+            "请基于以上补充形成完整查询，并按原来的 Agent/RAG 流程继续。",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -202,7 +211,9 @@ def _no_knowledge_response() -> str:
     return "知识库中没有找到可靠的相关信息，暂时无法基于知识库回答这个问题。"
 
 
-def _resume_rag_from_hitl_sync(pending_hitl: dict, user_answer: str, ctx: ChatRequestContext) -> dict:
+def _resume_rag_from_hitl_sync(
+    pending_hitl: dict, user_answer: str, ctx: ChatRequestContext
+) -> dict:
     from backend.rag.pipeline import resume_rag_from_hitl
 
     resume_state = _pending_resume_state(pending_hitl)
@@ -211,7 +222,9 @@ def _resume_rag_from_hitl_sync(pending_hitl: dict, user_answer: str, ctx: ChatRe
     return resume_rag_from_hitl(resume_state, user_answer, ctx)
 
 
-def _answer_resumed_rag_sync(pending_hitl: dict, user_answer: str, rag_result: dict) -> str:
+def _answer_resumed_rag_sync(
+    pending_hitl: dict, user_answer: str, rag_result: dict
+) -> str:
     docs = rag_result.get("docs") or []
     trace = rag_result.get("rag_trace") or {}
     status = rag_result.get("retrieval_status") or trace.get("retrieval_status")
@@ -227,7 +240,11 @@ def _build_context_messages(
     persistent_note: str,
     user_text: str,
 ) -> list:
-    short_term = messages[-CONTEXT_WINDOW_MESSAGES:] if len(messages) > CONTEXT_WINDOW_MESSAGES else messages
+    short_term = (
+        messages[-CONTEXT_WINDOW_MESSAGES:]
+        if len(messages) > CONTEXT_WINDOW_MESSAGES
+        else messages
+    )
     context_messages: list = []
     if persistent_note:
         context_messages.append(
@@ -332,9 +349,7 @@ def chat_with_agent(
     if is_hitl_resume:
         hitl_answers = [*hitl_answers, user_text]
     original_question = (
-        pending_hitl.get("original_question")
-        if is_hitl_resume
-        else user_text
+        pending_hitl.get("original_question") if is_hitl_resume else user_text
     )
 
     ctx = ChatRequestContext.for_sync(user_id=user_id, session_id=session_id)
@@ -362,10 +377,14 @@ def chat_with_agent(
                     next_pending_hitl["options"],
                 )
             else:
-                response_content = _answer_resumed_rag_sync(pending_hitl, user_text, rag_result)
+                response_content = _answer_resumed_rag_sync(
+                    pending_hitl, user_text, rag_result
+                )
         else:
             request_agent = create_agent_for_request(ctx)
-            context_messages = _build_context_messages(messages[:-1], persistent_note, effective_user_text)
+            context_messages = _build_context_messages(
+                messages[:-1], persistent_note, effective_user_text
+            )
             result = request_agent.invoke(
                 {"messages": context_messages},
                 config={"recursion_limit": 8},
@@ -386,8 +405,12 @@ def chat_with_agent(
                 response_content = str(result)
 
             stored_trace = ctx.take_rag_trace()
-            rag_trace = normalize_rag_trace(stored_trace.get("rag_trace") if stored_trace else None)
-            resume_state_from_trace = stored_trace.get("hitl_resume_state") if stored_trace else None
+            rag_trace = normalize_rag_trace(
+                stored_trace.get("rag_trace") if stored_trace else None
+            )
+            resume_state_from_trace = (
+                stored_trace.get("hitl_resume_state") if stored_trace else None
+            )
             next_pending_hitl = None
             if _is_hitl_trace(rag_trace):
                 next_pending_hitl = _build_pending_hitl(
@@ -471,9 +494,7 @@ async def chat_with_agent_stream(
     if is_hitl_resume:
         hitl_answers = [*hitl_answers, user_text]
     original_question = (
-        pending_hitl.get("original_question")
-        if is_hitl_resume
-        else user_text
+        pending_hitl.get("original_question") if is_hitl_resume else user_text
     )
 
     output_queue = asyncio.Queue()
@@ -560,13 +581,17 @@ async def chat_with_agent_stream(
                             persistent_note,
                             effective_user_text,
                             full_response,
-                            history_messages=messages[:-1] if not persistent_note else None,
+                            history_messages=messages[:-1]
+                            if not persistent_note
+                            else None,
                         )
                     except Exception as e:
                         print(f"Update persistent note error: {e}")
 
             messages.append(AIMessage(content=full_response))
-            extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+            extra_message_data = [None] * (len(messages) - 1) + [
+                {"rag_trace": rag_trace}
+            ]
             storage.save(
                 user_id,
                 session_id,
@@ -577,7 +602,9 @@ async def chat_with_agent_stream(
             return
 
         request_agent = create_agent_for_request(ctx)
-        context_messages = _build_context_messages(messages[:-1], persistent_note, effective_user_text)
+        context_messages = _build_context_messages(
+            messages[:-1], persistent_note, effective_user_text
+        )
 
         session_title = None
         if is_first_message:
@@ -607,7 +634,9 @@ async def chat_with_agent_stream(
                         for block in msg.content:
                             if isinstance(block, str):
                                 content += block
-                            elif isinstance(block, dict) and block.get("type") == "text":
+                            elif (
+                                isinstance(block, dict) and block.get("type") == "text"
+                            ):
                                 content += block.get("text", "")
 
                     if content:
@@ -645,8 +674,12 @@ async def chat_with_agent_stream(
                 agent_task.cancel()
 
         stored_trace = ctx.take_rag_trace()
-        rag_trace = normalize_rag_trace(stored_trace.get("rag_trace") if stored_trace else None)
-        resume_state_from_trace = stored_trace.get("hitl_resume_state") if stored_trace else None
+        rag_trace = normalize_rag_trace(
+            stored_trace.get("rag_trace") if stored_trace else None
+        )
+        resume_state_from_trace = (
+            stored_trace.get("hitl_resume_state") if stored_trace else None
+        )
         next_pending_hitl = None
         hitl_response_content = ""
         if _is_hitl_trace(rag_trace):

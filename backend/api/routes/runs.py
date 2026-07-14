@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import User
@@ -9,10 +10,13 @@ from backend.events.sse import format_sse_event, format_sse_heartbeat
 from backend.infra.auth import get_current_user
 from backend.runs.service import service
 from backend.runs.cancellation import cancellation_registry
+from backend.runs.resume import resume_coordinator
 from backend.schemas.events import RunEventsResponse
 from backend.schemas.runs import (
     RunCreateRequest,
     RunCreateResponse,
+    RunResumeRequest,
+    RunResumeResponse,
     RunResponse,
     ThreadCreateRequest,
     ThreadResponse,
@@ -113,6 +117,31 @@ async def cancel_run(run_id: str, current_user: User = Depends(get_current_user)
     await cancellation_registry.request_cancel(run_id)
     return RunResponse(
         **service.get_run(username=current_user.username, run_id=run_id).__dict__
+    )
+
+
+@router.post(
+    "/runs/{run_id}/resume",
+    response_model=RunResumeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_run(
+    run_id: str,
+    request: RunResumeRequest,
+    current_user: User = Depends(get_current_user),
+):
+    acceptance = await run_in_threadpool(
+        resume_coordinator.accept,
+        username=current_user.username,
+        run_id=run_id,
+        hitl_token=request.hitl_token,
+        answer=request.answer,
+        idempotency_key=request.idempotency_key,
+    )
+    return RunResumeResponse(
+        run=RunResponse(**acceptance.run.__dict__),
+        checkpoint_id=acceptance.checkpoint_id,
+        created=acceptance.created,
     )
 
 

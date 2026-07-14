@@ -99,6 +99,9 @@ class HitlResumeState(StrictSchema):
     complexity: Optional[Literal["simple", "complex"]] = None
     complexity_reason: Optional[str] = None
     sub_questions: List[str] = Field(default_factory=list, max_length=4)
+    checkpoint_thread_id: Optional[str] = None
+    checkpoint_id: Optional[str] = None
+    interrupt_id: Optional[str] = None
 
 
 class PendingHitlState(StrictSchema):

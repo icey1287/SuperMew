@@ -48,7 +48,9 @@ def _read_positive_int_env(name: str, default: int) -> int:
         return default
 
 
-RETRIEVAL_CANDIDATE_MULTIPLIER = _read_positive_int_env("RETRIEVAL_CANDIDATE_MULTIPLIER", 3)
+RETRIEVAL_CANDIDATE_MULTIPLIER = _read_positive_int_env(
+    "RETRIEVAL_CANDIDATE_MULTIPLIER", 3
+)
 _RETRIEVAL_CANDIDATE_K_RAW = os.getenv("RETRIEVAL_CANDIDATE_K", "").strip()
 RETRIEVAL_TOP_K = _read_positive_int_env("RETRIEVAL_TOP_K", 8)
 
@@ -123,7 +125,11 @@ def resolve_candidate_k(top_k: int) -> Tuple[int, Dict[str, Any]]:
 
 def retrieval_trace_fields(meta: Dict[str, Any]) -> Dict[str, Any]:
     """从 retrieve meta 提取应写入 rag_trace 的检索字段。"""
-    return {key: meta[key] for key in RETRIEVAL_TRACE_FIELDS if key in meta and meta[key] is not None}
+    return {
+        key: meta[key]
+        for key in RETRIEVAL_TRACE_FIELDS
+        if key in meta and meta[key] is not None
+    }
 
 
 def _get_rerank_endpoint() -> str:
@@ -155,7 +161,9 @@ def _merge_rank_score_into(target: dict, source: dict) -> None:
     incoming = _effective_score(source)
     if incoming is None:
         return
-    uses_rerank = source.get("rerank_score") is not None or target.get("rerank_score") is not None
+    uses_rerank = (
+        source.get("rerank_score") is not None or target.get("rerank_score") is not None
+    )
     if uses_rerank:
         existing = target.get("rerank_score")
         if existing is None:
@@ -170,19 +178,27 @@ def _merge_rank_score_into(target: dict, source: dict) -> None:
         target["score"] = max(float(existing), incoming)
 
 
-def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[dict], int]:
+def _merge_to_parent_level(
+    docs: List[dict], threshold: int = 2
+) -> Tuple[List[dict], int]:
     groups: Dict[str, List[dict]] = defaultdict(list)
     for doc in docs:
         parent_id = (doc.get("parent_chunk_id") or "").strip()
         if parent_id:
             groups[parent_id].append(doc)
 
-    merge_parent_ids = [parent_id for parent_id, children in groups.items() if len(children) >= threshold]
+    merge_parent_ids = [
+        parent_id
+        for parent_id, children in groups.items()
+        if len(children) >= threshold
+    ]
     if not merge_parent_ids:
         return docs, 0
 
     parent_docs = _parent_chunk_store.get_documents_by_ids(merge_parent_ids)
-    parent_map = {item.get("chunk_id", ""): item for item in parent_docs if item.get("chunk_id")}
+    parent_map = {
+        item.get("chunk_id", ""): item for item in parent_docs if item.get("chunk_id")
+    }
 
     merged_docs: List[dict] = []
     parent_slot: Dict[str, int] = {}
@@ -228,16 +244,23 @@ def _auto_merge_candidates(docs: List[dict]) -> Tuple[List[dict], Dict[str, Any]
     if not AUTO_MERGE_ENABLED or not docs:
         return docs, meta
 
-    merged_docs, merged_count_l3_l2 = _merge_to_parent_level(docs, threshold=AUTO_MERGE_THRESHOLD)
-    merged_docs, merged_count_l2_l1 = _merge_to_parent_level(merged_docs, threshold=AUTO_MERGE_THRESHOLD)
+    merged_docs, merged_count_l3_l2 = _merge_to_parent_level(
+        docs, threshold=AUTO_MERGE_THRESHOLD
+    )
+    merged_docs, merged_count_l2_l1 = _merge_to_parent_level(
+        merged_docs, threshold=AUTO_MERGE_THRESHOLD
+    )
 
     replaced_count = merged_count_l3_l2 + merged_count_l2_l1
-    meta.update({
-        "auto_merge_applied": replaced_count > 0,
-        "auto_merge_replaced_chunks": replaced_count,
-        "auto_merge_steps": int(merged_count_l3_l2 > 0) + int(merged_count_l2_l1 > 0),
-        "post_merge_candidate_count": len(merged_docs),
-    })
+    meta.update(
+        {
+            "auto_merge_applied": replaced_count > 0,
+            "auto_merge_replaced_chunks": replaced_count,
+            "auto_merge_steps": int(merged_count_l3_l2 > 0)
+            + int(merged_count_l2_l1 > 0),
+            "post_merge_candidate_count": len(merged_docs),
+        }
+    )
     return merged_docs, meta
 
 
@@ -251,7 +274,10 @@ def dedupe_documents(docs: List[dict]) -> List[dict]:
     order: List[str] = []
     for item in docs:
         chunk_id = (item.get("chunk_id") or "").strip()
-        key = chunk_id or f"{item.get('filename')}|{item.get('page_number')}|{item.get('text')}"
+        key = (
+            chunk_id
+            or f"{item.get('filename')}|{item.get('page_number')}|{item.get('text')}"
+        )
         if key not in by_key:
             by_key[key] = item
             order.append(key)
@@ -260,7 +286,9 @@ def dedupe_documents(docs: List[dict]) -> List[dict]:
     return [by_key[key] for key in order]
 
 
-def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
+def _rerank_documents(
+    query: str, docs: List[dict], top_k: int
+) -> Tuple[List[dict], Dict[str, Any]]:
     docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(docs, 1)]
     meta: Dict[str, Any] = {
         "rerank_enabled": RERANK_ENABLED,
@@ -314,7 +342,13 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
 
         meta["rerank_error"] = "empty_rerank_results"
         return _sort_by_rank_score(docs_with_rank)[:top_k], meta
-    except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+    except (
+        requests.RequestException,
+        json.JSONDecodeError,
+        KeyError,
+        ValueError,
+        TypeError,
+    ) as e:
         meta["rerank_error"] = str(e)
         return _sort_by_rank_score(docs_with_rank)[:top_k], meta
 
@@ -381,7 +415,9 @@ def rewrite_query_once(query: str) -> dict:
 
     if method == "step_back":
         if not step_back_question or hyde_document:
-            raise ValueError("Step-back rewrite plan must contain only step_back_question")
+            raise ValueError(
+                "Step-back rewrite plan must contain only step_back_question"
+            )
         rewritten_query = f"{query}\n\n退步问题：{step_back_question}"
     elif method == "hyde":
         if not hyde_document or step_back_question:
@@ -408,7 +444,9 @@ def _finalize_retrieval(
 ) -> Dict[str, Any]:
     """生产流水线：召回候选 → Auto-merge → Rerank（top_k）→ 阈值过滤。"""
     candidates, merge_meta = _auto_merge_candidates(retrieved)
-    reranked_docs, rerank_meta = _rerank_documents(query=query, docs=candidates, top_k=top_k)
+    reranked_docs, rerank_meta = _rerank_documents(
+        query=query, docs=candidates, top_k=top_k
+    )
     post_rerank_count = len(reranked_docs)
     final_docs = [d for d in reranked_docs if _meets_rerank_min_score(d)]
     meta = {

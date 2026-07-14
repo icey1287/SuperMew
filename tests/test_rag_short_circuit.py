@@ -16,7 +16,11 @@ class FakeStructuredInvoker:
         self.handler = handler
 
     def invoke(self, messages):
-        content = messages[0]["content"] if messages and isinstance(messages[0], dict) else str(messages)
+        content = (
+            messages[0]["content"]
+            if messages and isinstance(messages[0], dict)
+            else str(messages)
+        )
         payload = self.handler(self.schema, content)
         return self.schema(**payload)
 
@@ -46,18 +50,31 @@ def load_pipeline(
     retrieve_documents,
     rewrite_query_once=None,
 ):
+    # Keep LangGraph's contextvars and exception classes stable after patch.dict
+    # restores sys.modules. Otherwise interrupt() can observe a second module copy.
+    for dependency_name in (
+        "langgraph.checkpoint.memory",
+        "langgraph.config",
+        "langgraph.errors",
+        "langgraph.graph",
+        "langgraph.types",
+    ):
+        importlib.import_module(dependency_name)
+
     fake_rag = types.ModuleType("backend.rag")
     fake_rag.__path__ = []
 
     fake_utils = types.ModuleType("backend.rag.utils")
     fake_utils.RETRIEVAL_TOP_K = 5
     fake_utils.retrieve_documents = retrieve_documents
-    fake_utils.rewrite_query_once = rewrite_query_once or (lambda query: {
-        "rewrite_method": "step_back",
-        "step_back_question": "broader question",
-        "hyde_document": "",
-        "rewritten_query": f"rewritten {query}",
-    })
+    fake_utils.rewrite_query_once = rewrite_query_once or (
+        lambda query: {
+            "rewrite_method": "step_back",
+            "step_back_question": "broader question",
+            "hyde_document": "",
+            "rewritten_query": f"rewritten {query}",
+        }
+    )
     fake_utils.dedupe_documents = _dedupe_documents
     fake_utils.retrieval_trace_fields = lambda meta: dict(meta)
 
@@ -67,8 +84,21 @@ def load_pipeline(
         REPO_ROOT / "backend" / "rag" / "pipeline.py",
     )
     module = importlib.util.module_from_spec(spec)
+    runtime_spec = importlib.util.spec_from_file_location(
+        "backend.rag.runtime_context",
+        REPO_ROOT / "backend" / "rag" / "runtime_context.py",
+    )
+    runtime_module = importlib.util.module_from_spec(runtime_spec)
 
-    with patch.dict(sys.modules, {"backend.rag": fake_rag, "backend.rag.utils": fake_utils}):
+    with patch.dict(
+        sys.modules,
+        {
+            "backend.rag": fake_rag,
+            "backend.rag.utils": fake_utils,
+            "backend.rag.runtime_context": runtime_module,
+        },
+    ):
+        runtime_spec.loader.exec_module(runtime_module)
         spec.loader.exec_module(module)
 
     return module
@@ -151,11 +181,15 @@ class RagShortCircuitTests(unittest.TestCase):
                 "rewritten_query": f"rewritten {query}",
             }
 
-        pipeline = load_pipeline(retrieve_documents=retrieve, rewrite_query_once=step_back)
+        pipeline = load_pipeline(
+            retrieve_documents=retrieve, rewrite_query_once=step_back
+        )
         pipeline._get_complexity_model = lambda: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
-        pipeline._get_grader_model = lambda: FakeStructuredModel(lambda schema, prompt: {})
+        pipeline._get_grader_model = lambda: FakeStructuredModel(
+            lambda schema, prompt: {}
+        )
 
         ctx = self._ctx()
         try:
@@ -165,7 +199,9 @@ class RagShortCircuitTests(unittest.TestCase):
 
         self.assertEqual([], result.get("docs"))
         self.assertEqual("no_knowledge", result.get("retrieval_status"))
-        self.assertEqual("no_knowledge", result.get("rag_trace", {}).get("retrieval_status"))
+        self.assertEqual(
+            "no_knowledge", result.get("rag_trace", {}).get("retrieval_status")
+        )
         self.assertEqual(1, calls["retrieve"])
         self.assertEqual(0, calls["step_back"])
 
@@ -183,9 +219,11 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        complexity_model = Mock(return_value=FakeStructuredModel(
-            lambda schema, prompt: {"complexity": "simple", "reason": "model"}
-        ))
+        complexity_model = Mock(
+            return_value=FakeStructuredModel(
+                lambda schema, prompt: {"complexity": "simple", "reason": "model"}
+            )
+        )
         pipeline._get_complexity_model = complexity_model
         pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
 
@@ -293,7 +331,9 @@ class RagShortCircuitTests(unittest.TestCase):
 
         pipeline = load_pipeline(
             retrieve_documents=retrieve,
-            rewrite_query_once=lambda query: calls.__setitem__("step_back", calls["step_back"] + 1) or {},
+            rewrite_query_once=lambda query: (
+                calls.__setitem__("step_back", calls["step_back"] + 1) or {}
+            ),
         )
         pipeline._get_complexity_model = lambda: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
@@ -317,7 +357,10 @@ class RagShortCircuitTests(unittest.TestCase):
         def retrieve(query, top_k=5):
             calls["retrieve"].append(query)
             if query.startswith("rewritten"):
-                return {"docs": [_doc("still partial evidence", "chunk-2")], "meta": _meta(1)}
+                return {
+                    "docs": [_doc("still partial evidence", "chunk-2")],
+                    "meta": _meta(1),
+                }
             return {"docs": [_doc("weak evidence", "chunk-1")], "meta": _meta(1)}
 
         def grade(schema, prompt):
@@ -338,7 +381,9 @@ class RagShortCircuitTests(unittest.TestCase):
                 "rewritten_query": f"rewritten {query}",
             }
 
-        pipeline = load_pipeline(retrieve_documents=retrieve, rewrite_query_once=step_back)
+        pipeline = load_pipeline(
+            retrieve_documents=retrieve, rewrite_query_once=step_back
+        )
         pipeline._get_complexity_model = lambda: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
@@ -350,7 +395,9 @@ class RagShortCircuitTests(unittest.TestCase):
         finally:
             ctx.close()
 
-        self.assertEqual(["weak question", "rewritten weak question"], calls["retrieve"])
+        self.assertEqual(
+            ["weak question", "rewritten weak question"], calls["retrieve"]
+        )
         self.assertEqual(1, calls["step_back"])
         self.assertEqual("needs_clarification", result.get("retrieval_status"))
         self.assertEqual([], result.get("docs"))
@@ -389,7 +436,9 @@ class RagShortCircuitTests(unittest.TestCase):
                 "rewritten_query": "HyDE rewritten query",
             }
 
-        pipeline = load_pipeline(retrieve_documents=retrieve, rewrite_query_once=rewrite)
+        pipeline = load_pipeline(
+            retrieve_documents=retrieve, rewrite_query_once=rewrite
+        )
         pipeline._get_complexity_model = lambda: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
@@ -405,7 +454,9 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual(1, calls["rewrite"])
         self.assertEqual(2, calls["grade"])
         self.assertEqual("hyde", result.get("rag_trace", {}).get("rewrite_method"))
-        self.assertIn("假设性答案", result.get("rag_trace", {}).get("hyde_document", ""))
+        self.assertIn(
+            "假设性答案", result.get("rag_trace", {}).get("hyde_document", "")
+        )
         self.assertNotIn("step_back_question", result.get("rag_trace", {}))
 
     def test_missing_slot_and_scope_select_do_not_rewrite(self):
@@ -428,14 +479,22 @@ class RagShortCircuitTests(unittest.TestCase):
                         "ambiguity": ambiguity,
                         "route": route,
                         "confidence": 0.61,
-                        "missing_slots": ["版本"] if ambiguity == "missing_slot" else [],
-                        "hitl_prompt": "请补充版本" if ambiguity == "missing_slot" else "请选择方向",
-                        "hitl_options": ["A", "B"] if ambiguity == "multiple_candidates" else [],
+                        "missing_slots": ["版本"]
+                        if ambiguity == "missing_slot"
+                        else [],
+                        "hitl_prompt": "请补充版本"
+                        if ambiguity == "missing_slot"
+                        else "请选择方向",
+                        "hitl_options": ["A", "B"]
+                        if ambiguity == "multiple_candidates"
+                        else [],
                     }
 
                 pipeline = load_pipeline(
                     retrieve_documents=retrieve,
-                    rewrite_query_once=lambda query: calls.__setitem__("step_back", calls["step_back"] + 1) or {},
+                    rewrite_query_once=lambda query: (
+                        calls.__setitem__("step_back", calls["step_back"] + 1) or {}
+                    ),
                 )
                 pipeline._get_complexity_model = lambda: FakeStructuredModel(
                     lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
@@ -455,7 +514,10 @@ class RagShortCircuitTests(unittest.TestCase):
 
     def test_hitl_result_includes_only_current_resume_state(self):
         def retrieve(query, top_k=5):
-            return {"docs": [_doc("丹瑾和丹恒都可能相关", "candidate")], "meta": _meta(1)}
+            return {
+                "docs": [_doc("丹瑾和丹恒都可能相关", "candidate")],
+                "meta": _meta(1),
+            }
 
         def grade(schema, prompt):
             return {
@@ -485,15 +547,24 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertIsInstance(resume_state, dict)
         self.assertEqual("这个角色的属性是什么？", resume_state.get("question"))
         self.assertEqual("needs_clarification", resume_state.get("retrieval_status"))
-        self.assertEqual({
-            "question",
-            "route",
-            "retrieval_status",
-            "rewrite_count",
-            "complexity",
-            "complexity_reason",
-            "sub_questions",
-        }, set(resume_state))
+        self.assertEqual(
+            {
+                "question",
+                "route",
+                "retrieval_status",
+                "rewrite_count",
+                "complexity",
+                "complexity_reason",
+                "sub_questions",
+                "checkpoint_thread_id",
+                "checkpoint_id",
+                "interrupt_id",
+            },
+            set(resume_state),
+        )
+        self.assertTrue(resume_state["checkpoint_thread_id"].startswith("rag_"))
+        self.assertTrue(resume_state["checkpoint_id"])
+        self.assertTrue(resume_state["interrupt_id"])
 
     def test_resume_goes_directly_to_targeted_retrieval_after_hitl_answer(self):
         calls = {"retrieve": []}
@@ -529,8 +600,14 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual("answerable", result.get("retrieval_status"))
         self.assertEqual(1, len(result.get("docs", [])))
         self.assertTrue(result.get("rag_trace", {}).get("hitl_resumed"))
-        self.assertEqual("targeted_retrieval", result.get("rag_trace", {}).get("hitl_resume_strategy"))
-        self.assertEqual("hitl_targeted_retrieval", result.get("rag_trace", {}).get("retrieval_stage"))
+        self.assertEqual(
+            "targeted_retrieval",
+            result.get("rag_trace", {}).get("hitl_resume_strategy"),
+        )
+        self.assertEqual(
+            "hitl_targeted_retrieval",
+            result.get("rag_trace", {}).get("retrieval_stage"),
+        )
 
     def test_complex_sub_agents_keep_partial_docs_without_rewrite(self):
         calls = {"retrieve": [], "step_back": 0}
@@ -538,7 +615,10 @@ class RagShortCircuitTests(unittest.TestCase):
         def retrieve(query, top_k=5):
             calls["retrieve"].append(query)
             if query == "known sub":
-                return {"docs": [_doc("partial sub evidence", "known")], "meta": _meta(1)}
+                return {
+                    "docs": [_doc("partial sub evidence", "known")],
+                    "meta": _meta(1),
+                }
             return {"docs": [], "meta": _meta(0)}
 
         def complexity(schema, prompt):
@@ -559,7 +639,9 @@ class RagShortCircuitTests(unittest.TestCase):
 
         pipeline = load_pipeline(
             retrieve_documents=retrieve,
-            rewrite_query_once=lambda query: calls.__setitem__("step_back", calls["step_back"] + 1) or {},
+            rewrite_query_once=lambda query: (
+                calls.__setitem__("step_back", calls["step_back"] + 1) or {}
+            ),
         )
         pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
         pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
@@ -591,7 +673,9 @@ class RagShortCircuitTests(unittest.TestCase):
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
         pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(lambda schema, prompt: {})
+        pipeline._get_grader_model = lambda: FakeStructuredModel(
+            lambda schema, prompt: {}
+        )
 
         ctx = self._ctx()
         try:
@@ -605,7 +689,10 @@ class RagShortCircuitTests(unittest.TestCase):
 
     def test_complex_preserves_sub_agent_hitl_when_no_docs_can_be_synthesized(self):
         def retrieve(query, top_k=5):
-            return {"docs": [_doc("ambiguous related evidence", query)], "meta": _meta(1)}
+            return {
+                "docs": [_doc("ambiguous related evidence", query)],
+                "meta": _meta(1),
+            }
 
         def complexity(schema, prompt):
             return {

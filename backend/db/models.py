@@ -227,6 +227,11 @@ class RunCheckpoint(Base):
     __tablename__ = "run_checkpoints"
     __table_args__ = (
         UniqueConstraint("run_id", "checkpoint_id", name="uq_run_checkpoint"),
+        UniqueConstraint(
+            "run_id",
+            "resume_idempotency_key",
+            name="uq_run_checkpoint_resume_idempotency",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -243,6 +248,11 @@ class RunCheckpoint(Base):
     hitl_token: Mapped[str | None] = mapped_column(
         String(128), unique=True, nullable=True
     )
+    interrupt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resume_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    resume_payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     state_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     next_nodes_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

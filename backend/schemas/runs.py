@@ -62,3 +62,15 @@ class RunCreateResponse(RunSchema):
     run: RunResponse
     created: bool
     thread_version: int
+
+
+class RunResumeRequest(RunSchema):
+    hitl_token: str = Field(min_length=1, max_length=128)
+    answer: str = Field(min_length=1, max_length=100000)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class RunResumeResponse(RunSchema):
+    run: RunResponse
+    checkpoint_id: str
+    created: bool
