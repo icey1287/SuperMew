@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { useAuthStore } from './auth';
 import { useSessionStore } from './sessions';
+import { useRunsStore } from './runs';
 import api from '@/utils/api';
 import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
 
@@ -297,9 +298,14 @@ export const useChatStore = defineStore('chat', {
     },
 
     handleStop() {
-      if (this.abortController) {
-        this.abortController.abort();
+      const controller = this.abortController;
+      const runsStore = useRunsStore();
+      const activeRun = runsStore.activeForThread(this.streamingSessionId);
+      if (!activeRun) {
+        controller?.abort();
+        return;
       }
+      void runsStore.cancel(activeRun.runId).finally(() => controller?.abort());
     },
 
     async handleSend() {

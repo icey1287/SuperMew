@@ -130,5 +130,28 @@ class RunService:
     def reconcile_orphans(self, *, now: datetime | None = None) -> list[str]:
         return self.repository.reconcile_orphans(now=now)
 
+    def request_cancel(self, *, username: str, run_id: str) -> RunRecord:
+        current = self.repository.get(username=username, run_id=run_id)
+        if current.status in {
+            RunStatus.SUCCEEDED.value,
+            RunStatus.FAILED.value,
+            RunStatus.CANCELLED.value,
+        }:
+            return current
+        if current.status in {
+            RunStatus.QUEUED.value,
+            RunStatus.PENDING.value,
+            RunStatus.WAITING_INPUT.value,
+        }:
+            return self.repository.finalize(
+                run_id=run_id,
+                target_status=RunStatus.CANCELLED,
+                content="运行已由用户取消。",
+                error_code="RUN_CANCELLED",
+                error_detail_redacted="cancelled by user",
+                partial=True,
+            )
+        return self.repository.mark_cancelling(username=username, run_id=run_id)
+
 
 service = RunService()

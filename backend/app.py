@@ -25,6 +25,7 @@ from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
 from backend.events.outbox import default_publisher
 from backend.infra.database import init_db
+from backend.runs.cancellation import cancellation_registry
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 
@@ -38,15 +39,23 @@ def create_app() -> FastAPI:
         init_db()
         stop_event = asyncio.Event()
         publisher_task = asyncio.create_task(default_publisher.run(stop_event))
+        cancellation_task = asyncio.create_task(
+            cancellation_registry.listen(stop_event)
+        )
         try:
             yield
         finally:
             stop_event.set()
             try:
-                await asyncio.wait_for(publisher_task, timeout=3)
+                await asyncio.wait_for(
+                    asyncio.gather(publisher_task, cancellation_task),
+                    timeout=3,
+                )
             except TimeoutError:
                 publisher_task.cancel()
+                cancellation_task.cancel()
             await default_publisher.close()
+            await cancellation_registry.close()
 
     app = FastAPI(title="SuperMew API", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings

@@ -104,6 +104,17 @@ class RunSettings(_EnvSettings):
         le=1000,
         validation_alias="OUTBOX_BATCH_SIZE",
     )
+    cancellation_ttl_seconds: int = Field(
+        default=3600,
+        ge=60,
+        validation_alias="RUN_CANCELLATION_TTL_SECONDS",
+    )
+    cancellation_wait_seconds: float = Field(
+        default=0.2,
+        ge=0.01,
+        le=5.0,
+        validation_alias="RUN_CANCELLATION_WAIT_SECONDS",
+    )
 
 
 class SecuritySettings(_EnvSettings):

@@ -602,6 +602,43 @@ class RunRepository:
         finally:
             db.close()
 
+    def mark_cancelling(self, *, username: str, run_id: str) -> RunRecord:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                row = (
+                    db.query(Run, ChatSession)
+                    .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                    .join(User, User.id == Run.user_id)
+                    .filter(Run.id == run_id, User.username == username)
+                    .with_for_update()
+                    .first()
+                )
+                if not row:
+                    raise AppError(
+                        ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
+                    )
+                run, thread = row
+                if (
+                    run.status in TERMINAL_RUN_STATUSES
+                    or run.status == RunStatus.CANCELLING
+                ):
+                    return self._record(run, thread.session_id)
+                self._transition(run, RunStatus.CANCELLING)
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread.session_id,
+                    event_type=RunEventType.WARNING_CREATED,
+                    data={
+                        "code": "CANCEL_REQUESTED",
+                        "message": "用户已请求停止运行",
+                    },
+                )
+                return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
     @staticmethod
     def _message_status(target: str, partial: bool) -> str:
         if partial:

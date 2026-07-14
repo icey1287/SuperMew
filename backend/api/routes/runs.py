@@ -8,6 +8,7 @@ from backend.events.journal import journal
 from backend.events.sse import format_sse_event, format_sse_heartbeat
 from backend.infra.auth import get_current_user
 from backend.runs.service import service
+from backend.runs.cancellation import cancellation_registry
 from backend.schemas.events import RunEventsResponse
 from backend.schemas.runs import (
     RunCreateRequest,
@@ -101,6 +102,15 @@ async def create_run(
 
 @router.get("/runs/{run_id}", response_model=RunResponse)
 async def get_run(run_id: str, current_user: User = Depends(get_current_user)):
+    return RunResponse(
+        **service.get_run(username=current_user.username, run_id=run_id).__dict__
+    )
+
+
+@router.post("/runs/{run_id}/cancel", response_model=RunResponse)
+async def cancel_run(run_id: str, current_user: User = Depends(get_current_user)):
+    service.request_cancel(username=current_user.username, run_id=run_id)
+    await cancellation_registry.request_cancel(run_id)
     return RunResponse(
         **service.get_run(username=current_user.username, run_id=run_id).__dict__
     )

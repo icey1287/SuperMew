@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia';
+import api from '@/utils/api';
 import {
   applyRunEvent,
   initialRunEventState,
@@ -10,6 +11,17 @@ export const useRunsStore = defineStore('runs', {
   state: () => ({
     byId: {} as Record<string, RunEventState>,
   }),
+  getters: {
+    activeForThread: (state) => (threadId: string | null) => {
+      if (!threadId) return null;
+      return Object.values(state.byId).find(
+        (run) =>
+          run.threadId === threadId &&
+          !run.terminal &&
+          !['idle', 'cancelled', 'failed', 'completed'].includes(run.status)
+      ) || null;
+    },
+  },
   actions: {
     ensure(runId: string, threadId: string): RunEventState {
       if (!this.byId[runId]) {
@@ -23,6 +35,17 @@ export const useRunsStore = defineStore('runs', {
     },
     remove(runId: string) {
       delete this.byId[runId];
+    },
+    async cancel(runId: string) {
+      const current = this.byId[runId];
+      if (current && !current.terminal) current.status = 'cancelling';
+      const response = await api.post(`/v1/runs/${encodeURIComponent(runId)}/cancel`);
+      const status = String(response.data?.status || 'cancelling');
+      if (current) {
+        current.status = status === 'succeeded' ? 'completed' : (status as RunEventState['status']);
+        current.terminal = ['succeeded', 'completed', 'failed', 'cancelled'].includes(status);
+      }
+      return response.data;
     },
   },
 });
