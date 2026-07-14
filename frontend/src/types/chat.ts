@@ -1,3 +1,5 @@
+export type { RunEventType, RunEventV1 } from './generated/run-event-v1';
+
 export interface RetrievedChunk {
   filename: string;
   page_number?: number;

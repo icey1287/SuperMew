@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://supermew.local/contracts/run_event_v1.json",
+  "title": "SuperMew Run Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "sequence",
+    "run_id",
+    "thread_id",
+    "type",
+    "timestamp",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_[A-Za-z0-9_-]+$",
+      "maxLength": 80
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[A-Za-z0-9_-]+$",
+      "maxLength": 64
+    },
+    "thread_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "run.created",
+        "run.started",
+        "run.waiting_input",
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "planner.started",
+        "planner.completed",
+        "tool.started",
+        "tool.progress",
+        "tool.completed",
+        "tool.failed",
+        "tool.denied",
+        "retrieval.started",
+        "retrieval.candidates",
+        "retrieval.rerank_completed",
+        "retrieval.completed",
+        "message.delta",
+        "message.completed",
+        "hitl.required",
+        "hitl.resumed",
+        "usage.updated",
+        "artifact.created",
+        "warning.created"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}
