@@ -159,6 +159,11 @@ class ChatMessage(Base):
         UniqueConstraint(
             "session_ref_id", "sequence", name="uq_chat_message_thread_sequence"
         ),
+        UniqueConstraint(
+            "session_ref_id",
+            "client_message_id",
+            name="uq_chat_message_client_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -167,6 +172,9 @@ class ChatMessage(Base):
     )
     run_id: Mapped[str | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    client_message_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     message_type: Mapped[str] = mapped_column(String(20), nullable=False)

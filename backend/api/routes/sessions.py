@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from backend.chat.storage import storage
 from backend.db.models import User
@@ -17,18 +17,32 @@ router = APIRouter(tags=["sessions"])
 
 @router.get("/sessions/{session_id}", response_model=SessionMessagesResponse)
 async def get_session_messages(
-    session_id: str, current_user: User = Depends(get_current_user)
+    session_id: str,
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
 ):
+    records = storage.get_session_messages(
+        current_user.username,
+        session_id,
+        after=after,
+        limit=limit,
+    )
     messages = [
         MessageInfo(
+            id=msg.get("id"),
+            run_id=msg.get("run_id"),
+            sequence=msg.get("sequence"),
+            status=msg.get("status"),
             type=msg["type"],
             content=msg["content"],
             timestamp=msg["timestamp"],
             rag_trace=msg.get("rag_trace"),
         )
-        for msg in storage.get_session_messages(current_user.username, session_id)
+        for msg in records
     ]
-    return SessionMessagesResponse(messages=messages)
+    next_cursor = records[-1]["sequence"] if len(records) == limit else None
+    return SessionMessagesResponse(messages=messages, next_cursor=next_cursor)
 
 
 @router.get("/sessions", response_model=SessionListResponse)

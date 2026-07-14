@@ -1,0 +1,154 @@
+import unittest
+
+from langchain_core.messages import AIMessage, HumanMessage
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend.chat.repository import ConversationRepository, MessageAppend
+from backend.chat.storage import ConversationStorage
+from backend.core.errors import AppError, ErrorCode
+from backend.db.models import Base, ChatMessage, ChatSession, User
+
+
+class MessageRepositoryTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        with self.Session.begin() as db:
+            db.add(User(username="alice", password_hash="hash", role="user"))
+        self.repository = ConversationRepository(self.Session)
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def test_legacy_snapshot_appends_without_rewriting_existing_rows(self):
+        storage = ConversationStorage(self.repository)
+        storage.save("alice", "thread-1", [HumanMessage(content="hello")])
+        with self.Session() as db:
+            first = db.query(ChatMessage).one()
+            first_id = first.id
+            first_timestamp = first.timestamp
+
+        statements = []
+
+        def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement.lower().strip())
+
+        event.listen(self.engine, "before_cursor_execute", capture)
+        try:
+            storage.save(
+                "alice",
+                "thread-1",
+                [HumanMessage(content="hello"), AIMessage(content="world")],
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture)
+
+        with self.Session() as db:
+            rows = db.query(ChatMessage).order_by(ChatMessage.sequence).all()
+            thread = db.query(ChatSession).one()
+            self.assertEqual([1, 2], [row.sequence for row in rows])
+            self.assertEqual(first_id, rows[0].id)
+            self.assertEqual(first_timestamp, rows[0].timestamp)
+            self.assertEqual(2, thread.message_count)
+            self.assertEqual(2, thread.last_sequence)
+        self.assertFalse(any(statement.startswith("delete") for statement in statements))
+
+    def test_client_message_id_makes_append_idempotent(self):
+        message = MessageAppend(
+            role="human",
+            content="hello",
+            client_message_id="request-1:user",
+        )
+        first = self.repository.append_message("alice", "thread-1", message)
+        second = self.repository.append_message("alice", "thread-1", message)
+
+        self.assertEqual(first.id, second.id)
+        with self.Session() as db:
+            self.assertEqual(1, db.query(ChatMessage).count())
+
+    def test_placeholder_and_finalize_are_idempotent(self):
+        placeholder = self.repository.create_assistant_placeholder(
+            "alice", "thread-1", "run-1"
+        )
+        duplicate = self.repository.create_assistant_placeholder(
+            "alice", "thread-1", "run-1"
+        )
+        self.assertEqual(placeholder.id, duplicate.id)
+
+        completed = self.repository.finalize_message(
+            "alice",
+            "thread-1",
+            placeholder.id,
+            content="answer",
+            status="completed",
+        )
+        repeated = self.repository.finalize_message(
+            "alice",
+            "thread-1",
+            placeholder.id,
+            content="answer",
+            status="completed",
+        )
+        self.assertEqual(completed.id, repeated.id)
+        self.assertEqual("completed", repeated.status)
+
+    def test_expected_version_rejects_stale_writer(self):
+        self.repository.append_message(
+            "alice", "thread-1", MessageAppend(role="human", content="one")
+        )
+        with self.assertRaises(AppError) as raised:
+            self.repository.append_message(
+                "alice",
+                "thread-1",
+                MessageAppend(role="human", content="two"),
+                expected_version=0,
+            )
+        self.assertEqual(ErrorCode.CONFLICT, raised.exception.code)
+
+    def test_cursor_pagination_is_stable(self):
+        for index in range(5):
+            self.repository.append_message(
+                "alice",
+                "thread-1",
+                MessageAppend(role="human", content=str(index)),
+            )
+        first_page = self.repository.list_messages("alice", "thread-1", limit=2)
+        second_page = self.repository.list_messages(
+            "alice", "thread-1", after=first_page[-1].sequence, limit=2
+        )
+        self.assertEqual(["0", "1"], [item.content for item in first_page])
+        self.assertEqual(["2", "3"], [item.content for item in second_page])
+
+    def test_thread_listing_has_no_message_count_query(self):
+        self.repository.append_message(
+            "alice", "thread-1", MessageAppend(role="human", content="one")
+        )
+        statements = []
+
+        def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement.lower())
+
+        event.listen(self.engine, "before_cursor_execute", capture)
+        try:
+            rows = self.repository.list_threads("alice")
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture)
+
+        self.assertEqual(1, rows[0]["message_count"])
+        self.assertFalse(
+            any(
+                "count(" in statement and "chat_messages" in statement
+                for statement in statements
+            )
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

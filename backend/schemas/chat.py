@@ -118,9 +118,9 @@ def _normalize_chunks(value) -> list[dict]:
         return []
     fields = RetrievedChunk.model_fields
     return [
-        RetrievedChunk.model_validate({key: item[key] for key in fields if key in item}).model_dump(
-            exclude_none=True
-        )
+        RetrievedChunk.model_validate(
+            {key: item[key] for key in fields if key in item}
+        ).model_dump(exclude_none=True)
         for item in value
         if isinstance(item, dict) and item.get("filename")
     ]
@@ -151,7 +151,11 @@ def normalize_rag_trace(trace: dict | None) -> Optional[dict]:
         return None
     normalized = _normalize_trace_fields(trace, RagTrace.model_fields)
     if "sub_traces" in normalized:
-        sub_traces = normalized["sub_traces"] if isinstance(normalized["sub_traces"], list) else []
+        sub_traces = (
+            normalized["sub_traces"]
+            if isinstance(normalized["sub_traces"], list)
+            else []
+        )
         normalized["sub_traces"] = [
             item
             for item in (
@@ -170,6 +174,10 @@ class ChatResponse(StrictSchema):
 
 
 class MessageInfo(StrictSchema):
+    id: Optional[int] = None
+    run_id: Optional[str] = None
+    sequence: Optional[int] = None
+    status: Optional[str] = None
     type: str
     content: str
     timestamp: str
@@ -178,6 +186,7 @@ class MessageInfo(StrictSchema):
 
 class SessionMessagesResponse(StrictSchema):
     messages: List[MessageInfo]
+    next_cursor: Optional[int] = None
 
 
 class SessionInfo(StrictSchema):
@@ -185,6 +194,8 @@ class SessionInfo(StrictSchema):
     title: Optional[str] = None
     updated_at: str
     message_count: int
+    version: Optional[int] = None
+    status: Optional[str] = None
 
 
 class SessionListResponse(StrictSchema):
