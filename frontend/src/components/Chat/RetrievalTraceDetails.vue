@@ -12,6 +12,9 @@
         <div v-if="msg.ragTrace.retrieval_status" class="trace-line">
           检索状态：{{ formatRetrievalStatus(msg.ragTrace.retrieval_status) }}
         </div>
+        <div v-if="msg.ragTrace.retrieval_outcome" class="trace-line">
+          领域结果：{{ msg.ragTrace.retrieval_outcome }}
+        </div>
         <div v-if="msg.ragTrace.hitl_resumed" class="trace-line">
           HITL续跑：是
           <span v-if="msg.ragTrace.hitl_answer">（补充：{{ msg.ragTrace.hitl_answer }}）</span>
@@ -82,8 +85,20 @@
         <div v-if="msg.ragTrace.rerank_model" class="trace-line">
           Rerank模型：{{ msg.ragTrace.rerank_model }}
         </div>
-        <div v-if="msg.ragTrace.rerank_error" class="trace-line">
-          Rerank状态：{{ msg.ragTrace.rerank_error }}
+        <div v-if="msg.ragTrace.rerank_error_code" class="trace-line">
+          Rerank降级：{{ msg.ragTrace.rerank_error_code }}
+          <span v-if="msg.ragTrace.rerank_attempts">
+            （尝试 {{ msg.ragTrace.rerank_attempts }} 次）
+          </span>
+        </div>
+        <div v-if="msg.ragTrace.retrieval_degraded_code" class="trace-line">
+          检索降级：{{ msg.ragTrace.retrieval_degraded_code }}
+        </div>
+        <div v-if="msg.ragTrace.coverage_gap_codes && msg.ragTrace.coverage_gap_codes.length" class="trace-line">
+          覆盖缺口：{{ msg.ragTrace.coverage_gap_codes.join(' / ') }}
+        </div>
+        <div v-if="msg.ragTrace.coverage_gap_questions && msg.ragTrace.coverage_gap_questions.length" class="trace-line">
+          未覆盖子问题：{{ msg.ragTrace.coverage_gap_questions.join(' / ') }}
         </div>
         <div v-if="msg.ragTrace.rewrite_method" class="trace-line">
           查询重写方式：{{ formatRewriteMethod(msg.ragTrace.rewrite_method) }}

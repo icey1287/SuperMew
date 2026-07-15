@@ -1,10 +1,49 @@
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrictSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ChatStreamPublicError(StrictSchema):
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+    message: str = Field(min_length=1)
+    retryable: bool
+    category: Optional[str] = None
+    stage: Optional[str] = None
+    provider: Optional[str] = None
+    retry_after: Optional[float] = Field(default=None, ge=0)
+    request_id: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+def build_chat_stream_error_event(error: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the one legacy-SSE error envelope accepted by old and new clients."""
+
+    public = ChatStreamPublicError.model_validate(dict(error))
+    contract = public.model_dump()
+    compatibility = {
+        key: contract[key]
+        for key in (
+            "code",
+            "message",
+            "retryable",
+            "category",
+            "stage",
+            "provider",
+            "retry_after",
+            "request_id",
+        )
+    }
+    return {
+        "type": "error",
+        "error": contract,
+        **compatibility,
+        "error_code": public.code,
+        "content": f"[{public.code}] {public.message}",
+    }
 
 
 class ChatRequest(StrictSchema):
@@ -32,6 +71,9 @@ class RagTraceFields(StrictSchema):
     retrieval_stage: Optional[str] = None
     route: Optional[str] = None
     retrieval_status: Optional[str] = None
+    retrieval_outcome: Optional[
+        Literal["ANSWERABLE", "NO_KNOWLEDGE", "INSUFFICIENT_EVIDENCE"]
+    ] = None
     evidence_relevance: Optional[str] = None
     evidence_answerability: Optional[str] = None
     evidence_ambiguity: Optional[str] = None
@@ -49,13 +91,21 @@ class RagTraceFields(StrictSchema):
     rerank_enabled: Optional[bool] = None
     rerank_applied: Optional[bool] = None
     rerank_model: Optional[str] = None
-    rerank_endpoint: Optional[str] = None
-    rerank_error: Optional[str] = None
+    rerank_error_code: Optional[str] = None
+    rerank_retryable: Optional[bool] = None
+    rerank_attempts: Optional[int] = None
+    rerank_fallback_applied: Optional[bool] = None
     rerank_timeout_seconds: Optional[float] = None
     rerank_min_score: Optional[float] = None
+    rerank_threshold_applied: Optional[bool] = None
     post_rerank_count: Optional[int] = None
     post_threshold_count: Optional[int] = None
     retrieval_empty: Optional[bool] = None
+    retrieval_degraded_code: Optional[str] = None
+    provider_error_code: Optional[str] = None
+    provider_error_stage: Optional[str] = None
+    coverage_gap_codes: Optional[List[str]] = None
+    coverage_gap_questions: Optional[List[str]] = None
     retrieval_mode: Optional[str] = None
     retrieval_pipeline: Optional[str] = None
     candidate_k: Optional[int] = None

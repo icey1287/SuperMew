@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import os
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, TypeVar
@@ -15,11 +17,37 @@ from pymilvus import (
     Function,
     FunctionType,
 )
+from pymilvus.exceptions import (
+    DataTypeNotSupportException,
+    ErrorCode as MilvusErrorCode,
+    FunctionsTypeException,
+    MilvusException,
+    ServerVersionIncompatibleException,
+)
 
 from backend.security.milvus_filters import in_filter
 
 QUERY_MAX_LIMIT = 16384
 T = TypeVar("T")
+
+
+class HybridRetrievalUnsupported(RuntimeError):
+    """The connected Milvus deployment cannot execute sparse/hybrid recall."""
+
+
+_HYBRID_CAPABILITY_EXCEPTIONS = (
+    DataTypeNotSupportException,
+    FunctionsTypeException,
+    ServerVersionIncompatibleException,
+)
+
+
+def _is_hybrid_capability_error(exc: Exception) -> bool:
+    if isinstance(exc, _HYBRID_CAPABILITY_EXCEPTIONS):
+        return True
+    return (
+        isinstance(exc, MilvusException) and exc.code == MilvusErrorCode.INDEX_NOT_FOUND
+    )
 
 
 @dataclass(frozen=True)
@@ -60,6 +88,62 @@ def milvus_client_session(
 
 def _normalize_filter(filter_expr: str) -> str:
     return filter_expr.strip() if filter_expr.strip() else "id >= 0"
+
+
+def _single_query_hits(results) -> list[Mapping]:
+    """Validate the MilvusClient one-query response before empty-result semantics."""
+
+    if isinstance(results, (str, bytes, Mapping)) or results is None:
+        raise ValueError("invalid Milvus search response")
+    try:
+        outer = list(results)
+    except TypeError as exc:
+        raise ValueError("invalid Milvus search response") from exc
+    if len(outer) != 1:
+        raise ValueError("Milvus search response must contain one query result")
+    raw_hits = outer[0]
+    if isinstance(raw_hits, (str, bytes, Mapping)) or raw_hits is None:
+        raise ValueError("invalid Milvus hits response")
+    try:
+        hits = list(raw_hits)
+    except TypeError as exc:
+        raise ValueError("invalid Milvus hits response") from exc
+    if any(not isinstance(hit, Mapping) for hit in hits):
+        raise ValueError("invalid Milvus hit")
+    return hits
+
+
+def _format_retrieval_hit(hit: Mapping) -> dict:
+    entity_value = hit.get("entity")
+    entity = entity_value if entity_value is not None else hit
+    if not isinstance(entity, Mapping):
+        raise ValueError("invalid Milvus hit entity")
+    text = entity.get("text")
+    chunk_id = entity.get("chunk_id")
+    distance = hit.get("distance")
+    if "id" not in hit or not isinstance(text, str) or not text.strip():
+        raise ValueError("Milvus hit is missing required fields")
+    if not isinstance(chunk_id, str) or not chunk_id.strip():
+        raise ValueError("Milvus hit is missing chunk_id")
+    if (
+        isinstance(distance, bool)
+        or not isinstance(distance, (int, float))
+        or not math.isfinite(float(distance))
+    ):
+        raise ValueError("Milvus hit has an invalid distance")
+    return {
+        "id": hit.get("id"),
+        "text": text,
+        "filename": entity.get("filename", ""),
+        "file_type": entity.get("file_type", ""),
+        "page_number": entity.get("page_number", 0),
+        "chunk_id": chunk_id,
+        "parent_chunk_id": entity.get("parent_chunk_id", ""),
+        "root_chunk_id": entity.get("root_chunk_id", ""),
+        "chunk_level": entity.get("chunk_level", 0),
+        "chunk_idx": entity.get("chunk_idx", 0),
+        "score": float(distance),
+    }
 
 
 class MilvusStore:
@@ -226,6 +310,7 @@ class MilvusStore:
         top_k: int = 5,
         rrf_k: int = 60,
         filter_expr: str = "",
+        timeout: float | None = None,
     ) -> list[dict]:
         output_fields = [
             "text",
@@ -238,21 +323,26 @@ class MilvusStore:
             "chunk_level",
             "chunk_idx",
         ]
-        dense_search = AnnSearchRequest(
-            data=[dense_embedding],
-            anns_field="dense_embedding",
-            param={"metric_type": "IP", "params": {"ef": 64}},
-            limit=top_k * 2,
-            expr=filter_expr,
-        )
-        sparse_search = AnnSearchRequest(
-            data=[query],
-            anns_field="sparse_embedding",
-            param={"metric_type": "BM25", "params": {"drop_ratio_search": 0.2}},
-            limit=top_k * 2,
-            expr=filter_expr,
-        )
-        reranker = RRFRanker(k=rrf_k)
+        try:
+            dense_search = AnnSearchRequest(
+                data=[dense_embedding],
+                anns_field="dense_embedding",
+                param={"metric_type": "IP", "params": {"ef": 64}},
+                limit=top_k * 2,
+                expr=filter_expr,
+            )
+            sparse_search = AnnSearchRequest(
+                data=[query],
+                anns_field="sparse_embedding",
+                param={"metric_type": "BM25", "params": {"drop_ratio_search": 0.2}},
+                limit=top_k * 2,
+                expr=filter_expr,
+            )
+            reranker = RRFRanker(k=rrf_k)
+        except Exception as exc:
+            if _is_hybrid_capability_error(exc):
+                raise HybridRetrievalUnsupported from exc
+            raise
 
         def _search(client: MilvusClient):
             return client.hybrid_search(
@@ -261,34 +351,23 @@ class MilvusStore:
                 ranker=reranker,
                 limit=top_k,
                 output_fields=output_fields,
+                timeout=timeout,
             )
 
-        results = self._run(_search)
-        formatted_results = []
-        for hits in results:
-            for hit in hits:
-                formatted_results.append(
-                    {
-                        "id": hit.get("id"),
-                        "text": hit.get("text", ""),
-                        "filename": hit.get("filename", ""),
-                        "file_type": hit.get("file_type", ""),
-                        "page_number": hit.get("page_number", 0),
-                        "chunk_id": hit.get("chunk_id", ""),
-                        "parent_chunk_id": hit.get("parent_chunk_id", ""),
-                        "root_chunk_id": hit.get("root_chunk_id", ""),
-                        "chunk_level": hit.get("chunk_level", 0),
-                        "chunk_idx": hit.get("chunk_idx", 0),
-                        "score": hit.get("distance", 0.0),
-                    }
-                )
-        return formatted_results
+        try:
+            results = self._run(_search)
+        except Exception as exc:
+            if _is_hybrid_capability_error(exc):
+                raise HybridRetrievalUnsupported from exc
+            raise
+        return [_format_retrieval_hit(hit) for hit in _single_query_hits(results)]
 
     def dense_retrieve(
         self,
         dense_embedding: list[float],
         top_k: int = 5,
         filter_expr: str = "",
+        timeout: float | None = None,
     ) -> list[dict]:
         def _search(client: MilvusClient):
             return client.search(
@@ -309,30 +388,11 @@ class MilvusStore:
                     "chunk_idx",
                 ],
                 filter=filter_expr,
+                timeout=timeout,
             )
 
         results = self._run(_search)
-        formatted_results = []
-        for hits in results:
-            for hit in hits:
-                formatted_results.append(
-                    {
-                        "id": hit.get("id"),
-                        "text": hit.get("entity", {}).get("text", ""),
-                        "filename": hit.get("entity", {}).get("filename", ""),
-                        "file_type": hit.get("entity", {}).get("file_type", ""),
-                        "page_number": hit.get("entity", {}).get("page_number", 0),
-                        "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
-                        "parent_chunk_id": hit.get("entity", {}).get(
-                            "parent_chunk_id", ""
-                        ),
-                        "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
-                        "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
-                        "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
-                        "score": hit.get("distance", 0.0),
-                    }
-                )
-        return formatted_results
+        return [_format_retrieval_hit(hit) for hit in _single_query_hits(results)]
 
     def delete(self, filter_expr: str):
         return self._run(

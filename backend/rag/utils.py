@@ -1,12 +1,25 @@
 from collections import defaultdict
-from typing import List, Tuple, Dict, Any, Literal, Optional
+from collections.abc import Callable
+import math
 import os
-import json
+import time
+from typing import List, Tuple, Dict, Any, Literal, Optional
+
 import requests
 
-from backend.indexing.milvus_client import get_milvus_store
+from backend.indexing.milvus_client import (
+    HybridRetrievalUnsupported,
+    get_milvus_store,
+)
 from backend.indexing.embedding import embedding_service as _embedding_service
 from backend.indexing.parent_chunk_store import ParentChunkStore
+from backend.providers import (
+    ProviderCallContext,
+    ProviderError,
+    ProviderExecutor,
+    ProviderOperation,
+    ProviderPolicy,
+)
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
@@ -84,20 +97,72 @@ RETRIEVAL_TRACE_FIELDS = (
     "rerank_enabled",
     "rerank_applied",
     "rerank_model",
-    "rerank_endpoint",
-    "rerank_error",
+    "rerank_error_code",
+    "rerank_retryable",
+    "rerank_attempts",
+    "rerank_fallback_applied",
     "rerank_timeout_seconds",
     "rerank_min_score",
+    "rerank_threshold_applied",
     "post_rerank_count",
     "post_threshold_count",
     "retrieval_empty",
+    "retrieval_degraded_code",
 )
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = get_milvus_store()
 _parent_chunk_store = ParentChunkStore()
+_provider_executor = ProviderExecutor()
 
 _rewrite_model = None
+
+
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+try:
+    EMBEDDING_TIMEOUT_SECONDS = max(
+        float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "15")), 0.1
+    )
+except ValueError:
+    EMBEDDING_TIMEOUT_SECONDS = 15.0
+try:
+    VECTOR_TIMEOUT_SECONDS = max(float(os.getenv("VECTOR_TIMEOUT_SECONDS", "10")), 0.1)
+except ValueError:
+    VECTOR_TIMEOUT_SECONDS = 10.0
+_EMBEDDING_POLICY = ProviderPolicy(max_attempts=2)
+_VECTOR_POLICY = ProviderPolicy(max_attempts=2)
+_RERANK_POLICY = ProviderPolicy(max_attempts=2)
+_MODEL_POLICY = ProviderPolicy(max_attempts=2)
+RERANK_ATTEMPT_TIMEOUT_SECONDS = max(
+    (RERANK_TIMEOUT_SECONDS - _RERANK_POLICY.initial_backoff_seconds)
+    / _RERANK_POLICY.max_attempts,
+    0.05,
+)
+try:
+    REWRITE_TIMEOUT_SECONDS = max(
+        float(os.getenv("RAG_MODEL_TIMEOUT_SECONDS", "15")), 0.1
+    )
+except ValueError:
+    REWRITE_TIMEOUT_SECONDS = 15.0
+
+
+def _bounded_deadline(deadline: float | None, timeout_seconds: float) -> float:
+    stage_deadline = time.monotonic() + timeout_seconds
+    return min(deadline, stage_deadline) if deadline is not None else stage_deadline
+
+
+def _remaining_timeout(deadline: float, configured_timeout: float) -> float:
+    return max(min(deadline - time.monotonic(), configured_timeout), 0.001)
+
+
+def _provider_code(error: ProviderError) -> str:
+    return getattr(error.code, "value", str(error.code))
+
+
+def _validate_retrieved_documents(value: Any) -> List[dict]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError("vector provider returned invalid documents")
+    return value
 
 
 def resolve_candidate_k(top_k: int) -> Tuple[int, Dict[str, Any]]:
@@ -287,15 +352,22 @@ def dedupe_documents(docs: List[dict]) -> List[dict]:
 
 
 def _rerank_documents(
-    query: str, docs: List[dict], top_k: int
+    query: str,
+    docs: List[dict],
+    top_k: int,
+    *,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
 ) -> Tuple[List[dict], Dict[str, Any]]:
     docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(docs, 1)]
     meta: Dict[str, Any] = {
         "rerank_enabled": RERANK_ENABLED,
         "rerank_applied": False,
         "rerank_model": RERANK_MODEL,
-        "rerank_endpoint": _get_rerank_endpoint(),
-        "rerank_error": None,
+        "rerank_error_code": None,
+        "rerank_retryable": None,
+        "rerank_attempts": 0,
+        "rerank_fallback_applied": False,
         "rerank_timeout_seconds": RERANK_TIMEOUT_SECONDS,
         "candidate_count": len(docs_with_rank),
     }
@@ -314,43 +386,88 @@ def _rerank_documents(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {RERANK_API_KEY}",
     }
-    try:
-        meta["rerank_applied"] = True
+    stage_deadline = _bounded_deadline(deadline, RERANK_TIMEOUT_SECONDS)
+    context = ProviderCallContext(
+        provider=RERANK_MODEL or "reranker",
+        operation=ProviderOperation.RERANK,
+        deadline=stage_deadline,
+        cancellation=cancellation,
+    )
+    request_attempts = 0
+
+    def _request() -> List[dict]:
+        nonlocal request_attempts
+        request_attempts += 1
         response = requests.post(
-            meta["rerank_endpoint"],
+            _get_rerank_endpoint(),
             headers=headers,
             json=payload,
-            timeout=RERANK_TIMEOUT_SECONDS,
+            timeout=_remaining_timeout(
+                stage_deadline,
+                RERANK_ATTEMPT_TIMEOUT_SECONDS,
+            ),
         )
-        if response.status_code >= 400:
-            meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
-            return _sort_by_rank_score(docs_with_rank)[:top_k], meta
-
-        items = response.json().get("results", [])
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid rerank response")
+        items = body.get("results", [])
+        if not isinstance(items, list) or not items:
+            raise ValueError("invalid rerank results")
         reranked = []
+        seen_indices: set[int] = set()
         for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("invalid rerank item")
             idx = item.get("index")
-            if isinstance(idx, int) and 0 <= idx < len(docs_with_rank):
-                doc = dict(docs_with_rank[idx])
-                score = item.get("relevance_score")
-                if score is not None:
-                    doc["rerank_score"] = score
-                reranked.append(doc)
+            if (
+                isinstance(idx, bool)
+                or not isinstance(idx, int)
+                or not 0 <= idx < len(docs_with_rank)
+                or idx in seen_indices
+            ):
+                raise ValueError("invalid rerank index")
+            score = item.get("relevance_score")
+            if score is None:
+                raise ValueError("rerank score is required")
+            try:
+                parsed_score = float(score)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("invalid rerank score") from exc
+            if not math.isfinite(parsed_score):
+                raise ValueError("invalid rerank score")
+            seen_indices.add(idx)
+            doc = dict(docs_with_rank[idx])
+            doc["rerank_score"] = parsed_score
+            reranked.append(doc)
+        if not reranked:
+            raise ValueError("invalid rerank indices")
+        return reranked[:top_k]
 
-        if reranked:
-            return reranked[:top_k], meta
+    try:
+        reranked = _provider_executor.call(
+            _request,
+            context=context,
+            policy=_RERANK_POLICY,
+        )
+    except ProviderError as exc:
+        meta.update(
+            {
+                "rerank_error_code": _provider_code(exc),
+                "rerank_retryable": exc.retryable,
+                "rerank_attempts": exc.attempts,
+                "rerank_fallback_applied": True,
+            }
+        )
+        return _sort_by_rank_score(docs_with_rank)[:top_k], meta
 
-        meta["rerank_error"] = "empty_rerank_results"
-        return _sort_by_rank_score(docs_with_rank)[:top_k], meta
-    except (
-        requests.RequestException,
-        json.JSONDecodeError,
-        KeyError,
-        ValueError,
-        TypeError,
-    ) as e:
-        meta["rerank_error"] = str(e)
-        return _sort_by_rank_score(docs_with_rank)[:top_k], meta
+    meta.update(
+        {
+            "rerank_applied": True,
+            "rerank_attempts": request_attempts,
+        }
+    )
+    return reranked, meta
 
 
 class RewritePlan(BaseModel):
@@ -397,17 +514,33 @@ def _get_rewrite_model():
             base_url=BASE_URL,
             temperature=0,
             stream_usage=True,
+            max_retries=0,
+            timeout=REWRITE_TIMEOUT_SECONDS,
         )
     return _rewrite_model
 
 
-def rewrite_query_once(query: str) -> dict:
+def rewrite_query_once(
+    query: str,
+    *,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
+) -> dict:
     model = _get_rewrite_model()
     if not model:
         raise RuntimeError("FAST_MODEL is required for query rewriting")
 
-    result = model.with_structured_output(RewritePlan).invoke(
-        [{"role": "user", "content": REWRITE_PROMPT.format(query=query)}]
+    result = _provider_executor.call(
+        lambda: model.with_structured_output(RewritePlan).invoke(
+            [{"role": "user", "content": REWRITE_PROMPT.format(query=query)}]
+        ),
+        context=ProviderCallContext(
+            provider=FAST_MODEL or "fast-model",
+            operation=ProviderOperation.MODEL,
+            deadline=_bounded_deadline(deadline, REWRITE_TIMEOUT_SECONDS),
+            cancellation=cancellation,
+        ),
+        policy=_MODEL_POLICY,
     )
     method = result.method
     step_back_question = (result.step_back_question or "").strip()
@@ -441,14 +574,29 @@ def _finalize_retrieval(
     retrieval_mode: str,
     candidate_k: int,
     candidate_config: Dict[str, Any],
+    *,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
+    retrieval_degraded_code: str | None = None,
 ) -> Dict[str, Any]:
     """生产流水线：召回候选 → Auto-merge → Rerank（top_k）→ 阈值过滤。"""
     candidates, merge_meta = _auto_merge_candidates(retrieved)
     reranked_docs, rerank_meta = _rerank_documents(
-        query=query, docs=candidates, top_k=top_k
+        query=query,
+        docs=candidates,
+        top_k=top_k,
+        deadline=deadline,
+        cancellation=cancellation,
     )
     post_rerank_count = len(reranked_docs)
-    final_docs = [d for d in reranked_docs if _meets_rerank_min_score(d)]
+    threshold_applied = bool(rerank_meta.get("rerank_applied")) and not bool(
+        rerank_meta.get("rerank_fallback_applied")
+    )
+    final_docs = (
+        [d for d in reranked_docs if _meets_rerank_min_score(d)]
+        if threshold_applied
+        else reranked_docs
+    )
     meta = {
         **rerank_meta,
         **merge_meta,
@@ -460,97 +608,110 @@ def _finalize_retrieval(
         "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
         "recall_count": len(retrieved),
         "rerank_min_score": RERANK_MIN_SCORE,
+        "rerank_threshold_applied": threshold_applied,
         "post_rerank_count": post_rerank_count,
         "post_threshold_count": len(final_docs),
         "retrieval_empty": len(final_docs) == 0,
+        "retrieval_degraded_code": retrieval_degraded_code,
     }
     return {"docs": final_docs, "meta": meta}
 
 
-def retrieve_documents(query: str, top_k: int = RETRIEVAL_TOP_K) -> Dict[str, Any]:
+def retrieve_documents(
+    query: str,
+    top_k: int = RETRIEVAL_TOP_K,
+    *,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
+) -> Dict[str, Any]:
     candidate_k, candidate_config = resolve_candidate_k(top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
-    try:
-        dense_embeddings = _embedding_service.get_embeddings([query])
-        dense_embedding = dense_embeddings[0]
-    except Exception:
-        return {
-            "docs": [],
-            "meta": {
-                "rerank_enabled": RERANK_ENABLED,
-                "rerank_applied": False,
-                "rerank_model": RERANK_MODEL,
-                "rerank_endpoint": _get_rerank_endpoint(),
-                "rerank_error": "embedding_failed",
-                "rerank_timeout_seconds": RERANK_TIMEOUT_SECONDS,
-                "retrieval_mode": "failed",
-                "retrieval_pipeline": "recall_merge_rerank",
-                "candidate_k": candidate_k,
-                **candidate_config,
-                "retrieval_top_k": top_k,
-                "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                "recall_count": 0,
-                **_empty_merge_meta(),
-                "candidate_count": 0,
-                "rerank_min_score": RERANK_MIN_SCORE,
-                "post_rerank_count": 0,
-                "post_threshold_count": 0,
-                "retrieval_empty": True,
-            },
-        }
 
-    try:
-        retrieved = _milvus_manager.hybrid_retrieve(
-            dense_embedding=dense_embedding,
-            query=query,
-            top_k=candidate_k,
-            filter_expr=filter_expr,
-        )
-        return _finalize_retrieval(
-            query=query,
-            retrieved=retrieved,
-            top_k=top_k,
-            retrieval_mode="hybrid",
-            candidate_k=candidate_k,
-            candidate_config=candidate_config,
-        )
-    except Exception:
+    def _embed_query() -> list[float]:
+        dense_embeddings = _embedding_service.get_embeddings([query])
+        if not dense_embeddings or not dense_embeddings[0]:
+            raise ValueError("embedding provider returned no vector")
+        vector = dense_embeddings[0]
+        if not isinstance(vector, list) or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in vector
+        ):
+            raise ValueError("embedding provider returned an invalid vector")
+        return [float(value) for value in vector]
+
+    dense_embedding = _provider_executor.call(
+        _embed_query,
+        context=ProviderCallContext(
+            provider=EMBEDDING_PROVIDER,
+            operation=ProviderOperation.EMBEDDING,
+            deadline=_bounded_deadline(deadline, EMBEDDING_TIMEOUT_SECONDS),
+            cancellation=cancellation,
+        ),
+        policy=_EMBEDDING_POLICY,
+    )
+
+    vector_deadline = _bounded_deadline(deadline, VECTOR_TIMEOUT_SECONDS)
+
+    def _hybrid_retrieve() -> tuple[bool, List[dict]]:
         try:
-            retrieved = _milvus_manager.dense_retrieve(
-                dense_embedding=dense_embedding,
-                top_k=candidate_k,
-                filter_expr=filter_expr,
+            return False, _validate_retrieved_documents(
+                _milvus_manager.hybrid_retrieve(
+                    dense_embedding=dense_embedding,
+                    query=query,
+                    top_k=candidate_k,
+                    filter_expr=filter_expr,
+                    timeout=_remaining_timeout(vector_deadline, VECTOR_TIMEOUT_SECONDS),
+                )
             )
-            return _finalize_retrieval(
-                query=query,
-                retrieved=retrieved,
-                top_k=top_k,
-                retrieval_mode="dense_fallback",
-                candidate_k=candidate_k,
-                candidate_config=candidate_config,
-            )
-        except Exception:
-            return {
-                "docs": [],
-                "meta": {
-                    "rerank_enabled": RERANK_ENABLED,
-                    "rerank_applied": False,
-                    "rerank_model": RERANK_MODEL,
-                    "rerank_endpoint": _get_rerank_endpoint(),
-                    "rerank_error": "retrieve_failed",
-                    "rerank_timeout_seconds": RERANK_TIMEOUT_SECONDS,
-                    "retrieval_mode": "failed",
-                    "retrieval_pipeline": "recall_merge_rerank",
-                    "candidate_k": candidate_k,
-                    **candidate_config,
-                    "retrieval_top_k": top_k,
-                    "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                    "recall_count": 0,
-                    **_empty_merge_meta(),
-                    "candidate_count": 0,
-                    "rerank_min_score": RERANK_MIN_SCORE,
-                    "post_rerank_count": 0,
-                    "post_threshold_count": 0,
-                    "retrieval_empty": True,
-                },
-            }
+        except HybridRetrievalUnsupported:
+            return True, []
+
+    fallback_required, retrieved = _provider_executor.call(
+        _hybrid_retrieve,
+        context=ProviderCallContext(
+            provider="milvus",
+            operation=ProviderOperation.VECTOR_SEARCH,
+            deadline=vector_deadline,
+            cancellation=cancellation,
+        ),
+        policy=_VECTOR_POLICY,
+    )
+    retrieval_mode = "hybrid"
+    degraded_code = None
+    if fallback_required:
+        retrieved = _provider_executor.call(
+            lambda: _validate_retrieved_documents(
+                _milvus_manager.dense_retrieve(
+                    dense_embedding=dense_embedding,
+                    top_k=candidate_k,
+                    filter_expr=filter_expr,
+                    timeout=_remaining_timeout(
+                        vector_deadline,
+                        VECTOR_TIMEOUT_SECONDS,
+                    ),
+                )
+            ),
+            context=ProviderCallContext(
+                provider="milvus",
+                operation=ProviderOperation.VECTOR_SEARCH,
+                deadline=vector_deadline,
+                cancellation=cancellation,
+            ),
+            policy=_VECTOR_POLICY,
+        )
+        retrieval_mode = "dense_fallback"
+        degraded_code = "HYBRID_RETRIEVAL_DEGRADED"
+
+    return _finalize_retrieval(
+        query=query,
+        retrieved=retrieved,
+        top_k=top_k,
+        retrieval_mode=retrieval_mode,
+        candidate_k=candidate_k,
+        candidate_config=candidate_config,
+        deadline=deadline,
+        cancellation=cancellation,
+        retrieval_degraded_code=degraded_code,
+    )

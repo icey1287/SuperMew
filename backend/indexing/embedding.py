@@ -1,4 +1,5 @@
 """文本向量化服务 - 只支持密集向量（由 Milvus 2.5+ 原生支持中文分词与 BM25 全文检索）"""
+
 import os
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -24,8 +25,8 @@ class EmbeddingService:
             return []
         try:
             return self._embedder.embed_documents(texts)
-        except Exception as e:
-            raise Exception(f"本地密集嵌入模型调用失败: {str(e)}") from e
+        except Exception as exc:
+            raise RuntimeError("dense embedding provider failed") from exc
 
 
 # 全进程唯一实例

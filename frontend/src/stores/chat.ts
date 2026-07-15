@@ -2,8 +2,17 @@ import { defineStore } from 'pinia';
 import { useAuthStore } from './auth';
 import { useSessionStore } from './sessions';
 import { useRunsStore } from './runs';
-import api from '@/utils/api';
+import api, {
+  getPublicError,
+  getPublicErrorFromResponse,
+  type PublicRequestError,
+} from '@/utils/api';
 import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
+
+function appendPublicError(text: string, error: PublicRequestError): string {
+  const rendered = `[${error.code}] ${error.message}`;
+  return text.trim() ? `${text}\n\n${rendered}` : rendered;
+}
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -288,12 +297,12 @@ export const useChatStore = defineStore('chat', {
           this.messages = loadedMessages;
         }
         this.mergeCachedSessionsIntoHistory();
-      } catch (error: any) {
-        const errMsg = error.response?.data?.detail || error.message || '加载会话失败';
+      } catch (error: unknown) {
+        const publicError = getPublicError(error);
         if (!cachedMessages && this.sessionId === sessionId) {
           this.messages = [];
         }
-        throw new Error(errMsg);
+        throw publicError;
       }
     },
 
@@ -305,7 +314,10 @@ export const useChatStore = defineStore('chat', {
         controller?.abort();
         return;
       }
-      void runsStore.cancel(activeRun.runId).finally(() => controller?.abort());
+      void runsStore
+        .cancel(activeRun.runId)
+        .catch(() => undefined)
+        .finally(() => controller?.abort());
     },
 
     async handleSend() {
@@ -377,8 +389,10 @@ export const useChatStore = defineStore('chat', {
       this.mergeCachedSessionsIntoHistory();
 
       this.abortController = new AbortController();
+      const streamSignal = this.abortController.signal;
       let receivedHitlRequest = false;
       let streamHadError = false;
+      let receivedTerminalMarker = false;
 
       try {
         const response = await fetch('/chat/stream', {
@@ -391,24 +405,21 @@ export const useChatStore = defineStore('chat', {
             message: text,
             session_id: requestSessionId,
           }),
-          signal: this.abortController.signal,
+          signal: streamSignal,
         });
 
         if (!response.ok) {
-          if (response.status === 401) {
-            authStore.handleLogout();
-            throw new Error('登录已过期，请重新登录');
-          }
-          throw new Error(`HTTP ${response.status}`);
+          throw await getPublicErrorFromResponse(response);
         }
 
         const reader = response.body?.getReader();
-        if (!reader) throw new Error('无法读取响应流');
+        if (!reader) throw getPublicError(new TypeError('chat stream response has no body'));
 
         const decoder = new TextDecoder();
         let buffer = '';
+        let stopReading = false;
 
-        while (true) {
+        readLoop: while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
@@ -421,7 +432,13 @@ export const useChatStore = defineStore('chat', {
 
             if (eventStr.startsWith('data: ')) {
               const dataStr = eventStr.slice(6);
-              if (dataStr === '[DONE]') continue;
+              if (dataStr === '[DONE]') {
+                receivedTerminalMarker = true;
+                stopReading = true;
+                const botMsg = requestMessages[botMsgIdx];
+                if (botMsg) botMsg.isThinking = false;
+                break;
+              }
               try {
                 const data = JSON.parse(dataStr);
                 if (data.type === 'content') {
@@ -476,22 +493,55 @@ export const useChatStore = defineStore('chat', {
                   }
                 } else if (data.type === 'error') {
                   streamHadError = true;
+                  receivedTerminalMarker = true;
+                  stopReading = true;
                   const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) continue;
+                  if (!botMsg) break;
+                  const publicError = getPublicError(
+                    data.error || {
+                      code: data.error_code || 'INTERNAL_ERROR',
+                      retryable: false,
+                      category: 'stream',
+                    }
+                  );
                   botMsg.isThinking = false;
-                  botMsg.text += `\n[Error: ${data.content}]`;
+                  botMsg.text = appendPublicError(botMsg.text, publicError);
+                  break;
                 }
-              } catch (e) {
-                console.warn('SSE parse error:', e);
+              } catch {
+                throw getPublicError({
+                  code: 'STREAM_PROTOCOL_ERROR',
+                  retryable: false,
+                  category: 'stream',
+                });
               }
             }
           }
+          if (stopReading) {
+            if (typeof reader.cancel === 'function') {
+              await reader.cancel().catch(() => undefined);
+            }
+            break readLoop;
+          }
         }
-      } catch (error: any) {
+        if (!receivedTerminalMarker) {
+          if (streamSignal.aborted) {
+            throw getPublicError({ code: 'REQUEST_CANCELLED', retryable: false });
+          }
+          throw getPublicError({
+            code: 'NETWORK_UNAVAILABLE',
+            retryable: true,
+          });
+        }
+      } catch (error: unknown) {
         streamHadError = true;
         const botMsg = requestMessages[botMsgIdx];
         if (!botMsg) return;
-        if (error.name === 'AbortError') {
+        const publicError = getPublicError(error);
+        if (publicError.code === 'AUTHENTICATION_REQUIRED') {
+          authStore.handleLogout();
+        }
+        if (publicError.code === 'REQUEST_CANCELLED') {
           botMsg.isThinking = false;
           if (!botMsg.text) {
             botMsg.text = '(已终止回答)';
@@ -500,7 +550,7 @@ export const useChatStore = defineStore('chat', {
           }
         } else {
           botMsg.isThinking = false;
-          botMsg.text = `喵呜... 出了点问题：${error.message}`;
+          botMsg.text = appendPublicError(botMsg.text, publicError);
         }
       } finally {
         if (streamHadError && pendingHitlAtSend && !receivedHitlRequest) {

@@ -1,3 +1,6 @@
+import json
+import re
+
 from langchain_core.tools import tool
 
 from backend.chat.request_context import ChatRequestContext
@@ -26,6 +29,17 @@ def _render_rag_result(
 
     status = rag_trace.get("retrieval_status")
     route = rag_trace.get("route")
+    outcome = rag_trace.get("retrieval_outcome")
+    coverage_gap_codes = [
+        str(code)
+        for code in (rag_trace.get("coverage_gap_codes") or [])
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", str(code))
+    ][:8]
+    coverage_gap_questions = [
+        " ".join(str(question).split())[:240]
+        for question in (rag_trace.get("coverage_gap_questions") or [])
+        if " ".join(str(question).split())
+    ][:8]
     if status == "needs_clarification" or route == "clarify":
         prompt = rag_trace.get("hitl_prompt") or (
             "I found related knowledge, but need one more detail before answering."
@@ -48,6 +62,16 @@ def _render_rag_result(
             "in the knowledge base."
         )
 
+    if not docs and (
+        outcome == "INSUFFICIENT_EVIDENCE"
+        or status == "insufficient_evidence"
+        or route == "insufficient_evidence"
+    ):
+        return (
+            "INSUFFICIENT_EVIDENCE: Retrieval completed only partially because one or "
+            "more provider branches failed. Do not claim the knowledge base has no answer."
+        )
+
     if not docs:
         return "No relevant documents found in the knowledge base."
 
@@ -58,7 +82,31 @@ def _render_rag_result(
         text = result.get("text", "")
         formatted.append(f"[{i}] {source} (Page {page}):\n{text}")
 
-    return "Retrieved Chunks:\n" + "\n\n---\n\n".join(formatted)
+    chunks = "Retrieved Chunks:\n" + "\n\n---\n\n".join(formatted)
+    if (
+        outcome == "INSUFFICIENT_EVIDENCE"
+        or status in {"partial", "insufficient_evidence"}
+        or route == "insufficient_evidence"
+        or coverage_gap_codes
+        or coverage_gap_questions
+    ):
+        gap_line = (
+            "\nCOVERAGE_GAPS: " + ", ".join(coverage_gap_codes)
+            if coverage_gap_codes
+            else ""
+        )
+        question_line = (
+            "\nCOVERAGE_GAP_QUESTIONS: "
+            + json.dumps(coverage_gap_questions, ensure_ascii=False)
+            if coverage_gap_questions
+            else ""
+        )
+        return (
+            "PARTIAL_EVIDENCE: The chunks below cover only part of the question. "
+            "Answer only supported parts and explicitly disclose the missing coverage."
+            f"{gap_line}{question_line}\n{chunks}"
+        )
+    return chunks
 
 
 def make_search_knowledge_base(ctx: ChatRequestContext):

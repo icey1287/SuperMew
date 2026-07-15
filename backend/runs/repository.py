@@ -11,7 +11,13 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.core.errors import AppError, ErrorCode
+from backend.core.errors import (
+    AppError,
+    ErrorCode,
+    PublicError,
+    deserialize_public_error,
+    serialize_public_error,
+)
 from backend.core.settings import get_settings
 from backend.db.models import ChatMessage, ChatSession, Run, RunCheckpoint, User, utcnow
 from backend.events.generated.run_event_v1 import RunEventType
@@ -54,6 +60,7 @@ class RunRecord:
     cost: str
     created_at: str
     updated_at: str
+    error: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,17 @@ def hash_run_request(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _cancelled_public_error() -> PublicError:
+    return PublicError(
+        code=ErrorCode.RUN_CANCELLED,
+        message="运行已由用户取消。",
+        status_code=409,
+        retryable=False,
+        category="run",
+        stage="cancellation",
+    )
+
+
 class RunRepository:
     """Run reservation 的事务 seam：幂等、Thread fencing 与消息预留同地完成。"""
 
@@ -102,6 +120,7 @@ class RunRepository:
 
     @staticmethod
     def _record(run: Run, thread_id: str) -> RunRecord:
+        public_error = deserialize_public_error(run.error_detail_redacted)
         return RunRecord(
             id=run.id,
             thread_id=thread_id,
@@ -128,6 +147,7 @@ class RunRepository:
             cost=str(run.cost),
             created_at=run.created_at.isoformat(),
             updated_at=run.updated_at.isoformat(),
+            error=public_error.contract() if public_error else None,
         )
 
     @staticmethod
@@ -705,10 +725,10 @@ class RunRepository:
                         ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
                     )
                 self._assert_fencing(run, fencing_token)
-                if (
-                    run.owner_worker_id != worker_id
-                    or run.status != RunStatus.RUNNING.value
-                ):
+                if run.owner_worker_id != worker_id or run.status not in {
+                    RunStatus.RUNNING.value,
+                    RunStatus.CANCELLING.value,
+                }:
                     raise AppError(
                         ErrorCode.RUN_STATE_CONFLICT,
                         "当前 worker 不再拥有该 Run",
@@ -909,11 +929,22 @@ class RunRepository:
                             status_code=409,
                         )
                     return self._record(run, thread.session_id)
+                if (
+                    run.status == RunStatus.CANCELLING.value
+                    and target != RunStatus.CANCELLED.value
+                ):
+                    cancellation = _cancelled_public_error()
+                    target = RunStatus.CANCELLED.value
+                    content = content if partial else cancellation.message
+                    error_code = str(cancellation.code)
+                    error_detail_redacted = serialize_public_error(cancellation)
+                    partial = True
                 self._transition(run, target)
                 run.finished_at = now
                 run.lease_expires_at = None
                 run.error_code = error_code
                 run.error_detail_redacted = error_detail_redacted
+                public_error = deserialize_public_error(error_detail_redacted)
                 run.input_tokens = max(0, input_tokens)
                 run.output_tokens = max(0, output_tokens)
                 run.cost = Decimal(str(cost))
@@ -965,6 +996,7 @@ class RunRepository:
                     data={
                         "status": run.status,
                         "error_code": run.error_code,
+                        "error": public_error.contract() if public_error else None,
                         "assistant_message_id": run.assistant_message_id,
                     },
                 )
@@ -1000,7 +1032,16 @@ class RunRepository:
                     target_status=RunStatus.FAILED,
                     content="运行所属 worker 已失联，任务未完成。",
                     error_code="ORPHAN_RUN",
-                    error_detail_redacted="worker lease expired",
+                    error_detail_redacted=serialize_public_error(
+                        PublicError(
+                            code="ORPHAN_RUN",
+                            message="运行所属 worker 已失联，任务未完成。",
+                            status_code=503,
+                            retryable=True,
+                            category="run",
+                            stage="ownership",
+                        )
+                    ),
                     fencing_token=fencing_token,
                     partial=True,
                     _lease_expired_before=now,

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from backend.chat.request_context import ChatRequestContext
+from backend.providers import ProviderCode, ProviderError, ProviderOperation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,8 +67,10 @@ def load_pipeline(
 
     fake_utils = types.ModuleType("backend.rag.utils")
     fake_utils.RETRIEVAL_TOP_K = 5
-    fake_utils.retrieve_documents = retrieve_documents
-    fake_utils.rewrite_query_once = rewrite_query_once or (
+    fake_utils.retrieve_documents = lambda query, top_k=5, **kwargs: retrieve_documents(
+        query, top_k=top_k
+    )
+    rewrite_impl = rewrite_query_once or (
         lambda query: {
             "rewrite_method": "step_back",
             "step_back_question": "broader question",
@@ -75,6 +78,7 @@ def load_pipeline(
             "rewritten_query": f"rewritten {query}",
         }
     )
+    fake_utils.rewrite_query_once = lambda query, **kwargs: rewrite_impl(query)
     fake_utils.dedupe_documents = _dedupe_documents
     fake_utils.retrieval_trace_fields = lambda meta: dict(meta)
 
@@ -89,6 +93,11 @@ def load_pipeline(
         REPO_ROOT / "backend" / "rag" / "runtime_context.py",
     )
     runtime_module = importlib.util.module_from_spec(runtime_spec)
+    outcomes_spec = importlib.util.spec_from_file_location(
+        "backend.rag.outcomes",
+        REPO_ROOT / "backend" / "rag" / "outcomes.py",
+    )
+    outcomes_module = importlib.util.module_from_spec(outcomes_spec)
 
     with patch.dict(
         sys.modules,
@@ -96,9 +105,11 @@ def load_pipeline(
             "backend.rag": fake_rag,
             "backend.rag.utils": fake_utils,
             "backend.rag.runtime_context": runtime_module,
+            "backend.rag.outcomes": outcomes_module,
         },
     ):
         runtime_spec.loader.exec_module(runtime_module)
+        outcomes_spec.loader.exec_module(outcomes_module)
         spec.loader.exec_module(module)
 
     return module
@@ -150,6 +161,31 @@ class RagShortCircuitTests(unittest.TestCase):
             base_url="https://example.test/v1",
             temperature=0,
             stream_usage=True,
+            max_retries=0,
+            timeout=15.0,
+        )
+
+    def test_complexity_model_disables_sdk_retries_and_sets_native_timeout(self):
+        pipeline = load_pipeline(
+            retrieve_documents=lambda query, top_k=5: {"docs": [], "meta": _meta(0)}
+        )
+        initialized = Mock(return_value=object())
+        pipeline.API_KEY = "test-key"
+        pipeline.BASE_URL = "https://example.test/v1"
+        pipeline.FAST_MODEL = "fast-model"
+        pipeline._complexity_model = None
+        pipeline.init_chat_model = initialized
+
+        self.assertIsNotNone(pipeline._get_complexity_model())
+        initialized.assert_called_once_with(
+            model="fast-model",
+            model_provider="openai",
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            temperature=0,
+            stream_usage=True,
+            max_retries=0,
+            timeout=15.0,
         )
 
     def test_grader_does_not_use_other_models_when_grade_model_is_missing(self):
@@ -199,6 +235,8 @@ class RagShortCircuitTests(unittest.TestCase):
 
         self.assertEqual([], result.get("docs"))
         self.assertEqual("no_knowledge", result.get("retrieval_status"))
+        self.assertEqual("NO_KNOWLEDGE", result.get("retrieval_outcome"))
+        self.assertFalse(result.get("rag_trace", {}).get("coverage_gap_questions"))
         self.assertEqual(
             "no_knowledge", result.get("rag_trace", {}).get("retrieval_status")
         )
@@ -656,6 +694,50 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual(0, calls["step_back"])
         self.assertEqual(1, len(result.get("docs", [])))
         self.assertEqual("partial", result.get("retrieval_status"))
+        self.assertEqual("INSUFFICIENT_EVIDENCE", result.get("retrieval_outcome"))
+
+    def test_complex_sufficient_branch_plus_healthy_empty_branch_is_partial(self):
+        def retrieve(query, top_k=5):
+            if query == "known sub":
+                return {
+                    "docs": [_doc("complete known evidence", "known")],
+                    "meta": _meta(1),
+                }
+            return {"docs": [], "meta": _meta(0)}
+
+        def complexity(schema, prompt):
+            return {
+                "complexity": "complex",
+                "reason": "unit",
+                "sub_questions": ["known sub", "unknown sub"],
+            }
+
+        def grade(schema, prompt):
+            return {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 0.9,
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph("complex mixed coverage", ctx)
+        finally:
+            ctx.close()
+
+        self.assertEqual(1, len(result.get("docs", [])))
+        self.assertEqual("partial", result.get("retrieval_status"))
+        self.assertEqual("INSUFFICIENT_EVIDENCE", result.get("retrieval_outcome"))
+        self.assertEqual(
+            ["unknown sub"],
+            result.get("rag_trace", {}).get("coverage_gap_questions"),
+        )
 
     def test_complex_all_no_knowledge_synthesizes_no_knowledge(self):
         calls = {"retrieve": 0}
@@ -686,6 +768,117 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual(2, calls["retrieve"])
         self.assertEqual([], result.get("docs"))
         self.assertEqual("no_knowledge", result.get("retrieval_status"))
+        self.assertEqual("NO_KNOWLEDGE", result.get("retrieval_outcome"))
+
+    def test_complex_provider_failure_with_docs_marks_coverage_gap(self):
+        def retrieve(query, top_k=5):
+            if query == "failed sub":
+                raise ProviderError.from_code(
+                    ProviderCode.VECTOR_STORE_UNAVAILABLE,
+                    provider="milvus",
+                    operation=ProviderOperation.VECTOR_SEARCH,
+                )
+            return {"docs": [_doc("known evidence", query)], "meta": _meta(1)}
+
+        def complexity(schema, prompt):
+            return {
+                "complexity": "complex",
+                "reason": "unit",
+                "sub_questions": ["known sub", "failed sub"],
+            }
+
+        def grade(schema, prompt):
+            return {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 0.9,
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph("complex partial failure", ctx)
+        finally:
+            ctx.close()
+
+        self.assertEqual(1, len(result.get("docs", [])))
+        self.assertEqual("partial", result.get("retrieval_status"))
+        self.assertEqual(
+            ["VECTOR_STORE_UNAVAILABLE"],
+            result.get("rag_trace", {}).get("coverage_gap_codes"),
+        )
+
+    def test_complex_healthy_empty_plus_provider_failure_is_insufficient(self):
+        def retrieve(query, top_k=5):
+            if query == "failed sub":
+                raise ProviderError.from_code(
+                    ProviderCode.VECTOR_STORE_UNAVAILABLE,
+                    provider="milvus",
+                    operation=ProviderOperation.VECTOR_SEARCH,
+                )
+            return {"docs": [], "meta": _meta(0)}
+
+        def complexity(schema, prompt):
+            return {
+                "complexity": "complex",
+                "reason": "unit",
+                "sub_questions": ["healthy empty", "failed sub"],
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda: FakeStructuredModel(
+            lambda schema, prompt: {}
+        )
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph("complex mixed outage", ctx)
+        finally:
+            ctx.close()
+
+        self.assertEqual([], result.get("docs"))
+        self.assertEqual("insufficient_evidence", result.get("retrieval_status"))
+        self.assertEqual("INSUFFICIENT_EVIDENCE", result.get("retrieval_outcome"))
+        self.assertEqual(
+            ["VECTOR_STORE_UNAVAILABLE"],
+            result.get("rag_trace", {}).get("coverage_gap_codes"),
+        )
+
+    def test_complex_all_provider_failures_raise_typed_error(self):
+        def retrieve(query, top_k=5):
+            raise ProviderError.from_code(
+                ProviderCode.EMBEDDING_UNAVAILABLE,
+                provider="embedding-model",
+                operation=ProviderOperation.EMBEDDING,
+            )
+
+        def complexity(schema, prompt):
+            return {
+                "complexity": "complex",
+                "reason": "unit",
+                "sub_questions": ["failed one", "failed two"],
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda: FakeStructuredModel(
+            lambda schema, prompt: {}
+        )
+
+        ctx = self._ctx()
+        try:
+            with self.assertRaises(ProviderError) as raised:
+                pipeline.run_rag_graph("complex provider outage", ctx)
+        finally:
+            ctx.close()
+
+        self.assertEqual(ProviderCode.EMBEDDING_UNAVAILABLE, raised.exception.code)
 
     def test_complex_preserves_sub_agent_hitl_when_no_docs_can_be_synthesized(self):
         def retrieve(query, top_k=5):

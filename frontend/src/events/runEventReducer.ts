@@ -1,4 +1,8 @@
 import type { RunEventType, RunEventV1 } from '@/types/generated/run-event-v1';
+import {
+  normalizePublicErrorInfo,
+  type PublicErrorInfo,
+} from '@/types/publicError';
 
 export type RunLifecycleStatus =
   | 'idle'
@@ -24,7 +28,13 @@ export interface RunEventState {
   messageStatus: string | null;
   pendingHitl: Record<string, unknown> | null;
   usage: Record<string, unknown>;
-  warnings: string[];
+  error: PublicErrorInfo | null;
+  warnings: PublicErrorInfo[];
+  toolFailures: Array<{
+    toolName: string | null;
+    error: PublicErrorInfo;
+    fallbackApplied: boolean;
+  }>;
   unknownEventTypes: string[];
 }
 
@@ -42,9 +52,18 @@ export function initialRunEventState(runId: string, threadId: string): RunEventS
     messageStatus: null,
     pendingHitl: null,
     usage: {},
+    error: null,
     warnings: [],
+    toolFailures: [],
     unknownEventTypes: [],
   };
+}
+
+function eventError(
+  data: Record<string, unknown>,
+  defaults: Partial<PublicErrorInfo>
+): PublicErrorInfo {
+  return normalizePublicErrorInfo(data, defaults);
 }
 
 export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEventState {
@@ -66,9 +85,11 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
   switch (event.type) {
     case 'run.created':
       next.status = String(data.status || 'pending') as RunLifecycleStatus;
+      next.error = null;
       break;
     case 'run.started':
       next.status = 'running';
+      next.error = null;
       break;
     case 'run.waiting_input':
       next.status = 'waiting_input';
@@ -76,14 +97,24 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
     case 'run.completed':
       next.status = 'completed';
       next.terminal = true;
+      next.error = null;
       break;
     case 'run.failed':
       next.status = 'failed';
       next.terminal = true;
+      next.error = eventError(data, {
+        code: 'RUN_EXECUTION_FAILED',
+      });
       break;
     case 'run.cancelled':
       next.status = 'cancelled';
       next.terminal = true;
+      next.error = eventError(data, {
+        code: 'RUN_CANCELLED',
+        retryable: false,
+        category: 'run',
+        stage: 'cancellation',
+      });
       break;
     case 'message.delta':
       next.messageText += String(data.delta ?? data.content ?? '');
@@ -105,14 +136,31 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
       next.usage = { ...next.usage, ...data };
       break;
     case 'warning.created':
-      next.warnings = [...next.warnings, String(data.message ?? data.code ?? 'warning')];
+      next.warnings = [
+        ...next.warnings,
+        eventError(data, { code: 'INTERNAL_ERROR', retryable: false }),
+      ];
       break;
     case 'planner.started':
     case 'planner.completed':
     case 'tool.started':
     case 'tool.progress':
     case 'tool.completed':
+      break;
     case 'tool.failed':
+      next.toolFailures = [
+        ...next.toolFailures,
+        {
+          toolName: typeof data.tool_name === 'string' ? data.tool_name : null,
+          error: eventError(data, {
+            code: 'TOOL_EXECUTION_FAILED',
+            retryable: false,
+            stage: 'tool',
+          }),
+          fallbackApplied: data.fallback_applied === true,
+        },
+      ];
+      break;
     case 'tool.denied':
     case 'retrieval.started':
     case 'retrieval.candidates':

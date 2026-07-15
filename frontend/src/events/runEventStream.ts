@@ -1,4 +1,9 @@
 import type { RunEventV1 } from '@/types/generated/run-event-v1';
+import {
+  getPublicError,
+  getPublicErrorFromResponse,
+  type PublicRequestError,
+} from '@/utils/api';
 
 const TERMINAL_TYPES = new Set(['run.completed', 'run.failed', 'run.cancelled']);
 
@@ -6,7 +11,9 @@ export class SseFrameDecoder {
   private buffer = '';
 
   push(chunk: string): RunEventV1[] {
-    this.buffer += chunk.replace(/\r\n/g, '\n');
+    this.buffer = (this.buffer + chunk)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r(?!$)/g, '\n');
     const events: RunEventV1[] = [];
     let end = this.buffer.indexOf('\n\n');
     while (end !== -1) {
@@ -26,8 +33,23 @@ export class SseFrameDecoder {
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart());
     if (!dataLines.length) return null;
-    const payload = JSON.parse(dataLines.join('\n')) as RunEventV1;
-    if (payload.schema_version !== 1 || !Number.isInteger(payload.sequence)) return null;
+    let payload: RunEventV1;
+    try {
+      payload = JSON.parse(dataLines.join('\n')) as RunEventV1;
+    } catch {
+      throw getPublicError({
+        code: 'STREAM_PROTOCOL_ERROR',
+        retryable: false,
+        category: 'stream',
+      });
+    }
+    if (payload.schema_version !== 1 || !Number.isInteger(payload.sequence)) {
+      throw getPublicError({
+        code: 'STREAM_PROTOCOL_ERROR',
+        retryable: false,
+        category: 'stream',
+      });
+    }
     return payload;
   }
 }
@@ -41,11 +63,32 @@ export interface RunEventStreamOptions {
   onReconnect?: (attempt: number) => void;
 }
 
+function reconnectDelayMs(attempt: number, error: PublicRequestError): number {
+  const exponential = Math.min(5000, 250 * 2 ** Math.min(attempt, 4));
+  const retryAfter = Math.max((error.retryAfterSeconds || 0) * 1000, 0);
+  return Math.max(exponential, retryAfter);
+}
+
+async function waitForReconnect(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, delayMs);
+    function finish() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    }
+    signal?.addEventListener('abort', finish, { once: true });
+  });
+}
+
 export async function connectRunEventStream(options: RunEventStreamOptions): Promise<void> {
   let lastSequence = Math.max(options.after || 0, 0);
   let reconnectAttempt = 0;
 
   while (!options.signal?.aborted) {
+    let reconnectError: PublicRequestError | null = null;
+    let callbackFailure: unknown;
     try {
       const response = await fetch(`/v1/runs/${encodeURIComponent(options.runId)}/stream`, {
         headers: {
@@ -54,8 +97,11 @@ export async function connectRunEventStream(options: RunEventStreamOptions): Pro
         },
         signal: options.signal,
       });
-      if (!response.ok || !response.body) {
-        throw new Error(`event stream HTTP ${response.status}`);
+      if (!response.ok) {
+        throw await getPublicErrorFromResponse(response);
+      }
+      if (!response.body) {
+        throw getPublicError(new TypeError('event stream response has no body'));
       }
 
       const reader = response.body.getReader();
@@ -68,18 +114,30 @@ export async function connectRunEventStream(options: RunEventStreamOptions): Pro
         for (const event of events) {
           if (event.sequence <= lastSequence) continue;
           lastSequence = event.sequence;
-          options.onEvent(event);
+          try {
+            options.onEvent(event);
+          } catch (error) {
+            callbackFailure = error;
+            throw error;
+          }
           if (TERMINAL_TYPES.has(event.type)) return;
         }
       }
+      reconnectError = getPublicError(new TypeError('event stream closed before terminal event'));
       reconnectAttempt += 1;
-    } catch (error: any) {
-      if (options.signal?.aborted || error?.name === 'AbortError') return;
+    } catch (error: unknown) {
+      if (callbackFailure === error) throw error;
+      const publicError = getPublicError(error);
+      if (options.signal?.aborted || publicError.code === 'REQUEST_CANCELLED') return;
+      if (!publicError.retryable) throw publicError;
+      reconnectError = publicError;
       reconnectAttempt += 1;
     }
 
     options.onReconnect?.(reconnectAttempt);
-    const delay = Math.min(5000, 250 * 2 ** Math.min(reconnectAttempt, 4));
-    await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    await waitForReconnect(
+      reconnectDelayMs(reconnectAttempt, reconnectError),
+      options.signal
+    );
   }
 }

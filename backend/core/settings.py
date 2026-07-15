@@ -38,6 +38,12 @@ class ModelSettings(_EnvSettings):
     answer_model: str = Field(default="", validation_alias="MODEL")
     fast_model: str = Field(default="", validation_alias="FAST_MODEL")
     grade_model: str = Field(default="", validation_alias="GRADE_MODEL")
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        validation_alias="MODEL_TIMEOUT_SECONDS",
+    )
 
 
 class RagSettings(_EnvSettings):

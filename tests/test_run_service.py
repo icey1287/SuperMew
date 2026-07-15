@@ -133,6 +133,11 @@ class RunServiceTests(unittest.TestCase):
             )
             self.assertEqual("failed", run.status)
             self.assertEqual("incomplete", assistant.status)
+        failed = self.service.get_run(username="alice", run_id=claimed.id)
+        self.assertEqual("ORPHAN_RUN", failed.error_code)
+        self.assertEqual("run", failed.error["category"])
+        self.assertEqual("ownership", failed.error["stage"])
+        self.assertTrue(failed.error["retryable"])
 
     def test_heartbeat_prevents_orphan_recovery(self):
         reservation = self.create()
@@ -149,6 +154,77 @@ class RunServiceTests(unittest.TestCase):
         )
         recovered = self.service.reconcile_orphans(now=utcnow() + timedelta(seconds=2))
         self.assertEqual([], recovered)
+
+    def test_heartbeat_keeps_ownership_while_run_is_cancelling(self):
+        reservation = self.create()
+        claimed = self.service.claim_run(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+        )
+        cancelling = self.service.request_cancel(
+            username="alice",
+            run_id=claimed.id,
+        )
+
+        heartbeat = self.repository.heartbeat(
+            run_id=claimed.id,
+            worker_id="worker-1",
+            fencing_token=claimed.fencing_token,
+            lease_seconds=30,
+        )
+
+        self.assertEqual(RunStatus.CANCELLING, cancelling.status)
+        self.assertEqual(RunStatus.CANCELLING, heartbeat.status)
+        self.assertEqual("worker-1", heartbeat.owner_worker_id)
+
+    def test_durable_cancelling_wins_completion_race(self):
+        reservation = self.create()
+        claimed = self.service.claim_run(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+        )
+        cancelling = self.service.request_cancel(
+            username="alice",
+            run_id=claimed.id,
+        )
+
+        terminal = self.service.complete_run(
+            run_id=claimed.id,
+            content="late completed answer",
+            fencing_token=claimed.fencing_token,
+        )
+
+        self.assertEqual(RunStatus.CANCELLING, cancelling.status)
+        self.assertEqual(RunStatus.CANCELLED, terminal.status)
+        self.assertEqual("RUN_CANCELLED", terminal.error_code)
+        self.assertEqual("运行已由用户取消。", terminal.error["message"])
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == claimed.id).one()
+            assistant = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == run.assistant_message_id)
+                .one()
+            )
+            self.assertEqual("运行已由用户取消。", assistant.content)
+            self.assertEqual("incomplete", assistant.status)
+            self.assertEqual(
+                1,
+                db.query(RunEvent)
+                .filter(
+                    RunEvent.run_id == claimed.id,
+                    RunEvent.event_type == "run.cancelled",
+                )
+                .count(),
+            )
+            self.assertEqual(
+                0,
+                db.query(RunEvent)
+                .filter(
+                    RunEvent.run_id == claimed.id,
+                    RunEvent.event_type == "run.completed",
+                )
+                .count(),
+            )
 
     def test_heartbeat_does_not_emit_waiting_event_and_wait_transition_does(self):
         reservation = self.create()

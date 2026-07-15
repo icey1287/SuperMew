@@ -1,7 +1,9 @@
 from typing import Annotated, Literal, TypedDict, List, Optional
+from collections.abc import Callable
 import operator
 import os
 import re
+import time
 from uuid import uuid4
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
@@ -23,6 +25,14 @@ from backend.rag.runtime_context import (
     get_rag_runtime_context,
     register_rag_runtime_context,
 )
+from backend.rag.outcomes import outcome_for_status
+from backend.providers import (
+    ProviderCallContext,
+    ProviderError,
+    ProviderExecutor,
+    ProviderOperation,
+    ProviderPolicy,
+)
 
 API_KEY = os.getenv("ARK_API_KEY")
 BASE_URL = os.getenv("BASE_URL")
@@ -31,6 +41,14 @@ GRADE_MODEL = os.getenv("GRADE_MODEL")
 
 _grader_model = None
 _complexity_model = None
+_provider_executor = ProviderExecutor()
+_model_policy = ProviderPolicy(max_attempts=2)
+try:
+    RAG_MODEL_TIMEOUT_SECONDS = max(
+        float(os.getenv("RAG_MODEL_TIMEOUT_SECONDS", "15")), 0.1
+    )
+except ValueError:
+    RAG_MODEL_TIMEOUT_SECONDS = 15.0
 
 
 def _get_grader_model():
@@ -45,6 +63,8 @@ def _get_grader_model():
             base_url=BASE_URL,
             temperature=0,
             stream_usage=True,
+            max_retries=0,
+            timeout=RAG_MODEL_TIMEOUT_SECONDS,
         )
     return _grader_model
 
@@ -62,6 +82,8 @@ def _get_complexity_model():
             base_url=BASE_URL,
             temperature=0,
             stream_usage=True,
+            max_retries=0,
+            timeout=RAG_MODEL_TIMEOUT_SECONDS,
         )
     return _complexity_model
 
@@ -131,6 +153,7 @@ class RAGState(TypedDict):
     docs: List[dict]
     route: Optional[str]
     retrieval_status: Optional[str]
+    retrieval_outcome: Optional[str]
     evidence_relevance: Optional[str]
     evidence_answerability: Optional[str]
     evidence_ambiguity: Optional[str]
@@ -247,6 +270,79 @@ def _emit(state: RAGState, icon: str, label: str, detail: str = "") -> None:
     )
 
 
+def _emit_retrieval_warnings(state: RAGState, meta: dict) -> None:
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    if ctx is None:
+        return
+    rerank_code = meta.get("rerank_error_code")
+    if rerank_code:
+        ctx.emit_rag_warning(
+            code=str(rerank_code),
+            stage="rerank",
+            retryable=bool(meta.get("rerank_retryable")),
+            fallback_applied=bool(meta.get("rerank_fallback_applied")),
+            attempts=int(meta.get("rerank_attempts") or 0),
+        )
+    degraded_code = meta.get("retrieval_degraded_code")
+    if degraded_code:
+        ctx.emit_rag_warning(
+            code=str(degraded_code),
+            stage="vector_search",
+            retryable=False,
+            fallback_applied=True,
+        )
+
+
+def _provider_runtime(
+    state: RAGState,
+) -> tuple[float | None, Callable[[], bool] | None]:
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    if ctx is None:
+        return None, None
+    return ctx.provider_runtime()
+
+
+def _provider_deadline(run_deadline: float | None, timeout_seconds: float) -> float:
+    stage_deadline = time.monotonic() + timeout_seconds
+    return (
+        min(run_deadline, stage_deadline)
+        if run_deadline is not None
+        else stage_deadline
+    )
+
+
+def _retrieve_for_state(state: RAGState, query: str) -> dict:
+    deadline, cancellation = _provider_runtime(state)
+    return retrieve_documents(
+        query,
+        top_k=RETRIEVAL_TOP_K,
+        deadline=deadline,
+        cancellation=cancellation,
+    )
+
+
+def _invoke_structured_model(
+    state: RAGState,
+    *,
+    model,
+    schema,
+    messages: list[dict],
+    provider: str,
+):
+    run_deadline, cancellation = _provider_runtime(state)
+    context = ProviderCallContext(
+        provider=provider,
+        operation=ProviderOperation.MODEL,
+        deadline=_provider_deadline(run_deadline, RAG_MODEL_TIMEOUT_SECONDS),
+        cancellation=cancellation,
+    )
+    return _provider_executor.call(
+        lambda: model.with_structured_output(schema).invoke(messages),
+        context=context,
+        policy=_model_policy,
+    )
+
+
 def _initial_state(
     question: str,
     ctx: ChatRequestContext | None = None,
@@ -266,6 +362,7 @@ def _initial_state(
         "docs": [],
         "route": None,
         "retrieval_status": None,
+        "retrieval_outcome": None,
         "evidence_relevance": None,
         "evidence_answerability": None,
         "evidence_ambiguity": None,
@@ -295,9 +392,10 @@ def _initial_state(
 def retrieve_initial(state: RAGState) -> RAGState:
     query = state["question"]
     _emit(state, "🔍", "正在检索知识库...", "初始检索")
-    retrieved = retrieve_documents(query, top_k=RETRIEVAL_TOP_K)
+    retrieved = _retrieve_for_state(state, query)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    _emit_retrieval_warnings(state, retrieve_meta)
     context = _format_docs(results)
     _emit(
         state,
@@ -448,6 +546,7 @@ def _grade_update(grade: EvidenceGrade, route: str) -> dict:
     )
     return {
         "retrieval_status": status,
+        "retrieval_outcome": outcome_for_status(status).value,
         "evidence_relevance": grade.relevance,
         "evidence_answerability": grade.answerability,
         "evidence_ambiguity": grade.ambiguity,
@@ -472,8 +571,12 @@ def grade_documents_node(state: RAGState) -> RAGState:
         question = state["question"]
         context = state.get("context", "")
         prompt = EVIDENCE_GRADE_PROMPT.format(question=question, context=context)
-        grade = grader.with_structured_output(EvidenceGrade).invoke(
-            [{"role": "user", "content": prompt}]
+        grade = _invoke_structured_model(
+            state,
+            model=grader,
+            schema=EvidenceGrade,
+            messages=[{"role": "user", "content": prompt}],
+            provider=GRADE_MODEL or "grade-model",
         )
 
     route = _resolve_route(grade, state)
@@ -498,6 +601,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
     update = {
         "route": route,
         "retrieval_status": grade_update["retrieval_status"],
+        "retrieval_outcome": grade_update["retrieval_outcome"],
         "evidence_relevance": grade.relevance,
         "evidence_answerability": grade.answerability,
         "evidence_ambiguity": grade.ambiguity,
@@ -540,7 +644,12 @@ def rewrite_question_node(state: RAGState) -> RAGState:
         }
 
     _emit(state, "🧠", "选择 Step-back / HyDE 重写方式")
-    rewrite = rewrite_query_once(question)
+    deadline, cancellation = _provider_runtime(state)
+    rewrite = rewrite_query_once(
+        question,
+        deadline=deadline,
+        cancellation=cancellation,
+    )
     rewrite_method = (rewrite.get("rewrite_method") or "").strip()
     step_back_question = (rewrite.get("step_back_question") or "").strip()
     hyde_document = (rewrite.get("hyde_document") or "").strip()
@@ -587,9 +696,10 @@ def retrieve_rewritten(state: RAGState) -> RAGState:
         raise ValueError("rewritten_query is required for rewritten retrieval")
     method_label = "Step-back" if rewrite_method == "step_back" else "HyDE"
     _emit(state, "🔄", f"使用 {method_label} 查询重新检索...")
-    retrieved = retrieve_documents(rewritten_query, top_k=RETRIEVAL_TOP_K)
+    retrieved = _retrieve_for_state(state, rewritten_query)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    _emit_retrieval_warnings(state, retrieve_meta)
     context = _format_docs(results)
     _emit(
         state,
@@ -747,8 +857,12 @@ def classify_complexity(state: RAGState) -> RAGState:
         raise RuntimeError("FAST_MODEL is required for complexity planning")
 
     prompt = COMPLEXITY_PROMPT.format(question=question)
-    result = model.with_structured_output(ComplexityResult).invoke(
-        [{"role": "user", "content": prompt}]
+    result = _invoke_structured_model(
+        state,
+        model=model,
+        schema=ComplexityResult,
+        messages=[{"role": "user", "content": prompt}],
+        provider=FAST_MODEL or "fast-model",
     )
     complexity = (result.complexity or "simple").strip().lower()
     reason = (result.reason or "").strip()
@@ -815,6 +929,11 @@ def synthesis(state: RAGState) -> RAGState:
     _emit(state, "🔬", f"正在合成 {len(sub_results)} 个子问题的检索结果...")
 
     all_docs: List[dict] = []
+    provider_failures = [
+        result["provider_error"]
+        for result in sub_results
+        if isinstance(result.get("provider_error"), dict)
+    ]
     for result in sub_results:
         status = result.get("retrieval_status")
         if status not in ("answerable", "partial"):
@@ -825,6 +944,9 @@ def synthesis(state: RAGState) -> RAGState:
     deduped = dedupe_documents(all_docs)
     for idx, item in enumerate(deduped, 1):
         item["rrf_rank"] = idx
+
+    if provider_failures and len(provider_failures) == len(sub_results):
+        raise ProviderError.from_snapshot(provider_failures[0])
 
     context = _format_docs(deduped)
     if deduped:
@@ -844,10 +966,29 @@ def synthesis(state: RAGState) -> RAGState:
     original_trace = state.get("rag_trace") or {}
     has_docs = bool(deduped)
     retrieval_status = "answerable" if has_docs else "no_knowledge"
-    if has_docs and any(
-        result.get("retrieval_status") == "partial" for result in sub_results
-    ):
+    uncovered_results = [
+        result
+        for result in sub_results
+        if result.get("retrieval_status") != "answerable"
+    ]
+    if has_docs and (provider_failures or uncovered_results):
         retrieval_status = "partial"
+    coverage_gap_codes = list(
+        dict.fromkeys(
+            str(item.get("code")) for item in provider_failures if item.get("code")
+        )
+    )
+    coverage_gap_questions = (
+        list(
+            dict.fromkeys(
+                str(item.get("question") or "").strip()
+                for item in uncovered_results
+                if str(item.get("question") or "").strip()
+            )
+        )
+        if has_docs or provider_failures
+        else []
+    )
     hitl_traces = [
         trace
         for trace in sub_traces
@@ -881,6 +1022,17 @@ def synthesis(state: RAGState) -> RAGState:
             for option in trace.get("hitl_options") or []:
                 if option not in hitl_options:
                     hitl_options.append(option)
+    elif not has_docs and provider_failures:
+        retrieval_status = "insufficient_evidence"
+
+    route = (
+        "answer"
+        if has_docs
+        else (
+            hitl_route
+            or ("insufficient_evidence" if provider_failures else "no_knowledge")
+        )
+    )
 
     rag_trace = {
         **original_trace,
@@ -896,21 +1048,25 @@ def synthesis(state: RAGState) -> RAGState:
         "synthesis_merged_count": len(all_docs),
         "sub_traces": sub_traces,
         "retrieval_status": retrieval_status,
+        "retrieval_outcome": outcome_for_status(retrieval_status).value,
         "evidence_relevance": "strong" if has_docs else "none",
         "evidence_answerability": "partial"
         if retrieval_status == "partial"
         else ("sufficient" if has_docs else "none"),
         "evidence_confidence": None,
-        "route": "answer" if has_docs else (hitl_route or "no_knowledge"),
+        "route": route,
         "hitl_prompt": hitl_prompt,
         "hitl_options": hitl_options,
+        "coverage_gap_codes": coverage_gap_codes,
+        "coverage_gap_questions": coverage_gap_questions,
     }
 
     return {
         "docs": deduped,
         "context": context,
-        "route": "answer" if has_docs else (hitl_route or "no_knowledge"),
+        "route": route,
         "retrieval_status": retrieval_status,
+        "retrieval_outcome": outcome_for_status(retrieval_status).value,
         "hitl_prompt": hitl_prompt,
         "hitl_options": hitl_options,
         "rag_trace": rag_trace,
@@ -921,8 +1077,31 @@ def rag_sub_agent(state: RAGState) -> RAGState:
     """Run the only reachable sub-agent path directly: retrieve → grade."""
     question = state.get("question", "")
     result = dict(state)
-    result.update(retrieve_initial(result))
-    result.update(grade_documents_node(result))
+    try:
+        result.update(retrieve_initial(result))
+        result.update(grade_documents_node(result))
+    except ProviderError as exc:
+        snapshot = exc.to_snapshot()
+        return {
+            "sub_results": [
+                {
+                    "question": question,
+                    "docs": [],
+                    "retrieval_status": "provider_failed",
+                    "route": "provider_failed",
+                    "provider_error": snapshot,
+                    "rag_trace": {
+                        "tool_used": True,
+                        "tool_name": "search_knowledge_base",
+                        "query": question,
+                        "retrieval_status": "provider_failed",
+                        "route": "provider_failed",
+                        "provider_error_code": snapshot["code"],
+                        "provider_error_stage": snapshot["operation"],
+                    },
+                }
+            ]
+        }
     trace = result.get("rag_trace") or {}
     return {
         "sub_results": [
@@ -1092,9 +1271,10 @@ def _state_from_resume(
 def _retrieve_resume_query(state: dict) -> dict:
     _emit(state, "🔎", "使用 HITL 补充进行针对性检索", "跳过复杂度判断与子问题分解")
     query = state["question"]
-    retrieved = retrieve_documents(query, top_k=RETRIEVAL_TOP_K)
+    retrieved = _retrieve_for_state(state, query)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    _emit_retrieval_warnings(state, retrieve_meta)
     context = _format_docs(results)
     _emit(
         state,

@@ -25,6 +25,7 @@ from backend.agent.middleware import (
     DynamicContextMiddleware,
     LoopDetectionMiddleware,
     RequestContextMiddleware,
+    RuntimeTracingMiddleware,
     TerminalResponseMiddleware,
     ToolPolicyMiddleware,
     build_default_middleware,
@@ -35,6 +36,12 @@ from backend.agent.models import ModelRegistry, ModelRole
 from backend.agent.runtime import AgentRuntime, AgentRuntimeInput
 from backend.chat.request_context import ChatRequestContext
 from backend.core.settings import AgentSettings, ModelSettings, RunSettings
+from backend.providers import (
+    ProviderCode,
+    ProviderError,
+    ProviderExecutor,
+    ProviderPolicy,
+)
 
 
 def _budget(**overrides):
@@ -86,6 +93,7 @@ class ModelRegistryTests(unittest.TestCase):
                 MODEL="answer-model",
                 FAST_MODEL="fast-model",
                 GRADE_MODEL="",
+                MODEL_TIMEOUT_SECONDS=12.5,
             )
         )
         registry = ModelRegistry(settings=settings, initializer=initializer)
@@ -102,9 +110,29 @@ class ModelRegistryTests(unittest.TestCase):
             base_url="https://models.test/v1",
             temperature=0.3,
             stream_usage=True,
+            max_retries=0,
+            timeout=12.5,
         )
         with self.assertRaisesRegex(RuntimeError, "grader"):
             registry.get(ModelRole.GRADER)
+
+    def test_real_openai_adapter_has_no_hidden_retry_and_has_native_timeout(self):
+        settings = SimpleNamespace(
+            models=ModelSettings(
+                _env_file=None,
+                ARK_API_KEY="test-key",
+                BASE_URL="https://models.test/v1",
+                MODEL="answer-model",
+                FAST_MODEL="",
+                GRADE_MODEL="",
+                MODEL_TIMEOUT_SECONDS=9.5,
+            )
+        )
+
+        model = ModelRegistry(settings=settings).get(ModelRole.ANSWER)
+
+        self.assertEqual(0, model.root_client.max_retries)
+        self.assertEqual(9.5, model.request_timeout)
 
 
 class RuntimeMiddlewareTests(unittest.TestCase):
@@ -226,6 +254,108 @@ class RuntimeMiddlewareTests(unittest.TestCase):
             captured["tools"][0]["function"]["name"],
         )
         self.assertEqual(1, len(captured["tools"]))
+
+    def test_model_rate_limit_retries_with_stable_provider_contract(self):
+        request_context, context = _context()
+        request = ModelRequest(
+            model=SimpleNamespace(model_name="answer-model"),
+            messages=[],
+            runtime=SimpleNamespace(context=context),
+        )
+
+        class RateLimitError(Exception):
+            status_code = 429
+
+        calls = 0
+
+        def handler(_request):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RateLimitError("raw secret response")
+            return "ok"
+
+        middleware = RuntimeTracingMiddleware(
+            executor=ProviderExecutor(sleeper=lambda _: None),
+            model_policy=ProviderPolicy(max_attempts=2),
+        )
+        try:
+            result = middleware.wrap_model_call(request, handler)
+        finally:
+            request_context.close()
+
+        self.assertEqual("ok", result)
+        self.assertEqual(2, calls)
+        self.assertEqual(2, context.trace_events[-1]["attempts"])
+        self.assertEqual("model.completed", context.trace_events[-1]["stage"])
+
+    def test_model_rate_limit_exhaustion_is_typed_and_redacted(self):
+        request_context, context = _context()
+        request = ModelRequest(
+            model=SimpleNamespace(model_name="answer-model"),
+            messages=[],
+            runtime=SimpleNamespace(context=context),
+        )
+
+        class RateLimitError(Exception):
+            status_code = 429
+
+        middleware = RuntimeTracingMiddleware(
+            executor=ProviderExecutor(sleeper=lambda _: None),
+            model_policy=ProviderPolicy(max_attempts=2),
+        )
+        try:
+            with self.assertRaises(ProviderError) as raised:
+                middleware.wrap_model_call(
+                    request,
+                    lambda _request: (_ for _ in ()).throw(
+                        RateLimitError("raw secret response")
+                    ),
+                )
+        finally:
+            request_context.close()
+
+        self.assertEqual(ProviderCode.MODEL_RATE_LIMITED, raised.exception.code)
+        self.assertNotIn("raw secret response", raised.exception.message)
+        self.assertEqual("MODEL_RATE_LIMITED", context.trace_events[-1]["error_code"])
+        self.assertEqual(2, context.trace_events[-1]["attempts"])
+
+    def test_answer_model_partial_output_is_never_retried(self):
+        async def exercise():
+            request_context, context = _context()
+            request = ModelRequest(
+                model=SimpleNamespace(model_name="answer-model"),
+                messages=[],
+                runtime=SimpleNamespace(context=context),
+            )
+
+            class RateLimitError(Exception):
+                status_code = 429
+
+            calls = 0
+            published = []
+
+            async def handler(_request):
+                nonlocal calls
+                calls += 1
+                published.append(f"attempt-{calls}-partial")
+                raise RateLimitError("raw secret response")
+
+            middleware = RuntimeTracingMiddleware(
+                executor=ProviderExecutor(async_sleeper=lambda _: asyncio.sleep(0))
+            )
+            try:
+                with self.assertRaises(ProviderError) as raised:
+                    await middleware.awrap_model_call(request, handler)
+            finally:
+                request_context.close()
+
+            self.assertEqual(ProviderCode.MODEL_RATE_LIMITED, raised.exception.code)
+            self.assertEqual(1, calls)
+            self.assertEqual(["attempt-1-partial"], published)
+            self.assertEqual(1, context.trace_events[-1]["attempts"])
+
+        asyncio.run(exercise())
 
     def test_tool_policy_denies_hidden_tool_at_execution_seam(self):
         request_context, context = _context(
@@ -573,10 +703,29 @@ class CompiledAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         context.deadline_at = asyncio.get_running_loop().time() + 0.02
         runtime = AgentRuntime(agent=SlowAgent(), context=context)
         try:
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(ProviderError) as raised:
                 await runtime.ainvoke(AgentRuntimeInput(history=[], user_text="hello"))
         finally:
             request_context.close()
+
+        self.assertEqual(ProviderCode.PROVIDER_TIMEOUT, raised.exception.code)
+
+    async def test_native_model_timeout_keeps_model_timeout_code(self):
+        class TimeoutAgent(FakeCompiledAgent):
+            async def ainvoke(self, payload, *, config, context):
+                raise TimeoutError("secret provider timeout")
+
+        request_context, context = _context()
+        context.deadline_at = asyncio.get_running_loop().time() + 1
+        runtime = AgentRuntime(agent=TimeoutAgent(), context=context)
+        try:
+            with self.assertRaises(ProviderError) as raised:
+                await runtime.ainvoke(AgentRuntimeInput(history=[], user_text="hello"))
+        finally:
+            request_context.close()
+
+        self.assertEqual(ProviderCode.MODEL_TIMEOUT, raised.exception.code)
+        self.assertNotIn("secret", raised.exception.message)
 
 
 if __name__ == "__main__":

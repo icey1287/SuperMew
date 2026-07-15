@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -19,6 +20,10 @@ from backend.events.generated.run_event_v1 import RunEventType
 from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
     checkpointed_rag_runner,
+)
+from backend.rag.outcomes import (
+    partial_evidence_instruction,
+    retrieval_user_message,
 )
 from backend.runs.cancellation import (
     CancellationToken,
@@ -42,6 +47,7 @@ _TRACE_EVENT_TYPES = {
 }
 _WARNING_TRACE_STAGES = {
     "context.trimmed",
+    "model.failed",
     "terminal.fallback",
     "tool.loop_blocked",
 }
@@ -71,10 +77,7 @@ def _remaining_deadline(deadline_at: str | None) -> float | None:
 
 def _resume_answer_prompt(result: dict, answer: str) -> str | None:
     docs = list(result.get("docs") or [])
-    trace = dict(result.get("rag_trace") or {})
-    status = result.get("retrieval_status") or trace.get("retrieval_status")
-    route = result.get("route") or trace.get("route")
-    if status == "no_knowledge" or route == "no_knowledge" or not docs:
+    if not docs:
         return None
     chunks = []
     for index, item in enumerate(docs, 1):
@@ -84,9 +87,11 @@ def _resume_answer_prompt(result: dict, answer: str) -> str | None:
             f"{item.get('text', '')}"
         )
     original_question = result.get("original_question") or result.get("question") or ""
+    evidence_instruction = partial_evidence_instruction(result)
     return (
         "请只根据下面的检索片段回答原始问题，并使用 [1]、[2] 形式引用。"
         "不要再次调用工具，也不要提及内部 HITL 或 RAG 实现。\n\n"
+        f"证据约束：{evidence_instruction or '检索证据覆盖完整。'}\n\n"
         f"原始问题：\n{original_question}\n\n"
         f"用户补充：\n{answer}\n\n"
         "检索片段：\n" + "\n\n---\n\n".join(chunks)
@@ -282,6 +287,7 @@ class RunAgentExecutor:
             rag_outcome = await self._resume_checkpoint(
                 snapshot=snapshot,
                 consumed=consumed,
+                token=token,
             )
             if rag_outcome.pause is not None:
                 return RunExecutionOutcome(
@@ -293,10 +299,8 @@ class RunAgentExecutor:
             if prompt is None:
                 return RunExecutionOutcome(
                     kind="completed",
-                    content=(
-                        "知识库中没有找到可靠的相关信息，"
-                        "暂时无法基于知识库回答这个问题。"
-                    ),
+                    content=retrieval_user_message(rag_outcome.result)
+                    or "当前没有可用于回答的可靠证据。",
                     rag_trace=trace,
                     fencing_token=rag_outcome.fencing_token,
                 )
@@ -311,12 +315,21 @@ class RunAgentExecutor:
         await self._execute_claimed(claimed, runner)
         await self._dispatch_next(username=username, thread_id=claimed.thread_id)
 
-    async def _resume_checkpoint(self, *, snapshot, consumed):
+    async def _resume_checkpoint(self, *, snapshot, consumed, token: CancellationToken):
         output_queue: asyncio.Queue = asyncio.Queue()
         context = ChatRequestContext.for_stream(
             user_id=snapshot.username,
             session_id=snapshot.run.thread_id,
             output_queue=output_queue,
+        )
+        remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
+        context.configure_provider_runtime(
+            deadline_at=(
+                time.monotonic() + remaining_deadline
+                if remaining_deadline is not None
+                else None
+            ),
+            cancellation_probe=lambda: token.cancelled,
         )
         pump_stop = asyncio.Event()
         pump_error = asyncio.Event()
@@ -373,12 +386,17 @@ class RunAgentExecutor:
             except TimeoutError:
                 pass
             try:
-                await asyncio.to_thread(
+                heartbeat = await asyncio.to_thread(
                     self.service.heartbeat,
                     run_id=run.id,
                     worker_id=self.worker_id,
                     fencing_token=run.fencing_token,
                 )
+                if heartbeat.status == RunStatus.CANCELLING.value:
+                    await self.manager.registry.cancel_local(
+                        run.id,
+                        reason="user",
+                    )
             except AppError as exc:
                 if exc.code == ErrorCode.RUN_STATE_CONFLICT:
                     await self.manager.registry.cancel_local(
@@ -410,6 +428,15 @@ class RunAgentExecutor:
             session_id=snapshot.run.thread_id,
             output_queue=output_queue,
         )
+        remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
+        request_context.configure_provider_runtime(
+            deadline_at=(
+                time.monotonic() + remaining_deadline
+                if remaining_deadline is not None
+                else None
+            ),
+            cancellation_probe=lambda: token.cancelled,
+        )
         if initial_rag_trace:
             request_context.store_rag_trace(initial_rag_trace)
         knowledge_tool = None
@@ -426,7 +453,7 @@ class RunAgentExecutor:
             persistent_note=snapshot.persistent_note,
             run_id=snapshot.run.id,
             allowed_tools=frozenset() if disable_tools else None,
-            deadline_seconds=_remaining_deadline(snapshot.run.deadline_at),
+            deadline_seconds=remaining_deadline,
             knowledge_tool=knowledge_tool,
             trace_queue=trace_queue,
         )
@@ -509,6 +536,13 @@ class RunAgentExecutor:
                     return
                 continue
             try:
+                if item.get("type") == "rag_warning":
+                    await self._publish_owned(
+                        run,
+                        event_type=RunEventType.WARNING_CREATED,
+                        data=dict(item.get("warning") or {}),
+                    )
+                    continue
                 if item.get("type") != "rag_step":
                     continue
                 await self._publish_owned(
@@ -554,7 +588,11 @@ class RunAgentExecutor:
                     await self._publish_owned(
                         run,
                         event_type=RunEventType.WARNING_CREATED,
-                        data={"code": stage.upper().replace(".", "_"), **item},
+                        data={
+                            "code": item.get("error_code")
+                            or stage.upper().replace(".", "_"),
+                            **item,
+                        },
                     )
             except AppError as exc:
                 if exc.code == ErrorCode.RUN_STATE_CONFLICT:

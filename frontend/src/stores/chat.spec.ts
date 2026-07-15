@@ -5,12 +5,16 @@ import { useChatStore } from './chat';
 import { useSessionStore } from './sessions';
 import api from '@/utils/api';
 
-vi.mock('@/utils/api', () => ({
-  default: {
-    get: vi.fn(),
-    delete: vi.fn(),
-  },
-}));
+vi.mock('@/utils/api', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/api')>('@/utils/api');
+  return {
+    ...actual,
+    default: {
+      get: vi.fn(),
+      delete: vi.fn(),
+    },
+  };
+});
 
 type PendingRead = {
   resolve: (value: ReadableStreamReadResult<Uint8Array>) => void;
@@ -49,9 +53,15 @@ const createControlledSseFetch = () => {
   const chunks: Uint8Array[] = [];
   const pendingReads: PendingRead[] = [];
   let closed = false;
+  let failure: unknown;
 
   const reader = {
     read: vi.fn(() => {
+      if (failure) {
+        const reason = failure;
+        failure = undefined;
+        return Promise.reject(reason);
+      }
       if (chunks.length) {
         return Promise.resolve({ done: false, value: chunks.shift() });
       }
@@ -97,9 +107,23 @@ const createControlledSseFetch = () => {
         value: encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
       });
     },
+    pushDone() {
+      resolveNextRead({
+        done: false,
+        value: encoder.encode('data: [DONE]\n\n'),
+      });
+    },
     close() {
       closed = true;
       resolveNextRead({ done: true, value: undefined });
+    },
+    fail(reason: unknown) {
+      const pending = pendingReads.shift();
+      if (pending) {
+        pending.reject(reason);
+      } else {
+        failure = reason;
+      }
     },
   };
 };
@@ -178,8 +202,118 @@ describe('chat store streaming sessions', () => {
       isThinking: true,
     });
 
+    stream.pushDone();
+    await sendPromise;
+  });
+
+  it('renders structured stream errors without exposing raw provider details', async () => {
+    const stream = createControlledSseFetch();
+    vi.stubGlobal('fetch', stream.fetchMock);
+    const { chatStore } = setupStores();
+
+    chatStore.userInput = '触发故障';
+    const sendPromise = chatStore.handleSend();
+    await flushPromises();
+
+    stream.pushEvent({ type: 'content', content: '已经生成的安全片段' });
+    stream.pushEvent({
+      type: 'error',
+      error: {
+        code: 'MODEL_RATE_LIMITED',
+        message: '上游模型服务当前繁忙，请稍后重试',
+        retryable: true,
+      },
+      content: 'raw-secret-upstream-body',
+    });
     stream.close();
     await sendPromise;
+
+    const message = chatStore.messagesBySession.session_current[1];
+    expect(message.text).toContain('已经生成的安全片段');
+    expect(message.text).toContain('MODEL_RATE_LIMITED');
+    expect(message.text).toContain('上游模型服务当前繁忙');
+    expect(message.text).not.toContain('raw-secret-upstream-body');
+  });
+
+  it('normalizes non-2xx fetch responses through the public error contract', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Headers({ 'Retry-After': '2' }),
+        json: async () => ({
+          error: {
+            code: 'MODEL_RATE_LIMITED',
+            message: 'raw provider response',
+            retryable: true,
+            category: 'provider',
+          },
+        }),
+      })
+    );
+    const { chatStore } = setupStores();
+
+    chatStore.userInput = '触发限流';
+    await chatStore.handleSend();
+
+    const message = chatStore.messagesBySession.session_current[1];
+    expect(message.text).toContain('[MODEL_RATE_LIMITED]');
+    expect(message.text).toContain('上游模型服务当前繁忙');
+    expect(message.text).not.toContain('raw provider response');
+  });
+
+  it('keeps partial text when the stream transport fails', async () => {
+    const stream = createControlledSseFetch();
+    vi.stubGlobal('fetch', stream.fetchMock);
+    const { chatStore } = setupStores();
+
+    chatStore.userInput = '传输故障';
+    const sendPromise = chatStore.handleSend();
+    await flushPromises();
+    stream.pushEvent({ type: 'content', content: '已经收到的回答' });
+    await flushPromises();
+    stream.fail(new TypeError('secret socket detail'));
+    await sendPromise;
+
+    const message = chatStore.messagesBySession.session_current[1];
+    expect(message.text).toContain('已经收到的回答');
+    expect(message.text).toContain('[NETWORK_UNAVAILABLE]');
+    expect(message.text).not.toContain('secret socket detail');
+  });
+
+  it('treats an empty premature EOF as a safe transport failure', async () => {
+    const stream = createControlledSseFetch();
+    vi.stubGlobal('fetch', stream.fetchMock);
+    const { chatStore } = setupStores();
+
+    chatStore.userInput = '空响应';
+    const sendPromise = chatStore.handleSend();
+    await flushPromises();
+    stream.close();
+    await sendPromise;
+
+    const message = chatStore.messagesBySession.session_current[1];
+    expect(message.isThinking).toBe(false);
+    expect(message.text).toContain('[NETWORK_UNAVAILABLE]');
+  });
+
+  it('keeps partial text when the stream closes before DONE', async () => {
+    const stream = createControlledSseFetch();
+    vi.stubGlobal('fetch', stream.fetchMock);
+    const { chatStore } = setupStores();
+
+    chatStore.userInput = '提前结束';
+    const sendPromise = chatStore.handleSend();
+    await flushPromises();
+    stream.pushEvent({ type: 'content', content: '已收到部分回答' });
+    await flushPromises();
+    stream.close();
+    await sendPromise;
+
+    const message = chatStore.messagesBySession.session_current[1];
+    expect(message.text).toContain('已收到部分回答');
+    expect(message.text).toContain('[NETWORK_UNAVAILABLE]');
   });
 
   it('keeps streaming chunks on the originating session after viewing another history session', async () => {
@@ -236,7 +370,7 @@ describe('chat store streaming sessions', () => {
       isThinking: false,
     });
 
-    stream.close();
+    stream.pushDone();
     await sendPromise;
   });
 
@@ -307,7 +441,7 @@ describe('chat store streaming sessions', () => {
         original_question: '这个角色的属性是什么？',
       },
     });
-    stream.close();
+    stream.pushDone();
     await sendPromise;
 
     expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
@@ -349,7 +483,7 @@ describe('chat store streaming sessions', () => {
     expect(chatStore.pendingHitlBySession.session_current).toBeUndefined();
 
     stream.pushEvent({ type: 'content', content: '丹瑾是湮灭属性。' });
-    stream.close();
+    stream.pushDone();
     await sendPromise;
 
     expect(chatStore.messagesBySession.session_current[1]).toMatchObject({

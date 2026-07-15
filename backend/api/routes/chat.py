@@ -1,12 +1,13 @@
-import json
-
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from backend.chat import chat_with_agent, chat_with_agent_stream
+from backend.chat.service import (
+    legacy_public_error_from_exception,
+    legacy_sse_error_chunk,
+)
 from backend.db.models import User
-from backend.core.errors import error_payload, public_error_from_exception
 from backend.infra.auth import get_current_user
 from backend.schemas import ChatRequest, ChatResponse
 
@@ -43,9 +44,8 @@ async def chat_stream_endpoint(
             ):
                 yield chunk
         except Exception as exc:
-            public = public_error_from_exception(exc)
-            error_data = {"type": "error", **error_payload(public)["error"]}
-            yield f"data: {json.dumps(error_data)}\n\n"
+            public = legacy_public_error_from_exception(exc)
+            yield legacy_sse_error_chunk(public)
 
     return StreamingResponse(
         event_generator(),

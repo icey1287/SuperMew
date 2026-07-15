@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Literal
 
 from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
 
 from backend.agent.context import AgentRuntimeContext
+from backend.providers import (
+    ProviderCallContext,
+    ProviderError,
+    ProviderOperation,
+    classify_provider_exception,
+)
 from backend.schemas.chat import normalize_rag_trace
 
 
@@ -83,6 +90,24 @@ class AgentRuntime:
     def _config(self) -> dict:
         return {"recursion_limit": self.context.budget.recursion_limit}
 
+    def _timeout_error(self, exc: TimeoutError) -> ProviderError:
+        request_deadline, cancellation = self.context.request_context.provider_runtime()
+        deadlines = [
+            value
+            for value in (self.context.deadline_at, request_deadline)
+            if value is not None
+        ]
+        deadline = min(deadlines) if deadlines else None
+        provider_context = ProviderCallContext(
+            provider="agent-runtime",
+            operation=ProviderOperation.MODEL,
+            deadline=deadline,
+            cancellation=cancellation,
+        )
+        if deadline is not None and time.monotonic() >= deadline:
+            return ProviderError.deadline_exceeded(provider_context)
+        return classify_provider_exception(exc, context=provider_context)
+
     def _finish(self, content: str) -> AgentRuntimeResult:
         stored = self.context.request_context.take_rag_trace() or {}
         rag_trace = normalize_rag_trace(stored.get("rag_trace"))
@@ -95,63 +120,74 @@ class AgentRuntime:
         )
 
     def invoke(self, request: AgentRuntimeInput) -> AgentRuntimeResult:
-        self.context.check_deadline()
-        result = self.agent.invoke(
-            {"messages": request.messages},
-            config=self._config(),
-            context=self.context,
-        )
-        self.context.check_deadline()
-        return self._finish(extract_agent_content(result))
-
-    async def ainvoke(self, request: AgentRuntimeInput) -> AgentRuntimeResult:
-        self.context.check_deadline()
-        async with asyncio.timeout(self.context.remaining_seconds()):
-            result = await self.agent.ainvoke(
+        try:
+            self.context.check_deadline()
+            result = self.agent.invoke(
                 {"messages": request.messages},
                 config=self._config(),
                 context=self.context,
             )
+            self.context.check_deadline()
+        except TimeoutError as exc:
+            raise self._timeout_error(exc) from exc
+        return self._finish(extract_agent_content(result))
+
+    async def ainvoke(self, request: AgentRuntimeInput) -> AgentRuntimeResult:
+        try:
+            self.context.check_deadline()
+            async with asyncio.timeout(self.context.remaining_seconds()):
+                result = await self.agent.ainvoke(
+                    {"messages": request.messages},
+                    config=self._config(),
+                    context=self.context,
+                )
+        except TimeoutError as exc:
+            raise self._timeout_error(exc) from exc
         return self._finish(extract_agent_content(result))
 
     async def astream(self, request: AgentRuntimeInput):
         full_response = ""
         final_state = None
-        self.context.check_deadline()
-        async with asyncio.timeout(self.context.remaining_seconds()):
-            async for item in self.agent.astream(
-                {"messages": request.messages},
-                stream_mode=["messages", "values"],
-                config=self._config(),
-                context=self.context,
-            ):
-                mode = None
-                payload = item
-                if (
-                    isinstance(item, tuple)
-                    and len(item) == 2
-                    and isinstance(item[0], str)
-                    and item[0] in {"messages", "values"}
+        try:
+            self.context.check_deadline()
+            async with asyncio.timeout(self.context.remaining_seconds()):
+                async for item in self.agent.astream(
+                    {"messages": request.messages},
+                    stream_mode=["messages", "values"],
+                    config=self._config(),
+                    context=self.context,
                 ):
-                    mode, payload = item
-                if mode == "values":
-                    final_state = payload
-                    continue
-                message = (
-                    payload[0] if isinstance(payload, tuple) and payload else payload
-                )
-                if not isinstance(message, AIMessageChunk):
-                    continue
-                if getattr(message, "tool_call_chunks", None):
-                    continue
-                content = extract_message_content(message)
-                if not content:
-                    continue
-                stored = self.context.request_context.peek_rag_trace() or {}
-                if _is_hitl_trace(normalize_rag_trace(stored.get("rag_trace"))):
-                    continue
-                full_response += content
-                yield AgentRuntimeEvent(type="content", content=content)
+                    mode = None
+                    payload = item
+                    if (
+                        isinstance(item, tuple)
+                        and len(item) == 2
+                        and isinstance(item[0], str)
+                        and item[0] in {"messages", "values"}
+                    ):
+                        mode, payload = item
+                    if mode == "values":
+                        final_state = payload
+                        continue
+                    message = (
+                        payload[0]
+                        if isinstance(payload, tuple) and payload
+                        else payload
+                    )
+                    if not isinstance(message, AIMessageChunk):
+                        continue
+                    if getattr(message, "tool_call_chunks", None):
+                        continue
+                    content = extract_message_content(message)
+                    if not content:
+                        continue
+                    stored = self.context.request_context.peek_rag_trace() or {}
+                    if _is_hitl_trace(normalize_rag_trace(stored.get("rag_trace"))):
+                        continue
+                    full_response += content
+                    yield AgentRuntimeEvent(type="content", content=content)
+        except TimeoutError as exc:
+            raise self._timeout_error(exc) from exc
 
         authoritative_content = (
             extract_agent_content(final_state)

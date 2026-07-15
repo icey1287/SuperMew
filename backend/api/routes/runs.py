@@ -12,6 +12,7 @@ from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 from backend.runs.resume import resume_coordinator
 from backend.runs.service import service
+from backend.runs.state import RunStatus
 from backend.schemas.events import RunEventsResponse
 from backend.schemas.runs import (
     RunCreateRequest,
@@ -138,12 +139,16 @@ async def get_run(run_id: str, current_user: User = Depends(get_current_user)):
 
 @router.post("/runs/{run_id}/cancel", response_model=RunResponse)
 async def cancel_run(run_id: str, current_user: User = Depends(get_current_user)):
-    await run_in_threadpool(
+    requested = await run_in_threadpool(
         service.request_cancel,
         username=current_user.username,
         run_id=run_id,
     )
-    await cancellation_registry.request_cancel(run_id)
+    if requested.status in {
+        RunStatus.CANCELLING.value,
+        RunStatus.CANCELLED.value,
+    }:
+        await cancellation_registry.request_cancel(run_id)
     run = await run_in_threadpool(
         service.get_run,
         username=current_user.username,

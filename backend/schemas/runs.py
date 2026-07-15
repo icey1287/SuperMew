@@ -32,6 +32,16 @@ class RunCreateRequest(RunSchema):
     on_disconnect: Literal["cancel", "continue"] | None = None
 
 
+class RunErrorResponse(RunSchema):
+    code: str
+    message: str
+    retryable: bool
+    category: str | None = None
+    stage: str | None = None
+    provider: str | None = None
+    retry_after: float | None = Field(default=None, ge=0)
+
+
 class RunResponse(RunSchema):
     id: str
     thread_id: str
@@ -56,6 +66,7 @@ class RunResponse(RunSchema):
     cost: str
     created_at: str
     updated_at: str
+    error: RunErrorResponse | None = None
 
 
 class RunCreateResponse(RunSchema):

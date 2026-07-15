@@ -16,6 +16,7 @@ from backend.agent.runtime import (
 from backend.db.models import Base, ChatMessage, Run, User
 from backend.events.bus import PersistentEventBus
 from backend.events.journal import RunEventJournal
+from backend.providers import ProviderCode, ProviderError, ProviderOperation
 from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
     HitlCheckpointRepository,
@@ -30,8 +31,9 @@ from test_native_checkpoint_hitl import NativeCheckpointGraphTests
 
 
 class FakeRuntime:
-    def __init__(self, factory, trace_queue=None):
+    def __init__(self, factory, request_context, trace_queue=None):
         self.factory = factory
+        self.request_context = request_context
         self.trace_queue = trace_queue
 
     async def astream(self, request):
@@ -39,6 +41,8 @@ class FakeRuntime:
         self.factory.active += 1
         self.factory.max_active = max(self.factory.max_active, self.factory.active)
         try:
+            if self.factory.failure is not None:
+                raise self.factory.failure
             if self.factory.emit_tool_trace and self.trace_queue is not None:
                 await self.trace_queue.put(
                     {
@@ -46,6 +50,15 @@ class FakeRuntime:
                         "tool_name": "fake_tool",
                         "elapsed_ms": 1,
                     }
+                )
+                await asyncio.sleep(0)
+            if self.factory.emit_rag_warning:
+                self.request_context.emit_rag_warning(
+                    code="RERANK_TIMEOUT",
+                    stage="rerank",
+                    retryable=True,
+                    fallback_applied=True,
+                    attempts=2,
                 )
                 await asyncio.sleep(0)
             if self.factory.delay_seconds:
@@ -78,10 +91,12 @@ class FakeRuntimeFactory:
         self.active = 0
         self.max_active = 0
         self.emit_tool_trace = False
+        self.emit_rag_warning = False
+        self.failure: Exception | None = None
 
     def create(self, request_context, **kwargs):
         self.create_kwargs.append({"request_context": request_context, **kwargs})
-        return FakeRuntime(self, kwargs.get("trace_queue"))
+        return FakeRuntime(self, request_context, kwargs.get("trace_queue"))
 
 
 class CheckpointRuntime:
@@ -263,6 +278,86 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_provider_failure_keeps_typed_code_and_redacted_terminal_payload(
+        self,
+    ):
+        self.runtime_factory.failure = ProviderError.from_code(
+            ProviderCode.EMBEDDING_UNAVAILABLE,
+            provider="embedding-model",
+            operation=ProviderOperation.EMBEDDING,
+            attempts=2,
+            max_attempts=2,
+        )
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-provider-failure",
+            message="触发 provider 故障 secret-token",
+            idempotency_key="request-provider-failure",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        run = self.repository.get(username="alice", run_id=reservation.run.id)
+        self.assertEqual("failed", run.status)
+        self.assertEqual("EMBEDDING_UNAVAILABLE", run.error_code)
+        self.assertEqual("EMBEDDING_UNAVAILABLE", run.error["code"])
+        self.assertTrue(run.error["retryable"])
+        self.assertEqual("embedding", run.error["stage"])
+        self.assertNotIn("secret-token", str(run.error))
+
+        with self.Session() as db:
+            assistant = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == run.assistant_message_id)
+                .one()
+            )
+            self.assertEqual("failed", assistant.status)
+            self.assertNotIn("secret-token", assistant.content)
+
+        events = self.journal.read_after(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertEqual("run.failed", events[-1].type.value)
+        self.assertEqual(
+            "EMBEDDING_UNAVAILABLE",
+            events[-1].data["error"]["code"],
+        )
+        self.assertNotIn("secret-token", str(events[-1].data))
+
+    async def test_rerank_warning_is_replayed_without_failing_the_run(self):
+        self.runtime_factory.emit_rag_warning = True
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-rerank-warning",
+            message="测试 rerank 降级",
+            idempotency_key="request-rerank-warning",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        run = self.repository.get(username="alice", run_id=reservation.run.id)
+        self.assertEqual("succeeded", run.status)
+        events = self.journal.read_after(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        warnings = [item for item in events if item.type.value == "warning.created"]
+        self.assertEqual(1, len(warnings))
+        self.assertEqual("RERANK_TIMEOUT", warnings[0].data["code"])
+        self.assertTrue(warnings[0].data["fallback_applied"])
+        self.assertEqual("run.completed", events[-1].type.value)
+
     async def test_process_worker_identity_is_unique_even_with_shared_prefix(self):
         first = RunAgentExecutor(
             run_service=self.service,
@@ -348,6 +443,41 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             await task
 
         self.assertGreaterEqual(heartbeat.call_count, 1)
+
+    async def test_durable_cancelling_state_stops_runtime_without_signal(self):
+        self.runtime_factory.delay_seconds = 0.05
+        self.executor.heartbeat_seconds = 0.01
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-durable-cancel",
+            message="只依赖数据库取消",
+            idempotency_key="durable-cancel-1",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        for _ in range(50):
+            if self.runtime_factory.requests:
+                break
+            await asyncio.sleep(0.002)
+        self.assertTrue(self.runtime_factory.requests)
+
+        cancelling = self.service.request_cancel(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertEqual("cancelling", cancelling.status)
+        await task
+
+        cancelled = self.service.get_run(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertEqual("cancelled", cancelled.status)
+        self.assertEqual("RUN_CANCELLED", cancelled.error_code)
 
     async def test_executor_limits_cross_thread_runtime_concurrency(self):
         self.runtime_factory.delay_seconds = 0.05
@@ -616,15 +746,13 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(initial_task, reused)
             runtime_factory.release_initial.set()
             await initial_task
-
-            for _ in range(200):
-                current = self.service.get_run(
-                    username="alice",
-                    run_id=reservation.run.id,
-                )
-                if current.status == "succeeded":
-                    break
-                await asyncio.sleep(0.01)
+            resume_task = self.executor._tasks.get(reservation.run.id)
+            if resume_task is not None:
+                await resume_task
+            current = self.service.get_run(
+                username="alice",
+                run_id=reservation.run.id,
+            )
 
         self.assertEqual("succeeded", current.status)
         self.assertEqual(1, calls["complexity"])

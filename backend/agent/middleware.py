@@ -24,6 +24,14 @@ from langchain_core.messages import (
 from langchain_core.messages.utils import count_tokens_approximately
 
 from backend.agent.context import AgentRuntimeContext, RuntimeBudget
+from backend.core.errors import public_error_from_exception
+from backend.providers import (
+    ProviderCallContext,
+    ProviderExecutor,
+    ProviderOperation,
+    ProviderPolicy,
+    provider_executor,
+)
 
 
 DEFAULT_MIDDLEWARE_ORDER = (
@@ -241,22 +249,86 @@ class RequestContextMiddleware(AgentMiddleware):
 
 
 class RuntimeTracingMiddleware(AgentMiddleware):
+    def __init__(
+        self,
+        *,
+        executor: ProviderExecutor = provider_executor,
+        model_policy: ProviderPolicy = ProviderPolicy(max_attempts=1),
+    ) -> None:
+        # Answer calls can publish deltas before an upstream failure surfaces.
+        # Retrying the whole call would duplicate already-visible content. Structured
+        # planner/grader/rewrite calls own their separate, non-streaming retry policy.
+        self.executor = executor
+        self.model_policy = model_policy
+
+    @staticmethod
+    def _model_context(request, context: AgentRuntimeContext) -> ProviderCallContext:
+        request_deadline, cancellation = context.request_context.provider_runtime()
+        deadlines = [
+            value
+            for value in (context.deadline_at, request_deadline)
+            if value is not None
+        ]
+        model = request.model
+        provider = (
+            getattr(model, "model_name", None)
+            or getattr(model, "model", None)
+            or type(model).__name__
+            or "answer-model"
+        )
+        return ProviderCallContext(
+            provider=str(provider),
+            operation=ProviderOperation.MODEL,
+            deadline=min(deadlines) if deadlines else None,
+            cancellation=cancellation,
+        )
+
+    @staticmethod
+    def _record_model_failure(
+        context: AgentRuntimeContext,
+        exc: Exception,
+        *,
+        started: float,
+        attempts: int,
+    ) -> None:
+        code = getattr(getattr(exc, "code", None), "value", None)
+        context.record_trace(
+            "model.failed",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error_code=code or "MODEL_UNAVAILABLE",
+            retryable=bool(getattr(exc, "retryable", False)),
+            attempts=max(attempts, getattr(exc, "attempts", 1)),
+        )
+
     def wrap_model_call(self, request, handler):
         context = _runtime_context(request.runtime)
         context.check_deadline()
         started = time.monotonic()
+        attempts = 0
+
+        def _invoke():
+            nonlocal attempts
+            attempts += 1
+            return handler(request)
+
         try:
-            response = handler(request)
+            response = self.executor.call(
+                _invoke,
+                context=self._model_context(request, context),
+                policy=self.model_policy,
+            )
         except Exception as exc:
-            context.record_trace(
-                "model.failed",
-                duration_ms=int((time.monotonic() - started) * 1000),
-                error_type=type(exc).__name__,
+            self._record_model_failure(
+                context,
+                exc,
+                started=started,
+                attempts=attempts,
             )
             raise
         context.record_trace(
             "model.completed",
             duration_ms=int((time.monotonic() - started) * 1000),
+            attempts=attempts,
         )
         return response
 
@@ -264,18 +336,31 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         context = _runtime_context(request.runtime)
         context.check_deadline()
         started = time.monotonic()
+        attempts = 0
+
+        async def _invoke():
+            nonlocal attempts
+            attempts += 1
+            return await handler(request)
+
         try:
-            response = await handler(request)
+            response = await self.executor.acall(
+                _invoke,
+                context=self._model_context(request, context),
+                policy=self.model_policy,
+            )
         except Exception as exc:
-            context.record_trace(
-                "model.failed",
-                duration_ms=int((time.monotonic() - started) * 1000),
-                error_type=type(exc).__name__,
+            self._record_model_failure(
+                context,
+                exc,
+                started=started,
+                attempts=attempts,
             )
             raise
         context.record_trace(
             "model.completed",
             duration_ms=int((time.monotonic() - started) * 1000),
+            attempts=attempts,
         )
         return response
 
@@ -287,11 +372,14 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         try:
             response = handler(request)
         except Exception as exc:
+            public = public_error_from_exception(exc)
             context.record_trace(
                 "tool.failed",
                 tool_name=tool_name,
                 duration_ms=int((time.monotonic() - started) * 1000),
-                error_type=type(exc).__name__,
+                error_code=str(public.code),
+                retryable=public.retryable,
+                fallback_applied=False,
             )
             raise
         context.record_trace(
@@ -309,11 +397,14 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         try:
             response = await handler(request)
         except Exception as exc:
+            public = public_error_from_exception(exc)
             context.record_trace(
                 "tool.failed",
                 tool_name=tool_name,
                 duration_ms=int((time.monotonic() - started) * 1000),
-                error_type=type(exc).__name__,
+                error_code=str(public.code),
+                retryable=public.retryable,
+                fallback_applied=False,
             )
             raise
         context.record_trace(

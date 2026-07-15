@@ -1,16 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
 import redis.asyncio as redis_async
 
+from backend.core.errors import (
+    AppError,
+    ErrorCode,
+    PublicError,
+    public_error_from_exception,
+    serialize_public_error,
+)
 from backend.core.settings import get_settings
 from backend.runs.repository import RunRecord
 from backend.runs.service import RunService, service
-from backend.runs.state import RunStatus
+from backend.runs.state import RunStatus, TERMINAL_RUN_STATUSES
+
+
+logger = logging.getLogger(__name__)
+
+_CANCELLATION_REASON_PRIORITY = {
+    "shutdown": 0,
+    "user": 1,
+    "ownership_lost": 2,
+}
 
 
 class RedisCancellationTransport:
@@ -98,7 +115,13 @@ class CancellationToken:
         self,
         reason: Literal["user", "shutdown", "ownership_lost"],
     ) -> None:
-        self.reason = reason
+        current_priority = (
+            _CANCELLATION_REASON_PRIORITY[self.reason]
+            if self.reason is not None
+            else -1
+        )
+        if _CANCELLATION_REASON_PRIORITY[reason] > current_priority:
+            self.reason = reason
         self.event.set()
 
     async def checkpoint(self) -> None:
@@ -229,6 +252,16 @@ class RunExecutionManager:
         self.service = run_service
         self.registry = registry or cancellation_registry
 
+    async def _ignore_conflict_if_terminal(self, run_id: str, exc: AppError) -> None:
+        if exc.code != ErrorCode.RUN_STATE_CONFLICT:
+            raise exc
+        current = await asyncio.to_thread(
+            self.service.repository.get_internal,
+            run_id=run_id,
+        )
+        if current.status not in TERMINAL_RUN_STATUSES:
+            raise exc
+
     async def execute(
         self,
         *,
@@ -278,32 +311,74 @@ class RunExecutionManager:
         except asyncio.CancelledError:
             if token.reason == "ownership_lost":
                 return
-            if token.reason == "user":
-                await asyncio.to_thread(
-                    self.service.repository.finalize,
-                    run_id=run.id,
-                    target_status=RunStatus.CANCELLED,
-                    content=token.partial_content or "运行已由用户取消。",
-                    fencing_token=run.fencing_token,
-                    error_code="RUN_CANCELLED",
-                    error_detail_redacted="cancelled by user",
-                    partial=True,
+            try:
+                if token.reason == "user":
+                    public_error = PublicError(
+                        code=ErrorCode.RUN_CANCELLED,
+                        message="运行已由用户取消。",
+                        status_code=409,
+                        retryable=False,
+                        category="run",
+                        stage="cancellation",
+                    )
+                    await asyncio.to_thread(
+                        self.service.repository.finalize,
+                        run_id=run.id,
+                        target_status=RunStatus.CANCELLED,
+                        content=token.partial_content or public_error.message,
+                        fencing_token=run.fencing_token,
+                        error_code=str(public_error.code),
+                        error_detail_redacted=serialize_public_error(public_error),
+                        partial=True,
+                    )
+                else:
+                    public_error = PublicError(
+                        code=ErrorCode.RUN_INTERRUPTED,
+                        message="运行因服务重启而中断。",
+                        status_code=503,
+                        retryable=True,
+                        category="run",
+                        stage="shutdown",
+                    )
+                    await asyncio.to_thread(
+                        self.service.fail_run,
+                        run_id=run.id,
+                        public_error=public_error,
+                        message=token.partial_content or public_error.message,
+                        fencing_token=run.fencing_token,
+                        partial=bool(token.partial_content),
+                    )
+            except AppError as exc:
+                await self._ignore_conflict_if_terminal(run.id, exc)
+        except Exception as exc:
+            public_error = public_error_from_exception(
+                exc,
+                fallback=PublicError(
+                    code=ErrorCode.RUN_EXECUTION_FAILED,
+                    message="运行失败，请稍后重试。",
+                    status_code=500,
+                    retryable=True,
+                    category="run",
+                    stage="execution",
+                ),
+            )
+            if isinstance(exc, AppError):
+                logger.warning(
+                    "Run execution failed run_id=%s error_code=%s",
+                    run.id,
+                    public_error.code,
                 )
             else:
-                await asyncio.to_thread(
-                    self.service.fail_run,
-                    run_id=run.id,
-                    error_code="RUN_INTERRUPTED",
-                    message=token.partial_content or "运行因服务重启而中断。",
-                    fencing_token=run.fencing_token,
-                    partial=bool(token.partial_content),
+                logger.exception(
+                    "Run execution failed run_id=%s error_code=%s",
+                    run.id,
+                    public_error.code,
                 )
-        except Exception:
             await asyncio.to_thread(
                 self.service.fail_run,
                 run_id=run.id,
-                error_code="RUN_EXECUTION_FAILED",
-                message=token.partial_content or "运行失败，请稍后重试。",
+                public_error=public_error,
+                message=token.partial_content or public_error.message,
                 fencing_token=run.fencing_token,
                 partial=bool(token.partial_content),
             )

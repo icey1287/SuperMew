@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from langchain_core.messages import HumanMessage
 
 from backend.agent.models import ModelRegistry, ModelRole, model_registry
 from backend.agent.runtime import extract_message_content
+from backend.core.errors import public_error_from_exception
 from backend.core.settings import AppSettings, get_settings
+from backend.providers import (
+    ProviderCallContext,
+    ProviderExecutor,
+    ProviderOperation,
+    ProviderPolicy,
+    provider_executor,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -21,9 +30,13 @@ class PersistentMemoryManager:
         *,
         settings: AppSettings | None = None,
         models: ModelRegistry = model_registry,
+        executor: ProviderExecutor = provider_executor,
+        policy: ProviderPolicy = ProviderPolicy(max_attempts=2),
     ) -> None:
         self.settings = settings or get_settings()
         self.models = models
+        self.executor = executor
+        self.policy = policy
 
     def should_update(self, messages: list, current_note: str) -> bool:
         return (
@@ -61,12 +74,28 @@ class PersistentMemoryManager:
                 f"▼ 最新一轮对话：\n用户：{user_text}\nAI：{ai_response}\n\n"
                 "请直接输出更新后的纯文本笔记："
             )
-            result = self.models.get(ModelRole.FAST).invoke(
-                [HumanMessage(content=prompt)]
+            model = self.models.get(ModelRole.FAST)
+            provider = str(
+                getattr(model, "model_name", None)
+                or getattr(model, "model", None)
+                or "fast-model"
+            )
+            result = self.executor.call(
+                lambda: model.invoke([HumanMessage(content=prompt)]),
+                context=ProviderCallContext(
+                    provider=provider,
+                    operation=ProviderOperation.MODEL,
+                    deadline=time.monotonic() + self.settings.models.timeout_seconds,
+                ),
+                policy=self.policy,
             )
             return extract_message_content(result).strip()
-        except Exception:
-            logger.exception("Persistent memory update failed")
+        except Exception as exc:
+            public = public_error_from_exception(exc)
+            logger.warning(
+                "Persistent memory update failed error_code=%s",
+                public.code,
+            )
             return current_note
 
     async def update(

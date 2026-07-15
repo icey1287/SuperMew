@@ -87,6 +87,8 @@ class ModelRegistry:
                 base_url=model_settings.base_url,
                 temperature=spec.temperature,
                 stream_usage=True,
+                max_retries=0,
+                timeout=model_settings.timeout_seconds,
             )
             self._models[resolved_role] = model
             return model
