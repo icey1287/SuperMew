@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import json
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from backend.evaluation.rag import (
+    RagEvalCase,
+    RagEvalDataset,
+    RagEvalObservationBundle,
+    RagExpectedBehavior,
+)
+from backend.evaluation.rag_adapters import (
+    LiveRagEvalAdapter,
+    PredictionFileAdapter,
+    RagEvalExecutionError,
+    artifact_tree_fingerprint,
+    observation_from_rag_results,
+    profile_fingerprint,
+    rag_source_fingerprint,
+)
+from backend.indexing.html_processor import parse_html_file_to_sections
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _case(*, hitl: str = "none", answers: tuple[str, ...] = ()) -> RagEvalCase:
+    route = None if hitl == "none" else hitl
+    return RagEvalCase(
+        id="case_1",
+        question="question",
+        expected=RagExpectedBehavior(
+            route=route,
+            hitl=hitl,
+            acceptable_abstention=hitl != "none",
+            hitl_resolution_success=True if hitl != "none" else None,
+            hitl_final_outcome="ANSWERABLE" if hitl != "none" else None,
+        ),
+        hitl_answers=answers,
+    )
+
+
+def test_projection_keeps_identity_and_hash_but_never_chunk_text():
+    case = _case()
+    initial = {
+        "route": "answer",
+        "retrieval_outcome": "ANSWERABLE",
+        "rag_trace": {
+            "complexity": "simple",
+            "retrieved_chunks": [
+                {
+                    "chunk_id": "doc::p0::l3::0",
+                    "filename": "doc.html",
+                    "text": "private evidence body",
+                    "endpoint": "https://secret.example.test",
+                }
+            ],
+            "initial_retrieved_chunks": [
+                {
+                    "chunk_id": "doc::p0::l3::0",
+                    "filename": "doc.html",
+                    "text": "private evidence body",
+                }
+            ],
+        },
+    }
+
+    observation = observation_from_rag_results(
+        case,
+        initial=initial,
+        final=initial,
+        duration_ms=12.5,
+    )
+
+    assert observation.route.value == "answer"
+    assert observation.complexity.value == "simple"
+    assert observation.retrieved_chunks[0].chunk_id == "doc::p0::l3::0"
+    assert observation.retrieved_chunks[0].canonical_name == "doc.html"
+    assert len(observation.retrieved_chunks[0].content_sha256 or "") == 64
+    serialized = json.dumps(observation.model_dump(mode="json"))
+    assert "private evidence body" not in serialized
+    assert "secret.example.test" not in serialized
+
+
+def test_projection_scores_initial_hitl_and_final_resolution_separately():
+    case = _case(hitl="clarify", answers=("Orion",))
+    initial = {
+        "route": "clarify",
+        "retrieval_outcome": "INSUFFICIENT_EVIDENCE",
+        "hitl_resume_state": {"checkpoint_thread_id": "thread"},
+        "rag_trace": {"route": "clarify"},
+    }
+    final = {
+        "route": "answer",
+        "retrieval_outcome": "ANSWERABLE",
+        "docs": [
+            {
+                "chunk_id": "orion.html::p0::l3::0",
+                "filename": "orion.html",
+                "text": "resolved evidence",
+            }
+        ],
+        "rag_trace": {"route": "answer"},
+    }
+
+    observation = observation_from_rag_results(
+        case,
+        initial=initial,
+        final=final,
+        duration_ms=20,
+    )
+
+    assert observation.route.value == "clarify"
+    assert observation.hitl.value == "clarify"
+    assert observation.hitl_resolution_success is True
+    assert observation.outcome.value == "INSUFFICIENT_EVIDENCE"
+    assert observation.hitl_final_outcome.value == "ANSWERABLE"
+    assert observation.retrieved_chunks[0].canonical_name == "orion.html"
+
+
+def test_hitl_no_knowledge_does_not_count_as_a_successful_resolution():
+    case = _case(hitl="clarify", answers=("Orion",))
+    initial = {
+        "route": "clarify",
+        "retrieval_outcome": "INSUFFICIENT_EVIDENCE",
+        "hitl_resume_state": {"checkpoint_thread_id": "thread"},
+    }
+    final = {"route": "no_knowledge", "retrieval_outcome": "NO_KNOWLEDGE"}
+
+    observation = observation_from_rag_results(
+        case,
+        initial=initial,
+        final=final,
+        duration_ms=20,
+    )
+
+    assert observation.hitl_resolution_success is False
+    assert observation.hitl_final_outcome.value == "NO_KNOWLEDGE"
+
+
+def test_prediction_adapter_rejects_another_dataset(tmp_path):
+    dataset = RagEvalDataset(name="dataset", cases=(_case(),))
+    path = tmp_path / "observations.json"
+    path.write_text(
+        RagEvalObservationBundle(
+            dataset_fingerprint="0" * 64,
+            observations=(),
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RagEvalExecutionError, match="different"):
+        PredictionFileAdapter(path).execute(dataset)
+
+
+def test_live_adapter_rejects_non_finite_timeout_without_importing_production_rag():
+    with pytest.raises(ValueError, match="finite"):
+        LiveRagEvalAdapter(timeout_seconds=float("inf"))
+
+
+def _install_live_modules(monkeypatch, *, runtime, run_graph):
+    env_module = types.ModuleType("backend.env")
+    env_module.load_env = lambda: None
+    monkeypatch.setitem(sys.modules, "backend.env", env_module)
+
+    class FakeContext:
+        @classmethod
+        def for_sync(cls, **kwargs):
+            del kwargs
+            return cls()
+
+        def configure_provider_runtime(self, **kwargs):
+            del kwargs
+
+        def close(self):
+            return None
+
+    context_module = types.ModuleType("backend.chat.request_context")
+    context_module.ChatRequestContext = FakeContext
+    monkeypatch.setitem(sys.modules, "backend.chat.request_context", context_module)
+
+    class FakeProviderError(Exception):
+        pass
+
+    core_module = types.ModuleType("backend.providers.core")
+    core_module.ProviderError = FakeProviderError
+    monkeypatch.setitem(sys.modules, "backend.providers.core", core_module)
+
+    runtime_module = types.ModuleType("backend.providers.runtime")
+    runtime_module.provider_runtime = runtime
+    monkeypatch.setitem(sys.modules, "backend.providers.runtime", runtime_module)
+
+    pipeline_module = types.ModuleType("backend.rag.pipeline")
+    pipeline_module.run_rag_graph = run_graph
+    pipeline_module.resume_rag_from_hitl = lambda *args, **kwargs: run_graph(
+        *args, **kwargs
+    )
+    monkeypatch.setitem(sys.modules, "backend.rag.pipeline", pipeline_module)
+
+
+def test_live_adapter_wraps_start_failure(monkeypatch):
+    class Runtime:
+        def readiness(self):
+            return SimpleNamespace(running=False)
+
+        def start_sync(self):
+            raise RuntimeError("secret start detail")
+
+    _install_live_modules(
+        monkeypatch,
+        runtime=Runtime(),
+        run_graph=lambda *args, **kwargs: {},
+    )
+
+    with pytest.raises(RagEvalExecutionError, match="could not start"):
+        LiveRagEvalAdapter().execute(RagEvalDataset(name="dataset", cases=(_case(),)))
+
+
+def test_live_adapter_wraps_close_failure_without_masking_primary_error(monkeypatch):
+    class Runtime:
+        def readiness(self):
+            return SimpleNamespace(running=False)
+
+        def start_sync(self):
+            return None
+
+        def close_sync(self):
+            raise RuntimeError("secret close detail")
+
+    runtime = Runtime()
+    _install_live_modules(
+        monkeypatch,
+        runtime=runtime,
+        run_graph=lambda *args, **kwargs: {
+            "route": "answer",
+            "retrieval_outcome": "ANSWERABLE",
+            "docs": [
+                {
+                    "chunk_id": "doc::p1::l3::0",
+                    "filename": "doc.html",
+                    "text": "evidence",
+                }
+            ],
+        },
+    )
+    dataset = RagEvalDataset(name="dataset", cases=(_case(),))
+
+    with pytest.raises(RagEvalExecutionError, match="could not close"):
+        LiveRagEvalAdapter().execute(dataset)
+
+    _install_live_modules(
+        monkeypatch,
+        runtime=runtime,
+        run_graph=lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("primary failure")
+        ),
+    )
+    with pytest.raises(RagEvalExecutionError, match="case case_1") as raised:
+        LiveRagEvalAdapter().execute(dataset)
+    assert any("also failed while closing" in note for note in raised.value.__notes__)
+
+
+def test_rag_source_fingerprint_is_stable_and_content_addressed():
+    first = rag_source_fingerprint(".")
+    second = rag_source_fingerprint(".")
+
+    assert first == second
+    assert len(first) == 64
+    assert set(first) <= set("0123456789abcdef")
+
+
+def test_corpus_and_profile_fingerprints_change_with_identity(tmp_path):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    document = corpus / "doc.html"
+    document.write_text("first", encoding="utf-8")
+    first = artifact_tree_fingerprint(corpus)
+    document.write_text("second", encoding="utf-8")
+    second = artifact_tree_fingerprint(corpus)
+
+    assert first != second
+    assert profile_fingerprint({"index_id": "v1"}) != profile_fingerprint(
+        {"index_id": "v2"}
+    )
+
+
+def test_controlled_corpus_has_one_stable_page_and_leaf_chunk_per_document():
+    corpus = ROOT / "evals/rag/corpus"
+
+    for path in sorted(corpus.glob("*.html")):
+        sections = parse_html_file_to_sections(path)
+        assert len(sections) == 1, path.name
+        assert sections[0]["page"] == 1, path.name
+        assert len(sections[0]["text"]) < 600, path.name

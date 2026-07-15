@@ -1,0 +1,68 @@
+name: RAG evaluator contract gate
+
+on:
+  pull_request:
+    paths:
+      - "backend/core/settings.py"
+      - "backend/evaluation/**"
+      - "backend/indexing/**"
+      - "backend/providers/**"
+      - "backend/rag/**"
+      - "evals/rag/**"
+      - "scripts/evaluate_rag.py"
+      - "tests/test_rag_eval*.py"
+      - ".github/workflows/rag-eval.yml"
+  workflow_dispatch:
+
+jobs:
+  offline-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --dev --locked
+      - name: Run evaluation unit tests
+        run: uv run pytest -q tests/test_rag_evaluation.py tests/test_rag_eval_cli.py tests/test_rag_eval_adapters.py
+      - name: Verify evaluation schemas
+        run: uv run python scripts/generate_rag_eval_schemas.py --check
+      - name: Rebuild and verify committed baseline
+        run: |
+          uv run python scripts/evaluate_rag.py score \
+            --dataset evals/rag/rag_smoke_v1.json \
+            --observations evals/rag/offline_smoke_observations_v1.json \
+            --gates evals/rag/gates_v1.json \
+            --report /tmp/rebuilt-rag-baseline.json \
+            --fail-on-regression
+          cmp /tmp/rebuilt-rag-baseline.json evals/rag/baseline_v1.json
+      - name: Resolve base-branch baseline
+        run: |
+          if git cat-file -e "origin/${{ github.base_ref }}:evals/rag/baseline_v1.json"; then
+            git show "origin/${{ github.base_ref }}:evals/rag/baseline_v1.json" > /tmp/base-rag-baseline.json
+          else
+            cp evals/rag/baseline_v1.json /tmp/base-rag-baseline.json
+          fi
+      - name: Enforce regression gates against base branch
+        run: |
+          uv run python scripts/evaluate_rag.py score \
+            --dataset evals/rag/rag_smoke_v1.json \
+            --observations evals/rag/offline_smoke_observations_v1.json \
+            --gates evals/rag/gates_v1.json \
+            --baseline /tmp/base-rag-baseline.json \
+            --allow-source-mismatch \
+            --report /tmp/rag-eval-report.json \
+            --markdown /tmp/rag-eval-report.md \
+            --fail-on-regression
+      - name: Upload sanitized report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-eval-report
+          path: |
+            /tmp/rag-eval-report.json
+            /tmp/rag-eval-report.md
+          if-no-files-found: ignore

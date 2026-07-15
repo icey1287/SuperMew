@@ -17,6 +17,7 @@ volumes/
 .DS_Store
 data/
 .worktrees/
+.artifacts/
 
 # Node / Frontend development
 node_modules/

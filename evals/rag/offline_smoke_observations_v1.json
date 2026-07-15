@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "dataset_fingerprint": "5056cd2e320d5821813b9bdc352b555abf961801f7d58663f0a359850b215254",
+  "observations": [
+    {
+      "case_id": "single_fact_payload",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 12,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-overview.html::p1::l3::0", "canonical_name": "orion-overview.html"},
+        {"rank": 2, "chunk_id": "lumen-overview.html::p1::l3::0", "canonical_name": "lumen-overview.html"}
+      ]
+    },
+    {
+      "case_id": "definition_orion",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 11,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-overview.html::p1::l3::0", "canonical_name": "orion-overview.html"}
+      ]
+    },
+    {
+      "case_id": "parameter_network_port",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 13,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-network.html::p1::l3::0", "canonical_name": "orion-network.html"}
+      ]
+    },
+    {
+      "case_id": "cross_document_north_support",
+      "complexity": "complex",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 23,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-sites.html::p1::l3::0", "canonical_name": "orion-sites.html"},
+        {"rank": 2, "chunk_id": "orion-plans.html::p1::l3::0", "canonical_name": "orion-plans.html"}
+      ]
+    },
+    {
+      "case_id": "comparison_orion_lumen",
+      "complexity": "complex",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 22,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-overview.html::p1::l3::0", "canonical_name": "orion-overview.html"},
+        {"rank": 2, "chunk_id": "lumen-overview.html::p1::l3::0", "canonical_name": "lumen-overview.html"}
+      ]
+    },
+    {
+      "case_id": "temporal_latest_payload",
+      "complexity": "complex",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 19,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-versions.html::p1::l3::0", "canonical_name": "orion-versions.html"}
+      ]
+    },
+    {
+      "case_id": "table_enterprise_plan",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 14,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-plans.html::p1::l3::0", "canonical_name": "orion-plans.html"}
+      ]
+    },
+    {
+      "case_id": "code_stop_e17",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 15,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-sdk.html::p1::l3::0", "canonical_name": "orion-sdk.html"}
+      ]
+    },
+    {
+      "case_id": "ambiguity_product_payload",
+      "complexity": "simple",
+      "route": "clarify",
+      "outcome": "INSUFFICIENT_EVIDENCE",
+      "hitl": "clarify",
+      "hitl_resolution_success": true,
+      "hitl_final_outcome": "ANSWERABLE",
+      "rewrite_performed": false,
+      "duration_ms": 18,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-overview.html::p1::l3::0", "canonical_name": "orion-overview.html"}
+      ]
+    },
+    {
+      "case_id": "scope_select_version",
+      "complexity": "simple",
+      "route": "scope_select",
+      "outcome": "INSUFFICIENT_EVIDENCE",
+      "hitl": "scope_select",
+      "hitl_resolution_success": true,
+      "hitl_final_outcome": "ANSWERABLE",
+      "rewrite_performed": false,
+      "duration_ms": 20,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-versions.html::p1::l3::0", "canonical_name": "orion-versions.html"}
+      ]
+    },
+    {
+      "case_id": "no_knowledge_color",
+      "complexity": "simple",
+      "route": "no_knowledge",
+      "outcome": "NO_KNOWLEDGE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 10,
+      "retrieved_chunks": []
+    },
+    {
+      "case_id": "source_conflict_estop",
+      "complexity": "complex",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 25,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-overview.html::p1::l3::0", "canonical_name": "orion-overview.html"},
+        {"rank": 2, "chunk_id": "orion-legacy-safety.html::p1::l3::0", "canonical_name": "orion-legacy-safety.html"}
+      ]
+    },
+    {
+      "case_id": "near_entity_lumen_port",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 12,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "lumen-overview.html::p1::l3::0", "canonical_name": "lumen-overview.html"},
+        {"rank": 2, "chunk_id": "orion-network.html::p1::l3::0", "canonical_name": "orion-network.html"}
+      ]
+    },
+    {
+      "case_id": "typo_e17",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": true,
+      "duration_ms": 24,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-maintenance.html::p1::l3::0", "canonical_name": "orion-maintenance.html"}
+      ],
+      "initial_retrieved_chunks": [
+        {"rank": 1, "chunk_id": "lumen-overview.html::p1::l3::0", "canonical_name": "lumen-overview.html"}
+      ],
+      "rewrite_retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-maintenance.html::p1::l3::0", "canonical_name": "orion-maintenance.html"}
+      ]
+    },
+    {
+      "case_id": "long_question_operations",
+      "complexity": "complex",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 29,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-sites.html::p1::l3::0", "canonical_name": "orion-sites.html"},
+        {"rank": 2, "chunk_id": "orion-network.html::p1::l3::0", "canonical_name": "orion-network.html"},
+        {"rank": 3, "chunk_id": "orion-maintenance.html::p1::l3::0", "canonical_name": "orion-maintenance.html"},
+        {"rank": 4, "chunk_id": "orion-plans.html::p1::l3::0", "canonical_name": "orion-plans.html"}
+      ]
+    },
+    {
+      "case_id": "prompt_injection_document",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 16,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-security.html::p1::l3::0", "canonical_name": "orion-security.html"}
+      ]
+    },
+    {
+      "case_id": "version_deprecated_field",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 13,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-versions.html::p1::l3::0", "canonical_name": "orion-versions.html"}
+      ]
+    },
+    {
+      "case_id": "maintenance_battery_cycles",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 12,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-maintenance.html::p1::l3::0", "canonical_name": "orion-maintenance.html"}
+      ]
+    },
+    {
+      "case_id": "retry_policy_control_command",
+      "complexity": "simple",
+      "route": "answer",
+      "outcome": "ANSWERABLE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 14,
+      "retrieved_chunks": [
+        {"rank": 1, "chunk_id": "orion-network.html::p1::l3::0", "canonical_name": "orion-network.html"}
+      ]
+    },
+    {
+      "case_id": "no_knowledge_operating_temperature",
+      "complexity": "simple",
+      "route": "no_knowledge",
+      "outcome": "NO_KNOWLEDGE",
+      "hitl": "none",
+      "rewrite_performed": false,
+      "duration_ms": 9,
+      "retrieved_chunks": []
+    }
+  ]
+}

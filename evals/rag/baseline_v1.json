@@ -1,0 +1,4353 @@
+{
+  "case_count": 20,
+  "cases": [
+    {
+      "case_id": "ambiguity_product_payload",
+      "checks": {
+        "complexity": null,
+        "hitl": true,
+        "hitl_final_outcome": true,
+        "hitl_resolution": true,
+        "outcome": true,
+        "retrieval_hit_at_10": null,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 0,
+      "matched_gold_chunk_count": 0,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 18.0,
+        "gold_chunk_coverage": null,
+        "mrr_at_1": null,
+        "mrr_at_10": null,
+        "mrr_at_3": null,
+        "mrr_at_5": null,
+        "ndcg_at_1": null,
+        "ndcg_at_10": null,
+        "ndcg_at_3": null,
+        "ndcg_at_5": null,
+        "parent_expansion_precision": null,
+        "precision_at_1": null,
+        "precision_at_10": null,
+        "precision_at_3": null,
+        "precision_at_5": null,
+        "provider_failed": 0.0,
+        "recall_at_1": null,
+        "recall_at_10": null,
+        "recall_at_3": null,
+        "recall_at_5": null,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "code_stop_e17",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 15.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "comparison_orion_lumen",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 2,
+      "matched_gold_chunk_count": 2,
+      "metrics": {
+        "document_recall_at_1": 0.5,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 22.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.2,
+        "precision_at_3": 0.666666666667,
+        "precision_at_5": 0.4,
+        "provider_failed": 0.0,
+        "recall_at_1": 0.5,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "cross_document_north_support",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 2,
+      "matched_gold_chunk_count": 2,
+      "metrics": {
+        "document_recall_at_1": 0.5,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 23.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.2,
+        "precision_at_3": 0.666666666667,
+        "precision_at_5": 0.4,
+        "provider_failed": 0.0,
+        "recall_at_1": 0.5,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "definition_orion",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 11.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "long_question_operations",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 4,
+      "matched_gold_chunk_count": 4,
+      "metrics": {
+        "document_recall_at_1": 0.25,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 0.75,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 29.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.4,
+        "precision_at_3": 1.0,
+        "precision_at_5": 0.8,
+        "provider_failed": 0.0,
+        "recall_at_1": 0.25,
+        "recall_at_10": 1.0,
+        "recall_at_3": 0.75,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "maintenance_battery_cycles",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 12.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "near_entity_lumen_port",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 12.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "no_knowledge_color",
+      "checks": {
+        "complexity": null,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": null,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 0,
+      "matched_gold_chunk_count": 0,
+      "metrics": {
+        "document_recall_at_1": null,
+        "document_recall_at_10": null,
+        "document_recall_at_3": null,
+        "document_recall_at_5": null,
+        "duration_ms": 10.0,
+        "gold_chunk_coverage": null,
+        "mrr_at_1": null,
+        "mrr_at_10": null,
+        "mrr_at_3": null,
+        "mrr_at_5": null,
+        "ndcg_at_1": null,
+        "ndcg_at_10": null,
+        "ndcg_at_3": null,
+        "ndcg_at_5": null,
+        "parent_expansion_precision": null,
+        "precision_at_1": null,
+        "precision_at_10": null,
+        "precision_at_3": null,
+        "precision_at_5": null,
+        "provider_failed": 0.0,
+        "recall_at_1": null,
+        "recall_at_10": null,
+        "recall_at_3": null,
+        "recall_at_5": null,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "no_knowledge_operating_temperature",
+      "checks": {
+        "complexity": null,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": null,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 0,
+      "matched_gold_chunk_count": 0,
+      "metrics": {
+        "document_recall_at_1": null,
+        "document_recall_at_10": null,
+        "document_recall_at_3": null,
+        "document_recall_at_5": null,
+        "duration_ms": 9.0,
+        "gold_chunk_coverage": null,
+        "mrr_at_1": null,
+        "mrr_at_10": null,
+        "mrr_at_3": null,
+        "mrr_at_5": null,
+        "ndcg_at_1": null,
+        "ndcg_at_10": null,
+        "ndcg_at_3": null,
+        "ndcg_at_5": null,
+        "parent_expansion_precision": null,
+        "precision_at_1": null,
+        "precision_at_10": null,
+        "precision_at_3": null,
+        "precision_at_5": null,
+        "provider_failed": 0.0,
+        "recall_at_1": null,
+        "recall_at_10": null,
+        "recall_at_3": null,
+        "recall_at_5": null,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "parameter_network_port",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 13.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "prompt_injection_document",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 16.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "retry_policy_control_command",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 14.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "scope_select_version",
+      "checks": {
+        "complexity": null,
+        "hitl": true,
+        "hitl_final_outcome": true,
+        "hitl_resolution": true,
+        "outcome": true,
+        "retrieval_hit_at_10": null,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 0,
+      "matched_gold_chunk_count": 0,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 20.0,
+        "gold_chunk_coverage": null,
+        "mrr_at_1": null,
+        "mrr_at_10": null,
+        "mrr_at_3": null,
+        "mrr_at_5": null,
+        "ndcg_at_1": null,
+        "ndcg_at_10": null,
+        "ndcg_at_3": null,
+        "ndcg_at_5": null,
+        "parent_expansion_precision": null,
+        "precision_at_1": null,
+        "precision_at_10": null,
+        "precision_at_3": null,
+        "precision_at_5": null,
+        "provider_failed": 0.0,
+        "recall_at_1": null,
+        "recall_at_10": null,
+        "recall_at_3": null,
+        "recall_at_5": null,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "single_fact_payload",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 12.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "source_conflict_estop",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": true,
+      "gold_chunk_count": 2,
+      "matched_gold_chunk_count": 2,
+      "metrics": {
+        "document_recall_at_1": 0.5,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 25.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.2,
+        "precision_at_3": 0.666666666667,
+        "precision_at_5": 0.4,
+        "provider_failed": 0.0,
+        "recall_at_1": 0.5,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "table_enterprise_plan",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 14.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "temporal_latest_payload",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 19.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "typo_e17",
+      "checks": {
+        "complexity": null,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 24.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": 1.0,
+        "rewrite_recall_delta_at_10": 1.0
+      },
+      "passed": true,
+      "provider_failed": false
+    },
+    {
+      "case_id": "version_deprecated_field",
+      "checks": {
+        "complexity": true,
+        "hitl": true,
+        "hitl_final_outcome": null,
+        "hitl_resolution": null,
+        "outcome": true,
+        "retrieval_hit_at_10": true,
+        "route": true
+      },
+      "critical": false,
+      "gold_chunk_count": 1,
+      "matched_gold_chunk_count": 1,
+      "metrics": {
+        "document_recall_at_1": 1.0,
+        "document_recall_at_10": 1.0,
+        "document_recall_at_3": 1.0,
+        "document_recall_at_5": 1.0,
+        "duration_ms": 13.0,
+        "gold_chunk_coverage": 1.0,
+        "mrr_at_1": 1.0,
+        "mrr_at_10": 1.0,
+        "mrr_at_3": 1.0,
+        "mrr_at_5": 1.0,
+        "ndcg_at_1": 1.0,
+        "ndcg_at_10": 1.0,
+        "ndcg_at_3": 1.0,
+        "ndcg_at_5": 1.0,
+        "parent_expansion_precision": null,
+        "precision_at_1": 1.0,
+        "precision_at_10": 0.1,
+        "precision_at_3": 0.333333333333,
+        "precision_at_5": 0.2,
+        "provider_failed": 0.0,
+        "recall_at_1": 1.0,
+        "recall_at_10": 1.0,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "rewrite_improved_at_10": null,
+        "rewrite_recall_delta_at_10": null
+      },
+      "passed": true,
+      "provider_failed": false
+    }
+  ],
+  "dataset_fingerprint": "5056cd2e320d5821813b9bdc352b555abf961801f7d58663f0a359850b215254",
+  "dataset_name": "orion_controlled_rag_smoke_v1",
+  "gates": [
+    {
+      "actual": null,
+      "baseline": null,
+      "detail": "provenance=contract_smoke",
+      "metric": null,
+      "name": "required_provenance",
+      "status": "passed",
+      "threshold": null
+    },
+    {
+      "actual": null,
+      "baseline": null,
+      "detail": "all current critical cases pass; no baseline report",
+      "metric": null,
+      "name": "critical_no_regression",
+      "status": "passed",
+      "threshold": null
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "case_pass_rate",
+      "name": "metric:case_pass_rate",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "complexity_accuracy",
+      "name": "metric:complexity_accuracy",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "document_recall_at_10",
+      "name": "metric:document_recall_at_10",
+      "status": "passed",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "gold_chunk_coverage",
+      "name": "metric:gold_chunk_coverage",
+      "status": "passed",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "hitl_accuracy",
+      "name": "metric:hitl_accuracy",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "hitl_final_outcome_accuracy",
+      "name": "metric:hitl_final_outcome_accuracy",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "hitl_resolution_success_rate",
+      "name": "metric:hitl_resolution_success_rate",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "mrr_at_10",
+      "name": "metric:mrr_at_10",
+      "status": "passed",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "ndcg_at_10",
+      "name": "metric:ndcg_at_10",
+      "status": "passed",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "outcome_accuracy",
+      "name": "metric:outcome_accuracy",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 0.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "provider_failure_rate",
+      "name": "metric:provider_failure_rate",
+      "status": "passed",
+      "threshold": 0.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "recall_at_10",
+      "name": "metric:recall_at_10",
+      "status": "passed",
+      "threshold": 0.95
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "rewrite_improvement_rate_at_10",
+      "name": "metric:rewrite_improvement_rate_at_10",
+      "status": "passed",
+      "threshold": 1.0
+    },
+    {
+      "actual": 1.0,
+      "baseline": null,
+      "detail": "gate satisfied",
+      "metric": "route_accuracy",
+      "name": "metric:route_accuracy",
+      "status": "passed",
+      "threshold": 1.0
+    }
+  ],
+  "metadata": {
+    "adapter": "prediction_file",
+    "corpus_fingerprint": "10b8700eb5a67e683676270fe19b1cf282a9a48668744273e025d420e7e2bd87",
+    "corpus_id": "orion_controlled_rag_smoke_v1",
+    "index_id": "controlled-corpus-v1",
+    "profile_fingerprint": "3c28851ecfd9c4c3a67b33cb442deea05ae8e513599d77214a5d9907ba392291",
+    "profile_id": "offline-smoke-v1",
+    "provenance": "contract_smoke",
+    "rag_source_fingerprint": "cda2986bed40919e35462399deb4dbf6a631af4a1507c8dadcc7bcea1ba50c54",
+    "source_mismatch_override": false
+  },
+  "metrics": {
+    "case_pass_rate": {
+      "eligible_cases": 20,
+      "value": 1.0
+    },
+    "complexity_accuracy": {
+      "eligible_cases": 15,
+      "value": 1.0
+    },
+    "document_recall_at_1": {
+      "eligible_cases": 18,
+      "value": 0.875
+    },
+    "document_recall_at_10": {
+      "eligible_cases": 18,
+      "value": 1.0
+    },
+    "document_recall_at_3": {
+      "eligible_cases": 18,
+      "value": 0.986111111111
+    },
+    "document_recall_at_5": {
+      "eligible_cases": 18,
+      "value": 1.0
+    },
+    "gold_chunk_coverage": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "hitl_accuracy": {
+      "eligible_cases": 20,
+      "value": 1.0
+    },
+    "hitl_final_outcome_accuracy": {
+      "eligible_cases": 2,
+      "value": 1.0
+    },
+    "hitl_resolution_success_rate": {
+      "eligible_cases": 2,
+      "value": 1.0
+    },
+    "latency_mean_ms": {
+      "eligible_cases": 20,
+      "value": 16.55
+    },
+    "latency_p50_ms": {
+      "eligible_cases": 20,
+      "value": 14.0
+    },
+    "latency_p95_ms": {
+      "eligible_cases": 20,
+      "value": 25.0
+    },
+    "mrr_at_1": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "mrr_at_10": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "mrr_at_3": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "mrr_at_5": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "ndcg_at_1": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "ndcg_at_10": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "ndcg_at_3": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "ndcg_at_5": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "outcome_accuracy": {
+      "eligible_cases": 20,
+      "value": 1.0
+    },
+    "parent_expansion_precision": {
+      "eligible_cases": 0,
+      "value": null
+    },
+    "precision_at_1": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "precision_at_10": {
+      "eligible_cases": 16,
+      "value": 0.1375
+    },
+    "precision_at_3": {
+      "eligible_cases": 16,
+      "value": 0.4375
+    },
+    "precision_at_5": {
+      "eligible_cases": 16,
+      "value": 0.275
+    },
+    "provider_failure_rate": {
+      "eligible_cases": 20,
+      "value": 0.0
+    },
+    "recall_at_1": {
+      "eligible_cases": 16,
+      "value": 0.859375
+    },
+    "recall_at_10": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "recall_at_3": {
+      "eligible_cases": 16,
+      "value": 0.984375
+    },
+    "recall_at_5": {
+      "eligible_cases": 16,
+      "value": 1.0
+    },
+    "rewrite_improved_at_10": {
+      "eligible_cases": 1,
+      "value": 1.0
+    },
+    "rewrite_improvement_rate_at_10": {
+      "eligible_cases": 1,
+      "value": 1.0
+    },
+    "rewrite_recall_delta_at_10": {
+      "eligible_cases": 1,
+      "value": 1.0
+    },
+    "route_accuracy": {
+      "eligible_cases": 20,
+      "value": 1.0
+    }
+  },
+  "observation_count": 20,
+  "passed": true,
+  "schema_version": 1,
+  "slices": {
+    "ambiguity": {
+      "case_count": 2,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 2,
+          "value": 19.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 2,
+          "value": 18.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 2,
+          "value": 20.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 2,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        }
+      }
+    },
+    "code": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 15.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 15.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 15.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "comparison": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 0.5
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 22.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 22.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 22.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.666666666667
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.4
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 0.5
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "cross_document": {
+      "case_count": 2,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 2,
+          "value": 0.375
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 2,
+          "value": 0.875
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 2,
+          "value": 26.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 2,
+          "value": 23.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 2,
+          "value": 29.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 2,
+          "value": 0.3
+        },
+        "precision_at_3": {
+          "eligible_cases": 2,
+          "value": 0.833333333334
+        },
+        "precision_at_5": {
+          "eligible_cases": 2,
+          "value": 0.6
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 2,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 2,
+          "value": 0.375
+        },
+        "recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 2,
+          "value": 0.875
+        },
+        "recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        }
+      }
+    },
+    "definition": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 11.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 11.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 11.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "long_question": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 0.25
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 0.75
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 29.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 29.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 29.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.4
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.8
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 0.25
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 0.75
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "multi_hop": {
+      "case_count": 2,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 2,
+          "value": 0.375
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 2,
+          "value": 0.875
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 2,
+          "value": 26.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 2,
+          "value": 23.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 2,
+          "value": 29.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 2,
+          "value": 0.3
+        },
+        "precision_at_3": {
+          "eligible_cases": 2,
+          "value": 0.833333333334
+        },
+        "precision_at_5": {
+          "eligible_cases": 2,
+          "value": 0.6
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 2,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 2,
+          "value": 0.375
+        },
+        "recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 2,
+          "value": 0.875
+        },
+        "recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        }
+      }
+    },
+    "near_entity": {
+      "case_count": 2,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 2,
+          "value": 0.75
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 2,
+          "value": 17.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 2,
+          "value": 12.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 2,
+          "value": 22.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 2,
+          "value": 0.15
+        },
+        "precision_at_3": {
+          "eligible_cases": 2,
+          "value": 0.5
+        },
+        "precision_at_5": {
+          "eligible_cases": 2,
+          "value": 0.3
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 2,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 2,
+          "value": 0.75
+        },
+        "recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        }
+      }
+    },
+    "needs_hitl": {
+      "case_count": 2,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 2,
+          "value": 19.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 2,
+          "value": 18.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 2,
+          "value": 20.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 2,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        }
+      }
+    },
+    "no_knowledge": {
+      "case_count": 2,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 2,
+          "value": 9.5
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 2,
+          "value": 9.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 2,
+          "value": 10.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "mrr_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 2,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_3": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "recall_at_5": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 2,
+          "value": 1.0
+        }
+      }
+    },
+    "parameter": {
+      "case_count": 4,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 4,
+          "value": 13.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 4,
+          "value": 13.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 4,
+          "value": 14.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 4,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 4,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 4,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 4,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        }
+      }
+    },
+    "prompt_injection": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "retrieval_only": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "rewrite": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 24.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 24.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 24.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "safety": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 14.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 14.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 14.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "security": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 16.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "single_fact": {
+      "case_count": 3,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 3,
+          "value": 12.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 3,
+          "value": 12.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 3,
+          "value": 12.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 3,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 3,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 3,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 3,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 3,
+          "value": 1.0
+        }
+      }
+    },
+    "source_conflict": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 0.5
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 25.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 25.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 25.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.666666666667
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.4
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 0.5
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "table": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 14.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 14.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 14.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    },
+    "time_version": {
+      "case_count": 4,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 4,
+          "value": 0.875
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 4,
+          "value": 19.25
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 4,
+          "value": 19.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 4,
+          "value": 25.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 3,
+          "value": 0.133333333333
+        },
+        "precision_at_3": {
+          "eligible_cases": 3,
+          "value": 0.444444444444
+        },
+        "precision_at_5": {
+          "eligible_cases": 3,
+          "value": 0.266666666667
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 4,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 3,
+          "value": 0.833333333333
+        },
+        "recall_at_10": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 3,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "route_accuracy": {
+          "eligible_cases": 4,
+          "value": 1.0
+        }
+      }
+    },
+    "typo": {
+      "case_count": 1,
+      "metrics": {
+        "case_pass_rate": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "complexity_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "document_recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "document_recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "gold_chunk_coverage": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "hitl_final_outcome_accuracy": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "hitl_resolution_success_rate": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "latency_mean_ms": {
+          "eligible_cases": 1,
+          "value": 24.0
+        },
+        "latency_p50_ms": {
+          "eligible_cases": 1,
+          "value": 24.0
+        },
+        "latency_p95_ms": {
+          "eligible_cases": 1,
+          "value": 24.0
+        },
+        "mrr_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "mrr_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "ndcg_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "outcome_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "parent_expansion_precision": {
+          "eligible_cases": 0,
+          "value": null
+        },
+        "precision_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "precision_at_10": {
+          "eligible_cases": 1,
+          "value": 0.1
+        },
+        "precision_at_3": {
+          "eligible_cases": 1,
+          "value": 0.333333333333
+        },
+        "precision_at_5": {
+          "eligible_cases": 1,
+          "value": 0.2
+        },
+        "provider_failure_rate": {
+          "eligible_cases": 1,
+          "value": 0.0
+        },
+        "recall_at_1": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_3": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "recall_at_5": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improved_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_improvement_rate_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "rewrite_recall_delta_at_10": {
+          "eligible_cases": 1,
+          "value": 1.0
+        },
+        "route_accuracy": {
+          "eligible_cases": 1,
+          "value": 1.0
+        }
+      }
+    }
+  },
+  "unavailable_metrics": {
+    "answer_correctness": "stable answer-judge Interface is not available",
+    "citation_precision": "stable citation identity Interface is not available",
+    "citation_recall": "stable citation identity Interface is not available",
+    "conflict_disclosure_rate": "structured conflict claims are not available",
+    "groundedness": "stable claim-to-evidence Interface is not available",
+    "parent_expansion_precision": "retrieved parent chunks do not yet expose stable child lineage",
+    "unsupported_claim_rate": "structured answer claims are not available"
+  }
+}

@@ -1,0 +1,267 @@
+{
+  "$defs": {
+    "RagComplexity": {
+      "enum": [
+        "simple",
+        "complex"
+      ],
+      "title": "RagComplexity",
+      "type": "string"
+    },
+    "RagEvalObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "complexity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagComplexity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "number"
+        },
+        "hitl": {
+          "$ref": "#/$defs/RagHitlKind",
+          "default": "none"
+        },
+        "hitl_final_outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hitl_resolution_success": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hitl Resolution Success"
+        },
+        "initial_retrieved_chunks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RagRetrievedChunk"
+          },
+          "title": "Initial Retrieved Chunks",
+          "type": "array"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provider_error_code": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Error Code"
+        },
+        "retrieved_chunks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RagRetrievedChunk"
+          },
+          "title": "Retrieved Chunks",
+          "type": "array"
+        },
+        "rewrite_performed": {
+          "default": false,
+          "title": "Rewrite Performed",
+          "type": "boolean"
+        },
+        "rewrite_retrieved_chunks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RagRetrievedChunk"
+          },
+          "title": "Rewrite Retrieved Chunks",
+          "type": "array"
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "case_id",
+        "duration_ms"
+      ],
+      "title": "RagEvalObservation",
+      "type": "object"
+    },
+    "RagHitlKind": {
+      "enum": [
+        "none",
+        "clarify",
+        "scope_select"
+      ],
+      "title": "RagHitlKind",
+      "type": "string"
+    },
+    "RagOutcome": {
+      "enum": [
+        "ANSWERABLE",
+        "NO_KNOWLEDGE",
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "title": "RagOutcome",
+      "type": "string"
+    },
+    "RagRetrievedChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Name"
+        },
+        "chunk_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Id"
+        },
+        "content_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Sha256"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "merged_from_children": {
+          "default": false,
+          "title": "Merged From Children",
+          "type": "boolean"
+        },
+        "rank": {
+          "minimum": 1,
+          "title": "Rank",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rank"
+      ],
+      "title": "RagRetrievedChunk",
+      "type": "object"
+    },
+    "RagRoute": {
+      "enum": [
+        "answer",
+        "rewrite",
+        "clarify",
+        "scope_select",
+        "no_knowledge",
+        "insufficient_evidence",
+        "provider_failed"
+      ],
+      "title": "RagRoute",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "dataset_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dataset Fingerprint",
+      "type": "string"
+    },
+    "observations": {
+      "items": {
+        "$ref": "#/$defs/RagEvalObservation"
+      },
+      "title": "Observations",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "dataset_fingerprint",
+    "observations"
+  ],
+  "title": "RagEvalObservationBundle",
+  "type": "object"
+}
