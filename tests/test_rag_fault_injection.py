@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from backend.providers import ProviderCode, ProviderError, ProviderExecutor
 from test_rag_latency_guards import load_utils
@@ -28,6 +28,42 @@ class _NeverCalledStore:
         return []
 
 
+class _RerankStageStub:
+    def __init__(
+        self,
+        *,
+        enabled=True,
+        error_code=None,
+        retryable=None,
+        attempts=0,
+    ):
+        self.enabled = enabled
+        self.error_code = error_code
+        self.retryable = retryable
+        self.attempts = attempts
+
+    def run(self, query, docs, top_k, **kwargs):
+        del query, kwargs
+        ranked = [{**doc, "rrf_rank": index} for index, doc in enumerate(docs, 1)]
+        selected = ranked[:top_k]
+        return selected, {
+            "rerank_enabled": self.enabled,
+            "rerank_applied": False,
+            "rerank_model": "rerank-model" if self.enabled else None,
+            "rerank_error_code": self.error_code,
+            "rerank_retryable": self.retryable,
+            "rerank_attempts": self.attempts,
+            "rerank_fallback_applied": self.error_code is not None,
+            "rerank_timeout_seconds": 5.0 if self.enabled else 0.0,
+            "rerank_min_score": 0.5,
+            "rerank_threshold_applied": False,
+            "rerank_skip_reason": None if self.enabled else "disabled",
+            "candidate_count": len(ranked),
+            "post_rerank_count": len(selected),
+            "post_threshold_count": len(selected),
+        }
+
+
 class RagFaultInjectionTests(unittest.TestCase):
     def _utils(self, **env):
         defaults = {
@@ -52,7 +88,7 @@ class RagFaultInjectionTests(unittest.TestCase):
             utils.retrieve_documents("query", top_k=1)
 
         self.assertEqual(ProviderCode.EMBEDDING_UNAVAILABLE, raised.exception.code)
-        self.assertEqual(2, embedding.calls)
+        self.assertEqual(1, embedding.calls)
         self.assertEqual(0, store.calls)
         self.assertNotIn("secret", raised.exception.message)
         self.assertNotIn("secret", str(raised.exception.safe_details))
@@ -129,17 +165,14 @@ class RagFaultInjectionTests(unittest.TestCase):
             {"text": "second", "chunk_id": "c2", "score": 0.8},
         ]
 
-        with patch.object(
-            utils.requests,
-            "post",
-            side_effect=utils.requests.exceptions.Timeout(
-                "https://internal.example.test/secret top-secret-key"
-            ),
-        ) as post:
-            reranked, meta = utils._rerank_documents("query", docs, 2)
+        utils._rerank_stage = _RerankStageStub(
+            error_code="RERANK_TIMEOUT",
+            retryable=True,
+            attempts=2,
+        )
+        reranked, meta = utils._rerank_documents("query", docs, 2)
 
         self.assertEqual(["c1", "c2"], [item["chunk_id"] for item in reranked])
-        self.assertEqual(2, post.call_count)
         self.assertEqual("RERANK_TIMEOUT", meta["rerank_error_code"])
         self.assertFalse(meta["rerank_applied"])
         self.assertTrue(meta["rerank_fallback_applied"])
@@ -155,16 +188,16 @@ class RagFaultInjectionTests(unittest.TestCase):
             RERANK_BINDING_HOST="https://rerank.example.test",
             RERANK_API_KEY="top-secret-key",
         )
-        response = Mock(status_code=500, text="raw-secret-upstream-body", headers={})
-        error = utils.requests.HTTPError("raw-secret-upstream-body", response=response)
-        response.raise_for_status.side_effect = error
-
-        with patch.object(utils.requests, "post", return_value=response):
-            _, meta = utils._rerank_documents(
-                "query",
-                [{"text": "doc", "chunk_id": "c1", "score": 0.9}],
-                1,
-            )
+        utils._rerank_stage = _RerankStageStub(
+            error_code="RERANK_UNAVAILABLE",
+            retryable=True,
+            attempts=2,
+        )
+        _, meta = utils._rerank_documents(
+            "query",
+            [{"text": "doc", "chunk_id": "c1", "score": 0.9}],
+            1,
+        )
 
         self.assertEqual("RERANK_UNAVAILABLE", meta["rerank_error_code"])
         self.assertNotIn("raw-secret-upstream-body", str(meta))
@@ -182,15 +215,16 @@ class RagFaultInjectionTests(unittest.TestCase):
             def hybrid_retrieve(self, **kwargs):
                 return [{"text": "evidence", "chunk_id": "c1", "score": 0.1}]
 
-        response = Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {"results": [{"index": 0}]}
         utils._milvus_manager = Store()
-        with patch.object(utils.requests, "post", return_value=response):
-            result = utils.retrieve_documents("query", top_k=1)
+        utils._rerank_stage = _RerankStageStub(
+            error_code="RERANK_INVALID_RESPONSE",
+            retryable=False,
+            attempts=1,
+        )
+        result = utils.retrieve_documents("query", top_k=1)
 
         self.assertEqual(1, len(result["docs"]))
-        self.assertEqual("RERANK_UNAVAILABLE", result["meta"]["rerank_error_code"])
+        self.assertEqual("RERANK_INVALID_RESPONSE", result["meta"]["rerank_error_code"])
         self.assertTrue(result["meta"]["rerank_fallback_applied"])
         self.assertFalse(result["meta"]["rerank_threshold_applied"])
 
@@ -208,12 +242,12 @@ class RagFaultInjectionTests(unittest.TestCase):
                 return [{"text": "evidence", "chunk_id": "c1", "score": 0.1}]
 
         utils._milvus_manager = Store()
-        with patch.object(
-            utils.requests,
-            "post",
-            side_effect=utils.requests.exceptions.Timeout("secret timeout"),
-        ):
-            result = utils.retrieve_documents("query", top_k=1)
+        utils._rerank_stage = _RerankStageStub(
+            error_code="RERANK_TIMEOUT",
+            retryable=True,
+            attempts=2,
+        )
+        result = utils.retrieve_documents("query", top_k=1)
 
         self.assertEqual(1, len(result["docs"]))
         self.assertFalse(result["meta"]["retrieval_empty"])
@@ -229,6 +263,7 @@ class RagFaultInjectionTests(unittest.TestCase):
                 return [{"text": "evidence", "chunk_id": "c1", "score": 0.1}]
 
         utils._milvus_manager = Store()
+        utils._rerank_stage = _RerankStageStub(enabled=False)
         result = utils.retrieve_documents("query", top_k=1)
 
         self.assertEqual(1, len(result["docs"]))

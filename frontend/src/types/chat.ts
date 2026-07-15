@@ -57,6 +57,14 @@ export interface RagTraceFields {
   rerank_timeout_seconds?: number;
   rerank_min_score?: number;
   rerank_threshold_applied?: boolean | null;
+  rerank_skip_reason?: string | null;
+  rerank_candidate_count?: number;
+  rerank_candidate_limit?: number;
+  rerank_candidate_limit_applied?: boolean | null;
+  rerank_payload_characters?: number;
+  rerank_document_character_limit?: number;
+  rerank_total_character_limit?: number;
+  rerank_truncated_document_count?: number;
   post_rerank_count?: number;
   post_threshold_count?: number;
   retrieval_empty?: boolean;

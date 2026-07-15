@@ -72,6 +72,162 @@ class RagSettings(_EnvSettings):
     )
 
 
+class EmbeddingSettings(_EnvSettings):
+    model: str = Field(default="BAAI/bge-m3", validation_alias="EMBEDDING_MODEL")
+    revision: str = Field(default="main", validation_alias="EMBEDDING_MODEL_REVISION")
+    device: str = Field(default="cpu", validation_alias="EMBEDDING_DEVICE")
+    dimension: int = Field(
+        default=1024,
+        ge=1,
+        validation_alias="DENSE_EMBEDDING_DIM",
+    )
+    timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=600,
+        validation_alias="EMBEDDING_TIMEOUT_SECONDS",
+    )
+    executor_workers: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        validation_alias="EMBEDDING_EXECUTOR_WORKERS",
+    )
+    max_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=32,
+        validation_alias="EMBEDDING_MAX_CONCURRENCY",
+    )
+    query_microbatch_ms: float = Field(
+        default=20.0,
+        ge=0,
+        le=1000,
+        validation_alias="EMBEDDING_QUERY_MICROBATCH_MS",
+    )
+    query_max_batch_size: int = Field(
+        default=16,
+        ge=1,
+        le=256,
+        validation_alias="EMBEDDING_QUERY_MAX_BATCH_SIZE",
+    )
+    query_queue_size: int = Field(
+        default=128,
+        ge=1,
+        le=10000,
+        validation_alias="EMBEDDING_QUERY_QUEUE_SIZE",
+    )
+    query_cache_size: int = Field(
+        default=1024,
+        ge=0,
+        le=100000,
+        validation_alias="EMBEDDING_QUERY_CACHE_SIZE",
+    )
+    cache_namespace: str = Field(
+        default="default",
+        min_length=1,
+        max_length=128,
+        validation_alias="EMBEDDING_CACHE_NAMESPACE",
+    )
+    warmup_on_start: bool = Field(
+        default=True,
+        validation_alias="EMBEDDING_WARMUP_ON_START",
+    )
+
+
+def _is_placeholder(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    return (
+        not normalized
+        or normalized.startswith(("your_", "your-", "replace-with"))
+        or any(marker in normalized for marker in ("your-rerank", "your_rerank"))
+    )
+
+
+class RerankSettings(_EnvSettings):
+    model: str = Field(default="", validation_alias="RERANK_MODEL")
+    binding_host: str = Field(default="", validation_alias="RERANK_BINDING_HOST")
+    api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="RERANK_API_KEY",
+    )
+    timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=120,
+        validation_alias="RERANK_TIMEOUT_SECONDS",
+    )
+    min_score: float = Field(
+        default=0.0,
+        allow_inf_nan=False,
+        validation_alias="RERANK_MIN_SCORE",
+    )
+    max_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=128,
+        validation_alias="RERANK_MAX_CONCURRENCY",
+    )
+    max_connections: int = Field(
+        default=20,
+        ge=1,
+        le=1000,
+        validation_alias="RERANK_MAX_CONNECTIONS",
+    )
+    max_keepalive_connections: int = Field(
+        default=10,
+        ge=0,
+        le=1000,
+        validation_alias="RERANK_MAX_KEEPALIVE_CONNECTIONS",
+    )
+    candidate_limit: int = Field(
+        default=30,
+        ge=1,
+        le=500,
+        validation_alias="RERANK_CANDIDATE_LIMIT",
+    )
+    max_document_characters: int = Field(
+        default=8000,
+        ge=1,
+        validation_alias="RERANK_MAX_DOCUMENT_CHARACTERS",
+    )
+    max_total_characters: int = Field(
+        default=60000,
+        ge=1,
+        validation_alias="RERANK_MAX_TOTAL_CHARACTERS",
+    )
+    circuit_failure_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias="RERANK_CIRCUIT_FAILURE_THRESHOLD",
+    )
+    circuit_reset_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=3600,
+        validation_alias="RERANK_CIRCUIT_RESET_SECONDS",
+    )
+
+    @property
+    def enabled(self) -> bool:
+        return not any(
+            _is_placeholder(value)
+            for value in (
+                self.model,
+                self.binding_host,
+                self.api_key.get_secret_value(),
+            )
+        )
+
+    @property
+    def endpoint(self) -> str:
+        if not self.enabled:
+            return ""
+        host = self.binding_host.strip().rstrip("/")
+        return host if host.endswith("/v1/rerank") else f"{host}/v1/rerank"
+
+
 class RunSettings(_EnvSettings):
     default_deadline_seconds: float = Field(
         default=120.0,
@@ -321,6 +477,8 @@ class AppSettings(BaseModel):
     app: ApplicationSettings
     models: ModelSettings
     rag: RagSettings
+    embedding: EmbeddingSettings
+    rerank: RerankSettings
     runs: RunSettings
     agent: AgentSettings
     security: SecuritySettings
@@ -357,6 +515,8 @@ class AppSettings(BaseModel):
                 problems.append("生产环境必须配置 ARK_API_KEY")
             if not self.models.answer_model.strip():
                 problems.append("生产环境必须配置 MODEL")
+            if not self.embedding.warmup_on_start:
+                problems.append("生产环境必须启用 EMBEDDING_WARMUP_ON_START")
 
         if self.app.config_version != 1:
             problems.append(
@@ -372,6 +532,10 @@ class AppSettings(BaseModel):
                 "AGENT_RECURSION_LIMIT 与模型/工具调用预算不匹配，"
                 f"当前至少需要 {self.agent.minimum_recursion_limit}"
             )
+        if self.rerank.max_keepalive_connections > self.rerank.max_connections:
+            problems.append(
+                "RERANK_MAX_KEEPALIVE_CONNECTIONS 不能大于 RERANK_MAX_CONNECTIONS"
+            )
 
         if problems:
             raise ValueError("；".join(problems))
@@ -379,6 +543,7 @@ class AppSettings(BaseModel):
     def redacted_dict(self) -> dict:
         payload = self.model_dump(mode="json")
         payload["models"]["api_key"] = "***"
+        payload["rerank"]["api_key"] = "***"
         payload["security"]["jwt_secret_key"] = "***"
         payload["security"]["admin_invite_code"] = "***"
         payload["storage"]["database_url"] = _redact_url(
@@ -407,6 +572,8 @@ def get_settings() -> AppSettings:
         app=ApplicationSettings(),
         models=ModelSettings(),
         rag=RagSettings(),
+        embedding=EmbeddingSettings(),
+        rerank=RerankSettings(),
         runs=RunSettings(),
         agent=AgentSettings(),
         security=SecuritySettings(),

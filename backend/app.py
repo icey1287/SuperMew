@@ -25,6 +25,7 @@ from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
 from backend.events.outbox import default_publisher
 from backend.infra.database import init_db
+from backend.providers.runtime import provider_runtime
 from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 
@@ -37,28 +38,70 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         settings.validate_startup()
-        init_db()
-        await run_agent_executor.start()
-        stop_event = asyncio.Event()
-        publisher_task = asyncio.create_task(default_publisher.run(stop_event))
-        cancellation_task = asyncio.create_task(
-            cancellation_registry.listen(stop_event)
-        )
+        provider_started = False
+        executor_start_attempted = False
+        stop_event: asyncio.Event | None = None
+        publisher_task: asyncio.Task | None = None
+        cancellation_task: asyncio.Task | None = None
         try:
+            await asyncio.to_thread(init_db)
+            await provider_runtime.start()
+            provider_started = True
+            executor_start_attempted = True
+            await run_agent_executor.start()
+            stop_event = asyncio.Event()
+            publisher_task = asyncio.create_task(default_publisher.run(stop_event))
+            cancellation_task = asyncio.create_task(
+                cancellation_registry.listen(stop_event)
+            )
             yield
         finally:
-            await run_agent_executor.close()
-            stop_event.set()
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(publisher_task, cancellation_task),
-                    timeout=3,
-                )
-            except TimeoutError:
-                publisher_task.cancel()
-                cancellation_task.cancel()
-            await default_publisher.close()
-            await cancellation_registry.close()
+            cleanup_errors: list[BaseException] = []
+            if executor_start_attempted:
+                try:
+                    await run_agent_executor.close()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            if stop_event is not None:
+                stop_event.set()
+            background_tasks = [
+                task for task in (publisher_task, cancellation_task) if task is not None
+            ]
+            if background_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *background_tasks,
+                            return_exceptions=True,
+                        ),
+                        timeout=3,
+                    )
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                    for task in background_tasks:
+                        task.cancel()
+                    await asyncio.gather(
+                        *background_tasks,
+                        return_exceptions=True,
+                    )
+            if stop_event is not None:
+                for closer in (
+                    default_publisher.close,
+                    cancellation_registry.close,
+                ):
+                    try:
+                        await closer()
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+            if provider_started:
+                try:
+                    await provider_runtime.aclose()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            if len(cleanup_errors) == 1:
+                raise cleanup_errors[0]
+            if cleanup_errors:
+                raise BaseExceptionGroup("application shutdown failed", cleanup_errors)
 
     app = FastAPI(title="SuperMew API", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings

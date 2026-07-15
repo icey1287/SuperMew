@@ -37,6 +37,33 @@ class FakeMilvusStore:
         ]
 
 
+class FakeRerankStage:
+    def __init__(self, *, enabled: bool):
+        self.enabled = enabled
+
+    def run(self, query, docs, top_k, **kwargs):
+        del query, kwargs
+        selected = [
+            {**doc, "rrf_rank": index} for index, doc in enumerate(docs[:top_k], 1)
+        ]
+        return selected, {
+            "rerank_enabled": self.enabled,
+            "rerank_applied": False,
+            "rerank_model": "fake-reranker" if self.enabled else None,
+            "rerank_error_code": None,
+            "rerank_retryable": None,
+            "rerank_attempts": 0,
+            "rerank_fallback_applied": False,
+            "rerank_timeout_seconds": 5.0 if self.enabled else 0.0,
+            "rerank_min_score": 0.0,
+            "rerank_threshold_applied": False,
+            "rerank_skip_reason": None if self.enabled else "disabled",
+            "candidate_count": len(docs),
+            "post_rerank_count": len(selected),
+            "post_threshold_count": len(selected),
+        }
+
+
 def load_utils(env):
     embedding_service = FakeEmbeddingService()
     milvus_store = FakeMilvusStore()
@@ -85,6 +112,20 @@ def load_utils(env):
     ):
         spec.loader.exec_module(module)
 
+    rerank_values = [
+        str(env.get("RERANK_MODEL") or ""),
+        str(env.get("RERANK_BINDING_HOST") or ""),
+        str(env.get("RERANK_API_KEY") or ""),
+    ]
+    rerank_enabled = all(
+        value
+        and not value.lower().startswith(("your_", "your-", "replace-with"))
+        and "your-rerank" not in value.lower()
+        and "your_rerank" not in value.lower()
+        for value in rerank_values
+    )
+    module._rerank_stage = FakeRerankStage(enabled=rerank_enabled)
+
     return module, embedding_service
 
 
@@ -125,17 +166,14 @@ class RagLatencyGuardTests(unittest.TestCase):
             }
         )
 
-        with patch.object(utils.requests, "post") as post:
-            docs, meta = utils._rerank_documents(
-                "query",
-                [{"text": "doc", "chunk_id": "chunk-1", "score": 0.9}],
-                1,
-            )
+        docs, meta = utils._rerank_documents(
+            "query",
+            [{"text": "doc", "chunk_id": "chunk-1", "score": 0.9}],
+            1,
+        )
 
-        self.assertFalse(utils.RERANK_ENABLED)
         self.assertFalse(meta["rerank_enabled"])
         self.assertEqual(1, len(docs))
-        post.assert_not_called()
 
     def test_dense_fallback_reuses_the_query_embedding(self):
         utils, embedding_service = load_utils(
@@ -152,6 +190,37 @@ class RagLatencyGuardTests(unittest.TestCase):
         self.assertEqual(1, embedding_service.calls)
         self.assertEqual("dense_fallback", result["meta"]["retrieval_mode"])
         self.assertEqual(1, len(result["docs"]))
+
+    def test_retrieval_uses_query_embedding_semantics_when_available(self):
+        utils, _ = load_utils(
+            {
+                "RERANK_MODEL": "",
+                "RERANK_BINDING_HOST": "",
+                "RERANK_API_KEY": "",
+                "AUTO_MERGE_ENABLED": "false",
+            }
+        )
+
+        class SemanticEmbedding:
+            def __init__(self):
+                self.calls = []
+
+            def embed_query(self, text, **kwargs):
+                self.calls.append((text, kwargs))
+                return [0.1, 0.2]
+
+            def get_embeddings(self, texts):
+                raise AssertionError(f"query must not use document semantics: {texts}")
+
+        embedding = SemanticEmbedding()
+        utils._embedding_service = embedding
+
+        result = utils.retrieve_documents("query text", top_k=1)
+
+        self.assertEqual(1, len(embedding.calls))
+        self.assertEqual("query text", embedding.calls[0][0])
+        self.assertIn("scope", embedding.calls[0][1])
+        self.assertEqual("dense_fallback", result["meta"]["retrieval_mode"])
 
     def test_rewrite_single_choice_uses_one_model_call(self):
         utils, _ = load_utils({"AUTO_MERGE_ENABLED": "false"})

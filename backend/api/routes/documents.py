@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from backend.api.resources import (
@@ -25,6 +27,61 @@ from backend.schemas import (
 from backend.security.uploads import store_upload
 
 router = APIRouter(tags=["documents"])
+
+
+def _list_documents_sync() -> list[DocumentInfo]:
+    milvus_manager.init_collection()
+    results = milvus_manager.query(
+        output_fields=["filename", "file_type"],
+        limit=10000,
+    )
+
+    file_stats = {}
+    for item in results:
+        filename = item.get("filename", "")
+        file_type = item.get("file_type", "")
+        if filename not in file_stats:
+            file_stats[filename] = {
+                "filename": filename,
+                "file_type": file_type,
+                "chunk_count": 0,
+            }
+        file_stats[filename]["chunk_count"] += 1
+    return [DocumentInfo(**stats) for stats in file_stats.values()]
+
+
+def _store_document_sync(file_path: str, filename: str) -> tuple[int, int]:
+    delete_document_transactionally(filename)
+    try:
+        new_docs = loader.load_document(file_path, filename)
+    except Exception as exc:
+        raise AppError(
+            ErrorCode.DOCUMENT_PARSE_FAILED,
+            "文档处理失败",
+            status_code=422,
+        ) from exc
+
+    if not new_docs:
+        raise AppError(
+            ErrorCode.DOCUMENT_PARSE_FAILED,
+            "文档处理失败，未能提取内容",
+            status_code=422,
+        )
+
+    parent_docs = [
+        doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) in (1, 2)
+    ]
+    leaf_docs = [doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) == 3]
+    if not leaf_docs:
+        raise AppError(
+            ErrorCode.DOCUMENT_PARSE_FAILED,
+            "文档处理失败，未生成可检索叶子分块",
+            status_code=422,
+        )
+
+    parent_chunk_store.upsert_documents(parent_docs)
+    milvus_writer.write_documents(leaf_docs)
+    return len(parent_docs), len(leaf_docs)
 
 
 def _process_upload_job(job_id: str, file_path: str, filename: str) -> None:
@@ -122,26 +179,9 @@ def _process_delete_job(job_id: str, filename: str) -> None:
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents(_: User = Depends(require_admin)):
     try:
-        milvus_manager.init_collection()
-        results = milvus_manager.query(
-            output_fields=["filename", "file_type"],
-            limit=10000,
+        return DocumentListResponse(
+            documents=await asyncio.to_thread(_list_documents_sync)
         )
-
-        file_stats = {}
-        for item in results:
-            filename = item.get("filename", "")
-            file_type = item.get("file_type", "")
-            if filename not in file_stats:
-                file_stats[filename] = {
-                    "filename": filename,
-                    "file_type": file_type,
-                    "chunk_count": 0,
-                }
-            file_stats[filename]["chunk_count"] += 1
-
-        documents = [DocumentInfo(**stats) for stats in file_stats.values()]
-        return DocumentListResponse(documents=documents)
     except Exception as exc:
         raise AppError(
             ErrorCode.STORAGE_UNAVAILABLE,
@@ -157,7 +197,7 @@ async def upload_document_async(
     file: UploadFile = File(...),
     _: User = Depends(require_admin),
 ):
-    ensure_upload_dir()
+    await asyncio.to_thread(ensure_upload_dir)
     try:
         stored = await store_upload(file)
         filename = stored.original_name
@@ -242,51 +282,21 @@ async def upload_document(
     file: UploadFile = File(...), _: User = Depends(require_admin)
 ):
     try:
-        ensure_upload_dir()
+        await asyncio.to_thread(ensure_upload_dir)
         stored = await store_upload(file)
         filename = stored.original_name
-
-        # Cleanup existing同名文档以保证一致性
-        delete_document_transactionally(filename)
-
-        try:
-            new_docs = loader.load_document(str(stored.path), filename)
-        except Exception as exc:
-            raise AppError(
-                ErrorCode.DOCUMENT_PARSE_FAILED,
-                "文档处理失败",
-                status_code=422,
-            ) from exc
-
-        if not new_docs:
-            raise AppError(
-                ErrorCode.DOCUMENT_PARSE_FAILED,
-                "文档处理失败，未能提取内容",
-                status_code=422,
-            )
-
-        parent_docs = [
-            doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) in (1, 2)
-        ]
-        leaf_docs = [
-            doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) == 3
-        ]
-        if not leaf_docs:
-            raise AppError(
-                ErrorCode.DOCUMENT_PARSE_FAILED,
-                "文档处理失败，未生成可检索叶子分块",
-                status_code=422,
-            )
-
-        parent_chunk_store.upsert_documents(parent_docs)
-        milvus_writer.write_documents(leaf_docs)
+        parent_count, leaf_count = await asyncio.to_thread(
+            _store_document_sync,
+            str(stored.path),
+            filename,
+        )
 
         return DocumentUploadResponse(
             filename=filename,
-            chunks_processed=len(leaf_docs),
+            chunks_processed=leaf_count,
             message=(
-                f"成功上传并处理 {filename}，叶子分块 {len(leaf_docs)} 个，"
-                f"父级分块 {len(parent_docs)} 个（存入 PostgreSQL）"
+                f"成功上传并处理 {filename}，叶子分块 {leaf_count} 个，"
+                f"父级分块 {parent_count} 个（存入 PostgreSQL）"
             ),
         )
     except (HTTPException, AppError):
@@ -303,7 +313,10 @@ async def upload_document(
 @router.delete("/documents/{filename}", response_model=DocumentDeleteResponse)
 async def delete_document(filename: str, _: User = Depends(require_admin)):
     try:
-        chunks_deleted = delete_document_transactionally(filename)
+        chunks_deleted = await asyncio.to_thread(
+            delete_document_transactionally,
+            filename,
+        )
 
         return DocumentDeleteResponse(
             filename=filename,

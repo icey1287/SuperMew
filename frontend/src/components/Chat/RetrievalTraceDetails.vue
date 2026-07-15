@@ -54,7 +54,7 @@
         <div v-if="hasRetrievalFunnel(msg.ragTrace)" class="trace-line trace-funnel">
           检索漏斗：Milvus 召回 {{ msg.ragTrace.recall_count ?? '—' }}
           → 合并后 {{ msg.ragTrace.post_merge_candidate_count ?? '—' }}
-          → 精排输入 {{ msg.ragTrace.candidate_count ?? '—' }}
+          → 精排输入 {{ msg.ragTrace.rerank_candidate_count ?? msg.ragTrace.candidate_count ?? '—' }}
           → 输出 top{{ msg.ragTrace.retrieval_top_k ?? (msg.ragTrace.retrieved_chunks || []).length }}
           （{{ (msg.ragTrace.retrieved_chunks || []).length }} 条）
         </div>
@@ -84,6 +84,18 @@
         </div>
         <div v-if="msg.ragTrace.rerank_model" class="trace-line">
           Rerank模型：{{ msg.ragTrace.rerank_model }}
+        </div>
+        <div v-if="msg.ragTrace.rerank_skip_reason" class="trace-line">
+          Rerank跳过：{{ msg.ragTrace.rerank_skip_reason }}
+        </div>
+        <div v-if="msg.ragTrace.rerank_candidate_count !== null && msg.ragTrace.rerank_candidate_count !== undefined" class="trace-line">
+          Rerank输入：{{ msg.ragTrace.rerank_candidate_count }} 条
+          <span v-if="msg.ragTrace.rerank_candidate_limit_applied">
+            （候选上限 {{ msg.ragTrace.rerank_candidate_limit }}）
+          </span>
+          <span v-if="msg.ragTrace.rerank_truncated_document_count">
+            ，截断 {{ msg.ragTrace.rerank_truncated_document_count }} 条
+          </span>
         </div>
         <div v-if="msg.ragTrace.rerank_error_code" class="trace-line">
           Rerank降级：{{ msg.ragTrace.rerank_error_code }}

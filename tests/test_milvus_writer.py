@@ -66,7 +66,14 @@ class FakeMilvusStore:
         self.events.append(("insert", [item["chunk_id"] for item in data]))
 
     def session(self):
-        raise AssertionError("write_documents must not hold a Milvus session while embedding")
+        raise AssertionError(
+            "write_documents must not hold a Milvus session while embedding"
+        )
+
+
+class ShortEmbeddingService:
+    def get_embeddings(self, texts):
+        return [[1.0]] * max(len(texts) - 1, 0)
 
 
 class MilvusWriterTests(unittest.TestCase):
@@ -91,7 +98,9 @@ class MilvusWriterTests(unittest.TestCase):
         writer.write_documents(
             documents,
             batch_size=2,
-            progress_callback=lambda processed, total: progress.append((processed, total)),
+            progress_callback=lambda processed, total: progress.append(
+                (processed, total)
+            ),
         )
 
         self.assertEqual(
@@ -105,6 +114,33 @@ class MilvusWriterTests(unittest.TestCase):
             ],
         )
         self.assertEqual(progress, [(2, 3), (3, 3)])
+
+    def test_vector_count_mismatch_is_rejected_before_zip_can_drop_documents(self):
+        module = load_milvus_writer_module()
+        events = []
+        writer = module.MilvusWriter(
+            embedding_service=ShortEmbeddingService(),
+            milvus_manager=FakeMilvusStore(events),
+        )
+        documents = [
+            {
+                "text": "first",
+                "filename": "doc.pdf",
+                "file_type": "PDF",
+                "chunk_id": "chunk-1",
+            },
+            {
+                "text": "second",
+                "filename": "doc.pdf",
+                "file_type": "PDF",
+                "chunk_id": "chunk-2",
+            },
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "vector count"):
+            writer.write_documents(documents)
+
+        self.assertEqual([("init_collection", 1024)], events)
 
 
 if __name__ == "__main__":

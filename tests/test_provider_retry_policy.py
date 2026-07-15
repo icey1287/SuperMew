@@ -259,15 +259,50 @@ class AsyncProviderExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, calls)
         self.assertEqual([0.2], fake_time.sleeps)
 
-    async def test_async_deadline_actively_stops_inflight_call(self):
-        executor = ProviderExecutor()
+    async def test_non_yielding_retry_sleeper_cannot_starve_inflight_call(self):
+        async def no_yield(_seconds):
+            return None
+
+        executor = ProviderExecutor(async_sleeper=no_yield)
         calls = 0
 
         async def operation():
             nonlocal calls
             calls += 1
-            await asyncio.sleep(1)
-            return "late"
+            if calls == 1:
+                raise TimeoutError("first attempt")
+            return "ok"
+
+        result = await asyncio.wait_for(
+            executor.acall(
+                operation,
+                context=_context(cancellation=lambda: False),
+                policy=ProviderPolicy(
+                    max_attempts=2,
+                    initial_backoff_seconds=0,
+                    max_backoff_seconds=0,
+                    cancellation_poll_seconds=0.001,
+                ),
+            ),
+            timeout=0.2,
+        )
+
+        self.assertEqual("ok", result)
+        self.assertEqual(2, calls)
+
+    async def test_async_deadline_actively_stops_inflight_call(self):
+        executor = ProviderExecutor()
+        calls = 0
+        provider_cancelled = asyncio.Event()
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            try:
+                await asyncio.sleep(1)
+                return "late"
+            finally:
+                provider_cancelled.set()
 
         with self.assertRaises(ProviderError) as raised:
             await executor.acall(
@@ -277,6 +312,7 @@ class AsyncProviderExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ProviderCode.PROVIDER_DEADLINE_EXCEEDED, raised.exception.code)
         self.assertEqual(1, calls)
+        self.assertTrue(provider_cancelled.is_set())
 
     async def test_cancelled_error_is_never_normalized_or_retried(self):
         calls = 0
@@ -289,6 +325,31 @@ class AsyncProviderExecutorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await ProviderExecutor().acall(operation, context=_context())
         self.assertEqual(1, calls)
+
+    async def test_cancellation_probe_actively_cancels_inflight_await(self):
+        cancelled = False
+        provider_cancelled = asyncio.Event()
+
+        async def operation():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                provider_cancelled.set()
+
+        async def trigger_cancel():
+            nonlocal cancelled
+            await asyncio.sleep(0.01)
+            cancelled = True
+
+        trigger = asyncio.create_task(trigger_cancel())
+        with self.assertRaises(asyncio.CancelledError):
+            await ProviderExecutor().acall(
+                operation,
+                context=_context(cancellation=lambda: cancelled),
+                policy=ProviderPolicy(cancellation_poll_seconds=0.001),
+            )
+        await trigger
+        self.assertTrue(provider_cancelled.is_set())
 
     async def test_async_cancellation_during_backoff_stops_retry(self):
         fake_time = FakeTime()

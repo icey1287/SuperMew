@@ -26,6 +26,8 @@ class ProviderCode(StrEnum):
     RERANK_TIMEOUT = "RERANK_TIMEOUT"
     RERANK_RATE_LIMITED = "RERANK_RATE_LIMITED"
     RERANK_UNAVAILABLE = "RERANK_UNAVAILABLE"
+    RERANK_INVALID_RESPONSE = "RERANK_INVALID_RESPONSE"
+    RERANK_CIRCUIT_OPEN = "RERANK_CIRCUIT_OPEN"
     MODEL_TIMEOUT = "MODEL_TIMEOUT"
     MODEL_RATE_LIMITED = "MODEL_RATE_LIMITED"
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
@@ -68,6 +70,12 @@ _CODE_SPECS: dict[ProviderCode, _ProviderCodeSpec] = {
     ),
     ProviderCode.RERANK_UNAVAILABLE: _ProviderCodeSpec(
         "精排服务暂时不可用，请稍后重试", 503, True
+    ),
+    ProviderCode.RERANK_INVALID_RESPONSE: _ProviderCodeSpec(
+        "精排服务返回了无效结果，请联系管理员", 502, False
+    ),
+    ProviderCode.RERANK_CIRCUIT_OPEN: _ProviderCodeSpec(
+        "精排服务暂时不可用，已启用召回排序降级", 503, True
     ),
     ProviderCode.MODEL_TIMEOUT: _ProviderCodeSpec(
         "模型服务响应超时，请稍后重试", 504, True
@@ -567,10 +575,18 @@ class ProviderExecutor:
             try:
                 remaining = self._remaining(context)
                 if remaining is None:
-                    result = await fn()
+                    result = await self._await_with_cancellation(
+                        fn(),
+                        context=context,
+                        policy=policy,
+                    )
                 else:
                     async with asyncio.timeout(remaining) as timeout_scope:
-                        result = await fn()
+                        result = await self._await_with_cancellation(
+                            fn(),
+                            context=context,
+                            policy=policy,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -612,6 +628,56 @@ class ProviderExecutor:
             self._checkpoint(context, attempt, policy.max_attempts)
             return result
         raise AssertionError("provider retry loop exhausted without a result")
+
+    async def _await_with_cancellation(
+        self,
+        awaitable: Awaitable[T],
+        *,
+        context: ProviderCallContext,
+        policy: ProviderPolicy,
+    ) -> T:
+        task = asyncio.ensure_future(awaitable)
+        if context.cancellation is None:
+            return await task
+
+        cancellation_task = asyncio.create_task(
+            self._wait_until_cancelled(context, policy)
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {task, cancellation_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done:
+                return await task
+            try:
+                await cancellation_task
+            except BaseException:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise asyncio.CancelledError("provider call cancelled")
+        except BaseException:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        finally:
+            cancellation_task.cancel()
+            await asyncio.gather(cancellation_task, return_exceptions=True)
+
+    async def _wait_until_cancelled(
+        self,
+        context: ProviderCallContext,
+        policy: ProviderPolicy,
+    ) -> None:
+        while not self._cancelled(context):
+            # Cancellation observation must always yield to the provider task.
+            # Retry sleepers are injectable and may intentionally return
+            # immediately in tests, so they cannot safely drive this watcher.
+            await asyncio.sleep(policy.cancellation_poll_seconds)
 
     def _remaining(self, context: ProviderCallContext) -> float | None:
         if context.deadline is None:

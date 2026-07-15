@@ -98,6 +98,14 @@ class RagTraceFields(StrictSchema):
     rerank_timeout_seconds: Optional[float] = None
     rerank_min_score: Optional[float] = None
     rerank_threshold_applied: Optional[bool] = None
+    rerank_skip_reason: Optional[str] = None
+    rerank_candidate_count: Optional[int] = None
+    rerank_candidate_limit: Optional[int] = None
+    rerank_candidate_limit_applied: Optional[bool] = None
+    rerank_payload_characters: Optional[int] = None
+    rerank_document_character_limit: Optional[int] = None
+    rerank_total_character_limit: Optional[int] = None
+    rerank_truncated_document_count: Optional[int] = None
     post_rerank_count: Optional[int] = None
     post_threshold_count: Optional[int] = None
     retrieval_empty: Optional[bool] = None
