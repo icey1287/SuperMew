@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Mapping
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterator, TypeVar
 
 from pymilvus import (
@@ -25,10 +27,50 @@ from pymilvus.exceptions import (
     ServerVersionIncompatibleException,
 )
 
-from backend.security.milvus_filters import in_filter
+from backend.security.milvus_filters import in_filter, version_scope_filter
 
 QUERY_MAX_LIMIT = 16384
 T = TypeVar("T")
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+CATALOG_METADATA_FIELDS = [
+    "tenant_id",
+    "knowledge_base_id",
+    "document_id",
+    "document_version_id",
+    "section_id",
+    "acl_tags",
+    "index_version",
+    "content_hash",
+]
+RETRIEVAL_OUTPUT_FIELDS = [
+    "text",
+    "filename",
+    "file_type",
+    "page_number",
+    "chunk_id",
+    "parent_chunk_id",
+    "root_chunk_id",
+    "chunk_level",
+    "chunk_idx",
+    *CATALOG_METADATA_FIELDS,
+]
+_CATALOG_SCHEMA_FIELDS = {
+    "id",
+    "dense_embedding",
+    "sparse_embedding",
+    "text",
+    "filename",
+    "file_type",
+    "file_path",
+    "page_number",
+    "chunk_idx",
+    "chunk_id",
+    "parent_chunk_id",
+    "root_chunk_id",
+    "chunk_level",
+    *CATALOG_METADATA_FIELDS,
+}
 
 
 class HybridRetrievalUnsupported(RuntimeError):
@@ -71,6 +113,20 @@ class MilvusSettings:
             uri=f"http://{host}:{port}",
             timeout=timeout,
         )
+
+
+@dataclass(frozen=True)
+class IndexVersionVerification:
+    """候选索引版本与预期 manifest 的精确核验结果。"""
+
+    expected_ids: tuple[str, ...]
+    actual_ids: tuple[str, ...]
+    missing_ids: tuple[str, ...]
+    unexpected_ids: tuple[str, ...]
+    duplicate_ids: tuple[str, ...]
+    expected_count: int
+    actual_count: int
+    exact: bool
 
 
 @contextmanager
@@ -131,6 +187,19 @@ def _format_retrieval_hit(hit: Mapping) -> dict:
         or not math.isfinite(float(distance))
     ):
         raise ValueError("Milvus hit has an invalid distance")
+    acl_tags = entity.get("acl_tags", [])
+    if not isinstance(acl_tags, list):
+        acl_tags = []
+    document_version_id = entity.get("document_version_id", "")
+    content_hash_value = entity.get("content_hash")
+    content_hash = (
+        content_hash_value.lower()
+        if isinstance(content_hash_value, str)
+        and _SHA256_RE.fullmatch(content_hash_value)
+        else None
+    )
+    if document_version_id and content_hash is None:
+        raise ValueError("versioned Milvus hit is missing a valid content_hash")
     return {
         "id": hit.get("id"),
         "text": text,
@@ -142,6 +211,14 @@ def _format_retrieval_hit(hit: Mapping) -> dict:
         "root_chunk_id": entity.get("root_chunk_id", ""),
         "chunk_level": entity.get("chunk_level", 0),
         "chunk_idx": entity.get("chunk_idx", 0),
+        "tenant_id": entity.get("tenant_id", "default"),
+        "knowledge_base_id": entity.get("knowledge_base_id", ""),
+        "document_id": entity.get("document_id", ""),
+        "document_version_id": document_version_id,
+        "section_id": entity.get("section_id", ""),
+        "acl_tags": acl_tags,
+        "index_version": entity.get("index_version", "v1"),
+        "content_hash": content_hash,
         "score": float(distance),
     }
 
@@ -156,6 +233,14 @@ class MilvusStore:
     def collection_name(self) -> str:
         return self._settings.collection_name
 
+    def with_collection(self, name: str) -> MilvusStore:
+        """返回绑定到另一 collection 的无状态 Adapter。"""
+
+        collection_name = (name or "").strip()
+        if not collection_name:
+            raise ValueError("collection name must not be empty")
+        return MilvusStore(replace(self._settings, collection_name=collection_name))
+
     def _run(self, operation: Callable[[MilvusClient], T]) -> T:
         with milvus_client_session(self._settings) as client:
             return operation(client)
@@ -168,9 +253,29 @@ class MilvusStore:
 
     @staticmethod
     def ensure_collection(
-        client: MilvusClient, collection_name: str, dense_dim: int
+        client: MilvusClient,
+        collection_name: str,
+        dense_dim: int,
+        *,
+        include_catalog_fields: bool = False,
     ) -> None:
         if client.has_collection(collection_name):
+            if include_catalog_fields:
+                description = client.describe_collection(collection_name)
+                if not isinstance(description, Mapping):
+                    raise RuntimeError("invalid Milvus collection description")
+                fields = description.get("fields")
+                if not isinstance(fields, (list, tuple)):
+                    raise RuntimeError("Milvus collection description has no fields")
+                field_names = {
+                    field.get("name") for field in fields if isinstance(field, Mapping)
+                }
+                missing = sorted(_CATALOG_SCHEMA_FIELDS - field_names)
+                if missing:
+                    raise RuntimeError(
+                        "versioned Milvus collection is missing fields: "
+                        + ", ".join(missing)
+                    )
             return
 
         schema = client.create_schema(auto_id=True, enable_dynamic_field=True)
@@ -194,6 +299,21 @@ class MilvusStore:
         schema.add_field("parent_chunk_id", DataType.VARCHAR, max_length=512)
         schema.add_field("root_chunk_id", DataType.VARCHAR, max_length=512)
         schema.add_field("chunk_level", DataType.INT64)
+        if include_catalog_fields:
+            schema.add_field("tenant_id", DataType.VARCHAR, max_length=64)
+            schema.add_field("knowledge_base_id", DataType.VARCHAR, max_length=64)
+            schema.add_field("document_id", DataType.VARCHAR, max_length=64)
+            schema.add_field("document_version_id", DataType.VARCHAR, max_length=64)
+            schema.add_field("section_id", DataType.VARCHAR, max_length=256)
+            schema.add_field(
+                "acl_tags",
+                DataType.ARRAY,
+                element_type=DataType.VARCHAR,
+                max_capacity=128,
+                max_length=256,
+            )
+            schema.add_field("index_version", DataType.VARCHAR, max_length=64)
+            schema.add_field("content_hash", DataType.VARCHAR, max_length=64)
 
         bm25_function = Function(
             name="text_bm25_emb",
@@ -228,6 +348,22 @@ class MilvusStore:
 
         def _init(client: MilvusClient) -> None:
             self.ensure_collection(client, self.collection_name, dense_dim)
+
+        self._run(_init)
+
+    def init_versioned_collection(self, dense_dim: int | None = None) -> None:
+        """初始化与 legacy collection 隔离的显式 catalog schema。"""
+
+        if dense_dim is None:
+            dense_dim = int(os.getenv("DENSE_EMBEDDING_DIM", "1024"))
+
+        def _init(client: MilvusClient) -> None:
+            self.ensure_collection(
+                client,
+                self.collection_name,
+                dense_dim,
+                include_catalog_fields=True,
+            )
 
         self._run(_init)
 
@@ -289,17 +425,7 @@ class MilvusStore:
             return []
         return self.query(
             filter_expr=in_filter("chunk_id", ids),
-            output_fields=[
-                "text",
-                "filename",
-                "file_type",
-                "page_number",
-                "chunk_id",
-                "parent_chunk_id",
-                "root_chunk_id",
-                "chunk_level",
-                "chunk_idx",
-            ],
+            output_fields=RETRIEVAL_OUTPUT_FIELDS,
             limit=len(ids),
         )
 
@@ -312,17 +438,7 @@ class MilvusStore:
         filter_expr: str = "",
         timeout: float | None = None,
     ) -> list[dict]:
-        output_fields = [
-            "text",
-            "filename",
-            "file_type",
-            "page_number",
-            "chunk_id",
-            "parent_chunk_id",
-            "root_chunk_id",
-            "chunk_level",
-            "chunk_idx",
-        ]
+        output_fields = RETRIEVAL_OUTPUT_FIELDS
         try:
             dense_search = AnnSearchRequest(
                 data=[dense_embedding],
@@ -376,23 +492,145 @@ class MilvusStore:
                 anns_field="dense_embedding",
                 search_params={"metric_type": "IP", "params": {"ef": 64}},
                 limit=top_k,
-                output_fields=[
-                    "text",
-                    "filename",
-                    "file_type",
-                    "page_number",
-                    "chunk_id",
-                    "parent_chunk_id",
-                    "root_chunk_id",
-                    "chunk_level",
-                    "chunk_idx",
-                ],
+                output_fields=RETRIEVAL_OUTPUT_FIELDS,
                 filter=filter_expr,
                 timeout=timeout,
             )
 
         results = self._run(_search)
         return [_format_retrieval_hit(hit) for hit in _single_query_hits(results)]
+
+    def query_version_chunk_ids(
+        self,
+        *,
+        tenant_id: str,
+        knowledge_base_id: str,
+        document_id: str,
+        document_version_id: str,
+        index_version: str | None = None,
+    ) -> list[str]:
+        """读取一个精确版本 scope 中的全部 chunk ID（保留重复项）。"""
+
+        expression = version_scope_filter(
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            document_id=document_id,
+            document_version_ids=[document_version_id],
+            index_version=index_version,
+        )
+        rows = self.query_all(expression, output_fields=["chunk_id"])
+        chunk_ids: list[str] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError("invalid Milvus version query response")
+            chunk_id = row.get("chunk_id")
+            if not isinstance(chunk_id, str) or not chunk_id.strip():
+                raise ValueError("Milvus version row is missing chunk_id")
+            chunk_ids.append(chunk_id)
+        return chunk_ids
+
+    def count_by_version(
+        self,
+        *,
+        tenant_id: str,
+        knowledge_base_id: str,
+        document_id: str,
+        document_version_id: str,
+        index_version: str | None = None,
+    ) -> int:
+        """统计一个精确版本 scope 的物理记录数。"""
+
+        return len(
+            self.query_version_chunk_ids(
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                index_version=index_version,
+            )
+        )
+
+    def verify_version(
+        self,
+        *,
+        tenant_id: str,
+        knowledge_base_id: str,
+        document_id: str,
+        document_version_id: str,
+        expected_chunk_ids: Iterable[str],
+        index_version: str | None = None,
+    ) -> IndexVersionVerification:
+        """同时核验 ID 集合、物理 count 与重复 ID。"""
+
+        expected_ids = tuple(expected_chunk_ids)
+        if any(not isinstance(item, str) or not item.strip() for item in expected_ids):
+            raise ValueError("expected_chunk_ids must contain non-empty strings")
+        if len(set(expected_ids)) != len(expected_ids):
+            raise ValueError("expected_chunk_ids must be unique")
+
+        actual_ids = tuple(
+            self.query_version_chunk_ids(
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                index_version=index_version,
+            )
+        )
+        expected_set = set(expected_ids)
+        actual_set = set(actual_ids)
+        duplicate_ids = tuple(
+            sorted(
+                chunk_id for chunk_id, count in Counter(actual_ids).items() if count > 1
+            )
+        )
+        missing_ids = tuple(sorted(expected_set - actual_set))
+        unexpected_ids = tuple(sorted(actual_set - expected_set))
+        expected_count = len(expected_ids)
+        actual_count = len(actual_ids)
+        exact = (
+            not missing_ids
+            and not unexpected_ids
+            and not duplicate_ids
+            and expected_count == actual_count
+        )
+        return IndexVersionVerification(
+            expected_ids=expected_ids,
+            actual_ids=actual_ids,
+            missing_ids=missing_ids,
+            unexpected_ids=unexpected_ids,
+            duplicate_ids=duplicate_ids,
+            expected_count=expected_count,
+            actual_count=actual_count,
+            exact=exact,
+        )
+
+    def delete_by_version(
+        self,
+        *,
+        tenant_id: str,
+        knowledge_base_id: str,
+        document_id: str,
+        document_version_id: str,
+        index_version: str | None = None,
+    ) -> int:
+        """只删除一个租户、知识库、文档和版本的候选向量。"""
+
+        result = self.delete(
+            version_scope_filter(
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                document_id=document_id,
+                document_version_ids=[document_version_id],
+                index_version=index_version,
+            )
+        )
+        if isinstance(result, Mapping) and "delete_count" in result:
+            count = result["delete_count"]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("invalid Milvus delete_count")
+            return count
+        return 0
 
     def delete(self, filter_expr: str):
         return self._run(

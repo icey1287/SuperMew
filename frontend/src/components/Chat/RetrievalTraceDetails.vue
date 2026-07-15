@@ -48,11 +48,26 @@
         <div v-if="msg.ragTrace.retrieval_mode" class="trace-line">
           检索模式：{{ msg.ragTrace.retrieval_mode }}
         </div>
+        <div v-if="msg.ragTrace.retrieval_target_count !== undefined" class="trace-line">
+          检索目标：{{ msg.ragTrace.retrieval_target_count }} 个
+          （必需 {{ msg.ragTrace.retrieval_required_target_count ?? 0 }}，可选
+          {{ msg.ragTrace.retrieval_optional_target_count ?? 0 }}，缺失
+          {{ msg.ragTrace.retrieval_optional_missing_count ?? 0 }}）
+        </div>
+        <div
+          v-for="target in msg.ragTrace.retrieval_target_results || []"
+          :key="`${target.collection_name}:${target.storage_layout}`"
+          class="trace-line"
+        >
+          {{ target.collection_name }} · {{ target.storage_layout }} · {{ target.mode }} ·
+          {{ target.hit_count }} 条
+        </div>
         <div v-if="msg.ragTrace.candidate_k !== null && msg.ragTrace.candidate_k !== undefined" class="trace-line">
           {{ formatCandidateKLabel(msg.ragTrace) }}
         </div>
         <div v-if="hasRetrievalFunnel(msg.ragTrace)" class="trace-line trace-funnel">
           检索漏斗：Milvus 召回 {{ msg.ragTrace.recall_count ?? '—' }}
+          → 去重 {{ msg.ragTrace.deduplicated_recall_count ?? msg.ragTrace.recall_count ?? '—' }}
           → 合并后 {{ msg.ragTrace.post_merge_candidate_count ?? '—' }}
           → 精排输入 {{ msg.ragTrace.rerank_candidate_count ?? msg.ragTrace.candidate_count ?? '—' }}
           → 输出 top{{ msg.ragTrace.retrieval_top_k ?? (msg.ragTrace.retrieved_chunks || []).length }}

@@ -1,6 +1,7 @@
+import re
 from typing import Any, List, Literal, Mapping, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictSchema(BaseModel):
@@ -53,11 +54,45 @@ class ChatRequest(StrictSchema):
 
 class RetrievedChunk(StrictSchema):
     filename: str
+    file_type: Optional[str] = None
     page_number: Optional[str | int] = None
     text: Optional[str] = None
     score: Optional[float] = None
     rrf_rank: Optional[int] = None
     rerank_score: Optional[float] = None
+    chunk_id: Optional[str] = None
+    parent_chunk_id: Optional[str] = None
+    root_chunk_id: Optional[str] = None
+    chunk_level: Optional[int] = None
+    chunk_idx: Optional[int] = None
+    document_id: Optional[str] = None
+    document_version_id: Optional[str] = None
+    section_id: Optional[str] = None
+    index_version: Optional[str] = None
+    content_hash: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+    merged_from_children: Optional[bool] = None
+    merged_child_count: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def require_versioned_manifest_hash(self):
+        if self.document_version_id and self.content_hash is None:
+            raise ValueError("versioned retrieved chunk requires content_hash")
+        return self
+
+
+class RetrievalTargetTrace(StrictSchema):
+    collection_name: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,159}$",
+    )
+    storage_layout: Literal["versioned", "legacy_filename"]
+    required: bool
+    mode: Literal["hybrid", "dense_fallback", "missing_optional"]
+    hit_count: int = Field(ge=0)
 
 
 class RagTraceFields(StrictSchema):
@@ -122,6 +157,15 @@ class RagTraceFields(StrictSchema):
     retrieval_candidate_multiplier: Optional[int] = None
     retrieval_top_k: Optional[int] = None
     recall_count: Optional[int] = None
+    deduplicated_recall_count: Optional[int] = None
+    retrieval_index_id: Optional[str] = Field(
+        default=None, min_length=1, max_length=128
+    )
+    retrieval_target_count: Optional[int] = Field(default=None, ge=0)
+    retrieval_required_target_count: Optional[int] = Field(default=None, ge=0)
+    retrieval_optional_target_count: Optional[int] = Field(default=None, ge=0)
+    retrieval_optional_missing_count: Optional[int] = Field(default=None, ge=0)
+    retrieval_target_results: Optional[List[RetrievalTargetTrace]] = None
     post_merge_candidate_count: Optional[int] = None
     candidate_count: Optional[int] = None
     leaf_retrieve_level: Optional[int] = None
@@ -178,12 +222,37 @@ def _normalize_chunks(value) -> list[dict]:
     if not isinstance(value, list):
         return []
     fields = RetrievedChunk.model_fields
+    normalized: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict) or not item.get("filename"):
+            continue
+        chunk = {key: item[key] for key in fields if key in item}
+        content_hash = chunk.get("content_hash")
+        if content_hash is not None and (
+            not isinstance(content_hash, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", content_hash) is None
+        ):
+            if chunk.get("document_version_id"):
+                # Versioned artifacts promise manifest identity. Corruption must
+                # fail closed instead of being persisted as an ambiguous trace.
+                RetrievedChunk.model_validate(chunk)
+            chunk.pop("content_hash", None)
+        normalized.append(
+            RetrievedChunk.model_validate(chunk).model_dump(exclude_none=True)
+        )
+    return normalized
+
+
+def _normalize_retrieval_targets(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    fields = RetrievalTargetTrace.model_fields
     return [
-        RetrievedChunk.model_validate(
+        RetrievalTargetTrace.model_validate(
             {key: item[key] for key in fields if key in item}
-        ).model_dump(exclude_none=True)
+        ).model_dump()
         for item in value
-        if isinstance(item, dict) and item.get("filename")
+        if isinstance(item, dict)
     ]
 
 
@@ -197,6 +266,10 @@ def _normalize_trace_fields(trace: dict, fields: dict) -> dict:
     ):
         if key in normalized:
             normalized[key] = _normalize_chunks(normalized[key])
+    if "retrieval_target_results" in normalized:
+        normalized["retrieval_target_results"] = _normalize_retrieval_targets(
+            normalized["retrieval_target_results"]
+        )
     return normalized
 
 

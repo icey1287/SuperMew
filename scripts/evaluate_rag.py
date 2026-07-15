@@ -147,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             bundle = LiveRagEvalAdapter(
                 timeout_seconds=args.timeout_seconds,
                 user_id=args.user_id,
+                expected_index_id=args.index_id,
             ).execute(dataset)
             _write_observations(args.observations, bundle)
         else:

@@ -3,6 +3,7 @@
 轻量版先使用进程内存保存任务状态，适合当前单进程开发部署。
 如果后续要支持多进程或服务重启恢复，可以把同样的数据结构迁移到 Redis/PostgreSQL。
 """
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -13,22 +14,31 @@ from uuid import uuid4
 
 
 StepStatus = Literal["pending", "running", "completed", "failed"]
-JobStatus = Literal["pending", "running", "completed", "failed"]
+JobStatus = Literal[
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "cleanup_pending",
+]
 
 
 DEFAULT_STEPS = [
     ("upload", "文档上传"),
-    ("cleanup", "清理旧版本"),
-    ("parse", "解析与分块"),
-    ("parent_store", "父级分块入库"),
-    ("vector_store", "向量化入库"),
+    ("reserve", "候选版本准备"),
+    ("parse", "解析与版本化分块"),
+    ("parent_store", "候选父级分块写入"),
+    ("vector_store", "候选向量写入"),
+    ("verify", "索引一致性核验"),
+    ("publish", "原子发布新版本"),
 ]
 
 DELETE_STEPS = [
-    ("prepare", "准备删除"),
-    ("bm25", "同步 BM25 统计"),
-    ("milvus", "删除向量数据"),
-    ("parent_store", "删除父级分块"),
+    ("prepare", "原子撤销检索范围"),
+    ("milvus", "清理向量索引"),
+    ("parent_store", "清理父级分块与缓存"),
+    ("object_store", "清理版本对象"),
+    ("finalize", "确认清理状态"),
 ]
 
 
@@ -124,7 +134,9 @@ class UploadJobManager:
 
             return deepcopy(job)
 
-    def complete_step(self, job_id: str, step_key: str, message: str = "") -> dict | None:
+    def complete_step(
+        self, job_id: str, step_key: str, message: str = ""
+    ) -> dict | None:
         return self.update_step(job_id, step_key, 100, "completed", message)
 
     def complete_job(self, job_id: str, message: str = "文档入库完成") -> dict | None:
@@ -156,6 +168,32 @@ class UploadJobManager:
             job["current_step"] = step_key
             job["message"] = error
             job["error"] = error
+            job["updated_at"] = _now_iso()
+            return deepcopy(job)
+
+    def mark_cleanup_pending(
+        self,
+        job_id: str,
+        step_key: str,
+        message: str,
+    ) -> dict | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            step = self._find_step(job, step_key)
+            step_index = job["steps"].index(step) if step else len(job["steps"])
+            for previous in job["steps"][:step_index]:
+                if previous["status"] != "failed":
+                    previous["percent"] = 100
+                    previous["status"] = "completed"
+            if step:
+                step["status"] = "failed"
+                step["message"] = message
+            job["status"] = "cleanup_pending"
+            job["current_step"] = step_key
+            job["message"] = message
+            job["error"] = "CLEANUP_PENDING"
             job["updated_at"] = _now_iso()
             return deepcopy(job)
 

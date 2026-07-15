@@ -91,6 +91,37 @@ def load_utils(env):
 
     fake_parent_store.ParentChunkStore = ParentChunkStore
 
+    fake_documents = types.ModuleType("backend.documents")
+    fake_documents.__path__ = []
+    fake_retrieval = types.ModuleType("backend.documents.retrieval")
+
+    class RetrievalTarget:
+        def __init__(
+            self,
+            collection_name="test_collection",
+            filter_expr="chunk_level == 3",
+            storage_layout="legacy_filename",
+            required=True,
+        ):
+            self.collection_name = collection_name
+            self.filter_expr = filter_expr
+            self.storage_layout = storage_layout
+            self.required = required
+
+    class RetrievalSnapshot:
+        def __init__(self):
+            self.tenant_id = "default"
+            self.index_id = "test-index"
+            self.targets = (RetrievalTarget(),)
+
+    class DocumentRetrievalScope:
+        def resolve(self, **_kwargs):
+            return RetrievalSnapshot()
+
+    fake_retrieval.RetrievalTarget = RetrievalTarget
+    fake_retrieval.RetrievalSnapshot = RetrievalSnapshot
+    fake_retrieval.DocumentRetrievalScope = DocumentRetrievalScope
+
     module_name = f"rag_utils_under_test_{id(embedding_service)}"
     spec = importlib.util.spec_from_file_location(
         module_name,
@@ -107,6 +138,8 @@ def load_utils(env):
                 "backend.indexing.milvus_client": fake_milvus,
                 "backend.indexing.embedding": fake_embedding,
                 "backend.indexing.parent_chunk_store": fake_parent_store,
+                "backend.documents": fake_documents,
+                "backend.documents.retrieval": fake_retrieval,
             },
         ),
     ):

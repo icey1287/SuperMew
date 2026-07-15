@@ -19,6 +19,7 @@ from backend.evaluation.rag_adapters import (
     PredictionFileAdapter,
     RagEvalExecutionError,
     artifact_tree_fingerprint,
+    live_rag_profile_snapshot,
     observation_from_rag_results,
     profile_fingerprint,
     rag_source_fingerprint,
@@ -47,6 +48,7 @@ def _case(*, hitl: str = "none", answers: tuple[str, ...] = ()) -> RagEvalCase:
 
 def test_projection_keeps_identity_and_hash_but_never_chunk_text():
     case = _case()
+    manifest_hash = "A1" * 32
     initial = {
         "route": "answer",
         "retrieval_outcome": "ANSWERABLE",
@@ -55,6 +57,7 @@ def test_projection_keeps_identity_and_hash_but_never_chunk_text():
             "retrieved_chunks": [
                 {
                     "chunk_id": "doc::p0::l3::0",
+                    "content_hash": manifest_hash,
                     "filename": "doc.html",
                     "text": "private evidence body",
                     "endpoint": "https://secret.example.test",
@@ -81,10 +84,66 @@ def test_projection_keeps_identity_and_hash_but_never_chunk_text():
     assert observation.complexity.value == "simple"
     assert observation.retrieved_chunks[0].chunk_id == "doc::p0::l3::0"
     assert observation.retrieved_chunks[0].canonical_name == "doc.html"
-    assert len(observation.retrieved_chunks[0].content_sha256 or "") == 64
+    assert observation.retrieved_chunks[0].content_sha256 == manifest_hash.lower()
     serialized = json.dumps(observation.model_dump(mode="json"))
     assert "private evidence body" not in serialized
     assert "secret.example.test" not in serialized
+
+
+def test_projection_hashes_text_when_manifest_content_hash_is_invalid():
+    case = _case()
+    result = {
+        "route": "answer",
+        "retrieval_outcome": "ANSWERABLE",
+        "rag_trace": {
+            "retrieved_chunks": [
+                {
+                    "chunk_id": "doc::p0::l3::0",
+                    "content_hash": "not-a-sha256",
+                    "filename": "doc.html",
+                    "text": "  private   evidence  ",
+                }
+            ]
+        },
+    }
+
+    observation = observation_from_rag_results(
+        case,
+        initial=result,
+        final=result,
+        duration_ms=1,
+    )
+
+    assert observation.retrieved_chunks[0].content_sha256 == (
+        "f7711d1542c029371e0ad7159632c392465700aed13126774e9e8a9575b20078"
+    )
+
+
+def test_projection_rejects_versioned_chunk_without_manifest_hash():
+    case = _case()
+    result = {
+        "route": "answer",
+        "retrieval_outcome": "ANSWERABLE",
+        "rag_trace": {
+            "retrieved_chunks": [
+                {
+                    "chunk_id": "version-v2::chunk",
+                    "document_version_id": "version-v2",
+                    "content_hash": "",
+                    "filename": "doc.html",
+                    "text": "evidence",
+                }
+            ]
+        },
+    }
+
+    with pytest.raises(RagEvalExecutionError, match="manifest content_hash"):
+        observation_from_rag_results(
+            case,
+            initial=result,
+            final=result,
+            duration_ms=1,
+        )
 
 
 def test_projection_scores_initial_hitl_and_final_resolution_separately():
@@ -161,6 +220,9 @@ def test_prediction_adapter_rejects_another_dataset(tmp_path):
 def test_live_adapter_rejects_non_finite_timeout_without_importing_production_rag():
     with pytest.raises(ValueError, match="finite"):
         LiveRagEvalAdapter(timeout_seconds=float("inf"))
+
+    with pytest.raises(ValueError, match="expected_index_id"):
+        LiveRagEvalAdapter(expected_index_id=" ")
 
 
 def _install_live_modules(monkeypatch, *, runtime, run_graph):
@@ -265,6 +327,49 @@ def test_live_adapter_wraps_close_failure_without_masking_primary_error(monkeypa
     assert any("also failed while closing" in note for note in raised.value.__notes__)
 
 
+def test_live_adapter_rejects_catalog_index_changes_between_cases(monkeypatch):
+    class Runtime:
+        def readiness(self):
+            return SimpleNamespace(running=False)
+
+        def start_sync(self):
+            return None
+
+        def close_sync(self):
+            return None
+
+    indexes = iter(("catalog-index-v1", "catalog-index-v2"))
+
+    def run_graph(*_args, **_kwargs):
+        index_id = next(indexes)
+        return {
+            "route": "answer",
+            "retrieval_outcome": "ANSWERABLE",
+            "rag_trace": {
+                "retrieval_index_id": index_id,
+                "retrieved_chunks": [
+                    {
+                        "chunk_id": f"{index_id}::chunk",
+                        "filename": "doc.html",
+                        "text": "evidence",
+                    }
+                ],
+            },
+        }
+
+    _install_live_modules(
+        monkeypatch,
+        runtime=Runtime(),
+        run_graph=run_graph,
+    )
+    first = _case()
+    second = first.model_copy(update={"id": "case_2", "question": "question two"})
+    dataset = RagEvalDataset(name="dataset", cases=(first, second))
+
+    with pytest.raises(RagEvalExecutionError, match="index changed"):
+        LiveRagEvalAdapter(expected_index_id="catalog-index-v1").execute(dataset)
+
+
 def test_rag_source_fingerprint_is_stable_and_content_addressed():
     first = rag_source_fingerprint(".")
     second = rag_source_fingerprint(".")
@@ -272,6 +377,75 @@ def test_rag_source_fingerprint_is_stable_and_content_addressed():
     assert first == second
     assert len(first) == 64
     assert set(first) <= set("0123456789abcdef")
+
+
+def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
+    settings = SimpleNamespace(
+        models=SimpleNamespace(
+            answer_model="answer",
+            fast_model="fast",
+            grade_model="grade",
+            base_url="https://models.example.test",
+            timeout_seconds=30.0,
+        ),
+        rag=SimpleNamespace(model_dump=lambda **_kwargs: {"top_k": 8}),
+        embedding=SimpleNamespace(
+            model="embedding",
+            revision="rev-1",
+            device="cpu",
+            dimension=1024,
+            cache_namespace="docs",
+        ),
+        rerank=SimpleNamespace(
+            enabled=False,
+            model="",
+            binding_host="",
+            timeout_seconds=5.0,
+            min_score=0.0,
+            candidate_limit=20,
+            max_document_characters=4000,
+            max_total_characters=20000,
+        ),
+    )
+    monkeypatch.setattr("backend.core.settings.get_settings", lambda: settings)
+    snapshot = SimpleNamespace(
+        index_id="catalog-index-v2",
+        targets=(
+            SimpleNamespace(collection_name="catalog_v1"),
+            SimpleNamespace(collection_name="legacy"),
+        ),
+    )
+    utils = SimpleNamespace(
+        resolve_retrieval_snapshot=lambda: snapshot,
+        RETRIEVAL_TOP_K=8,
+        RETRIEVAL_CANDIDATE_MULTIPLIER=3,
+        _RETRIEVAL_CANDIDATE_K_RAW="",
+        LEAF_RETRIEVE_LEVEL=3,
+        AUTO_MERGE_ENABLED=True,
+        AUTO_MERGE_THRESHOLD=2,
+    )
+    pipeline = SimpleNamespace(RAG_MODEL_TIMEOUT_SECONDS=15.0)
+
+    def import_module(name):
+        return pipeline if name == "backend.rag.pipeline" else utils
+
+    monkeypatch.setattr(
+        "backend.evaluation.rag_adapters.importlib.import_module",
+        import_module,
+    )
+
+    profile = live_rag_profile_snapshot(
+        profile_id="release",
+        index_id="catalog-index-v2",
+    )
+
+    assert profile["index_id"] == "catalog-index-v2"
+    assert profile["retrieval"]["embedding_scope_index_id"] == "catalog-index-v2"
+    assert profile["retrieval"]["collection_names"] == ["catalog_v1", "legacy"]
+    assert profile["retrieval"]["target_count"] == 2
+
+    with pytest.raises(RagEvalExecutionError, match="effective RAG index"):
+        live_rag_profile_snapshot(profile_id="release", index_id="stale-index")
 
 
 def test_corpus_and_profile_fingerprints_change_with_identity(tmp_path):

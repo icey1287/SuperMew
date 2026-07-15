@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.evaluation.rag_adapters import PredictionFileAdapter
 from scripts.evaluate_rag import main
 
 
@@ -236,3 +237,72 @@ def test_cli_rejects_non_finite_live_timeout_with_exit_two(tmp_path):
         )
 
     assert raised.value.code == 2
+
+
+def test_live_cli_pins_adapter_to_requested_index(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeLiveAdapter:
+        def __init__(
+            self,
+            *,
+            timeout_seconds,
+            user_id,
+            expected_index_id,
+        ):
+            captured.update(
+                timeout_seconds=timeout_seconds,
+                user_id=user_id,
+                expected_index_id=expected_index_id,
+            )
+
+        def execute(self, dataset):
+            return PredictionFileAdapter(OBSERVATIONS).execute(dataset)
+
+    monkeypatch.setattr(
+        "scripts.evaluate_rag.LiveRagEvalAdapter",
+        FakeLiveAdapter,
+    )
+    monkeypatch.setattr(
+        "scripts.evaluate_rag._metadata",
+        lambda **_kwargs: {
+            "adapter": "live_rag",
+            "provenance": "live_rag",
+            "corpus_id": "rag_smoke_v1",
+            "corpus_fingerprint": "a" * 64,
+            "profile_id": "release-profile",
+            "index_id": "catalog-index-v2",
+            "profile_fingerprint": "b" * 64,
+            "rag_source_fingerprint": "c" * 64,
+            "source_mismatch_override": False,
+        },
+    )
+
+    exit_code = main(
+        [
+            "run",
+            "--dataset",
+            str(DATASET),
+            "--observations",
+            str(tmp_path / "observations.json"),
+            "--gates",
+            str(LIVE_GATES),
+            "--report",
+            str(tmp_path / "report.json"),
+            "--profile-id",
+            "release-profile",
+            "--index-id",
+            "catalog-index-v2",
+            "--timeout-seconds",
+            "45",
+            "--user-id",
+            "release-eval",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == {
+        "timeout_seconds": 45.0,
+        "user_id": "release-eval",
+        "expected_index_id": "catalog-index-v2",
+    }

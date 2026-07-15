@@ -6,6 +6,11 @@ import os
 import time
 from typing import List, Tuple, Dict, Any, Literal, Optional
 
+from backend.documents.retrieval import (
+    DocumentRetrievalScope,
+    RetrievalSnapshot,
+    RetrievalTarget,
+)
 from backend.indexing.milvus_client import (
     HybridRetrievalUnsupported,
     get_milvus_store,
@@ -64,6 +69,13 @@ RETRIEVAL_TRACE_FIELDS = (
     "retrieval_top_k",
     "leaf_retrieve_level",
     "recall_count",
+    "deduplicated_recall_count",
+    "retrieval_index_id",
+    "retrieval_target_count",
+    "retrieval_required_target_count",
+    "retrieval_optional_target_count",
+    "retrieval_optional_missing_count",
+    "retrieval_target_results",
     "post_merge_candidate_count",
     "candidate_count",
     "auto_merge_enabled",
@@ -98,6 +110,7 @@ RETRIEVAL_TRACE_FIELDS = (
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = get_milvus_store()
 _parent_chunk_store = ParentChunkStore()
+_document_retrieval_scope = DocumentRetrievalScope()
 _provider_executor = ProviderExecutor()
 _rerank_stage: RerankStage | None = None
 _embedding_scope = EmbeddingScope(
@@ -130,6 +143,56 @@ try:
     )
 except ValueError:
     REWRITE_TIMEOUT_SECONDS = 15.0
+
+
+def resolve_retrieval_snapshot(
+    *,
+    tenant_id: str = "default",
+    knowledge_base_id: str | None = None,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
+) -> RetrievalSnapshot:
+    """读取一次不可变 Catalog 检索快照；故障保持 typed Provider 语义。"""
+
+    catalog_deadline = _bounded_deadline(deadline, VECTOR_TIMEOUT_SECONDS)
+
+    def _resolve() -> RetrievalSnapshot:
+        snapshot = _document_retrieval_scope.resolve(
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            leaf_chunk_level=LEAF_RETRIEVE_LEVEL,
+        )
+        if (
+            not isinstance(getattr(snapshot, "tenant_id", None), str)
+            or not snapshot.tenant_id.strip()
+            or not isinstance(getattr(snapshot, "index_id", None), str)
+            or not snapshot.index_id.strip()
+            or not isinstance(getattr(snapshot, "targets", None), (list, tuple))
+        ):
+            raise ValueError("document catalog returned an invalid retrieval snapshot")
+        for target in snapshot.targets:
+            if (
+                not isinstance(getattr(target, "collection_name", None), str)
+                or not target.collection_name.strip()
+                or not isinstance(getattr(target, "filter_expr", None), str)
+                or not target.filter_expr.strip()
+                or not isinstance(getattr(target, "required", None), bool)
+            ):
+                raise ValueError(
+                    "document catalog returned an invalid retrieval target"
+                )
+        return snapshot
+
+    return _provider_executor.call(
+        _resolve,
+        context=ProviderCallContext(
+            provider="document-catalog",
+            operation=ProviderOperation.VECTOR_SEARCH,
+            deadline=catalog_deadline,
+            cancellation=cancellation,
+        ),
+        policy=_VECTOR_POLICY,
+    )
 
 
 def _bounded_deadline(deadline: float | None, timeout_seconds: float) -> float:
@@ -211,8 +274,47 @@ def _merge_rank_score_into(target: dict, source: dict) -> None:
         target["score"] = max(float(existing), incoming)
 
 
+def _parent_matches_child_scope(parent: dict, child: dict) -> bool:
+    if not isinstance(parent.get("text"), str) or not parent["text"].strip():
+        return False
+    if parent.get("filename") != child.get("filename"):
+        return False
+    child_version = str(child.get("document_version_id") or "").strip()
+    if not child_version:
+        if any(
+            str(parent.get(field) or "").strip()
+            for field in (
+                "knowledge_base_id",
+                "document_id",
+                "document_version_id",
+            )
+        ):
+            return False
+        child_tenant = str(child.get("tenant_id") or "").strip()
+        parent_tenant = str(parent.get("tenant_id") or "").strip()
+        child_index = str(child.get("index_version") or "").strip()
+        parent_index = str(parent.get("index_version") or "").strip()
+        return (
+            not child_tenant or not parent_tenant or child_tenant == parent_tenant
+        ) and (not child_index or not parent_index or child_index == parent_index)
+    return all(
+        str(parent.get(field) or "").strip() == str(child.get(field) or "").strip()
+        for field in (
+            "tenant_id",
+            "knowledge_base_id",
+            "document_id",
+            "document_version_id",
+            "index_version",
+        )
+    )
+
+
 def _merge_to_parent_level(
-    docs: List[dict], threshold: int = 2
+    docs: List[dict],
+    threshold: int = 2,
+    *,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
 ) -> Tuple[List[dict], int]:
     groups: Dict[str, List[dict]] = defaultdict(list)
     for doc in docs:
@@ -228,9 +330,26 @@ def _merge_to_parent_level(
     if not merge_parent_ids:
         return docs, 0
 
-    parent_docs = _parent_chunk_store.get_documents_by_ids(merge_parent_ids)
+    parent_docs = _provider_executor.call(
+        lambda: _validate_retrieved_documents(
+            _parent_chunk_store.get_documents_by_ids(merge_parent_ids)
+        ),
+        context=ProviderCallContext(
+            provider="parent-chunk-store",
+            operation=ProviderOperation.VECTOR_SEARCH,
+            deadline=deadline,
+            cancellation=cancellation,
+        ),
+        policy=_VECTOR_POLICY,
+    )
     parent_map = {
-        item.get("chunk_id", ""): item for item in parent_docs if item.get("chunk_id")
+        item.get("chunk_id", ""): item
+        for item in parent_docs
+        if item.get("chunk_id")
+        and all(
+            _parent_matches_child_scope(item, child)
+            for child in groups.get(item.get("chunk_id", ""), ())
+        )
     }
 
     merged_docs: List[dict] = []
@@ -270,18 +389,30 @@ def _empty_merge_meta() -> Dict[str, Any]:
     }
 
 
-def _auto_merge_candidates(docs: List[dict]) -> Tuple[List[dict], Dict[str, Any]]:
+def _auto_merge_candidates(
+    docs: List[dict],
+    *,
+    deadline: float | None = None,
+    cancellation: Callable[[], bool] | None = None,
+) -> Tuple[List[dict], Dict[str, Any]]:
     """在完整召回候选上执行 L3→L2→L1 合并；不改变顺序，精排由后续步骤负责。"""
     meta = _empty_merge_meta()
     meta["post_merge_candidate_count"] = len(docs)
     if not AUTO_MERGE_ENABLED or not docs:
         return docs, meta
 
+    parent_deadline = _bounded_deadline(deadline, VECTOR_TIMEOUT_SECONDS)
     merged_docs, merged_count_l3_l2 = _merge_to_parent_level(
-        docs, threshold=AUTO_MERGE_THRESHOLD
+        docs,
+        threshold=AUTO_MERGE_THRESHOLD,
+        deadline=parent_deadline,
+        cancellation=cancellation,
     )
     merged_docs, merged_count_l2_l1 = _merge_to_parent_level(
-        merged_docs, threshold=AUTO_MERGE_THRESHOLD
+        merged_docs,
+        threshold=AUTO_MERGE_THRESHOLD,
+        deadline=parent_deadline,
+        cancellation=cancellation,
     )
 
     replaced_count = merged_count_l3_l2 + merged_count_l2_l1
@@ -446,6 +577,100 @@ def rewrite_query_once(
     }
 
 
+def _store_for_target(
+    target: RetrievalTarget,
+    *,
+    allow_unrouted_adapter: bool,
+):
+    with_collection = getattr(_milvus_manager, "with_collection", None)
+    if callable(with_collection):
+        return with_collection(target.collection_name)
+    configured_collection = getattr(_milvus_manager, "collection_name", None)
+    if (
+        configured_collection is not None
+        and configured_collection != target.collection_name
+    ):
+        raise RuntimeError("Milvus adapter is bound to a different collection")
+    if not allow_unrouted_adapter:
+        raise RuntimeError("Milvus adapter cannot route multiple target collections")
+    return _milvus_manager
+
+
+def _retrieve_target(
+    target: RetrievalTarget,
+    *,
+    dense_embedding: list[float],
+    query: str,
+    candidate_k: int,
+    vector_deadline: float,
+    cancellation: Callable[[], bool] | None,
+    allow_unrouted_adapter: bool,
+) -> tuple[bool, str, List[dict]]:
+    """读取单个 target；hybrid capability 降级只影响这个 target。"""
+
+    def _call() -> tuple[bool, str, List[dict]]:
+        store = _store_for_target(
+            target,
+            allow_unrouted_adapter=allow_unrouted_adapter,
+        )
+        has_collection = getattr(store, "has_collection", None)
+        if callable(has_collection) and not has_collection():
+            if target.required:
+                raise RuntimeError("required Milvus target collection is missing")
+            return True, "missing_optional", []
+        try:
+            documents = _validate_retrieved_documents(
+                store.hybrid_retrieve(
+                    dense_embedding=dense_embedding,
+                    query=query,
+                    top_k=candidate_k,
+                    filter_expr=target.filter_expr,
+                    timeout=_remaining_timeout(
+                        vector_deadline,
+                        VECTOR_TIMEOUT_SECONDS,
+                    ),
+                )
+            )
+            return False, "hybrid", documents
+        except HybridRetrievalUnsupported:
+            documents = _validate_retrieved_documents(
+                store.dense_retrieve(
+                    dense_embedding=dense_embedding,
+                    top_k=candidate_k,
+                    filter_expr=target.filter_expr,
+                    timeout=_remaining_timeout(
+                        vector_deadline,
+                        VECTOR_TIMEOUT_SECONDS,
+                    ),
+                )
+            )
+            return False, "dense_fallback", documents
+
+    return _provider_executor.call(
+        _call,
+        context=ProviderCallContext(
+            provider="milvus",
+            operation=ProviderOperation.VECTOR_SEARCH,
+            deadline=vector_deadline,
+            cancellation=cancellation,
+        ),
+        policy=_VECTOR_POLICY,
+    )
+
+
+def _interleave_target_documents(groups: List[List[dict]]) -> List[dict]:
+    """按 target 内排名交错合并，避免禁用 rerank 时单 collection 独占候选。"""
+
+    if not groups:
+        return []
+    fused: List[dict] = []
+    for rank in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if rank < len(group):
+                fused.append(group[rank])
+    return fused
+
+
 def _finalize_retrieval(
     query: str,
     retrieved: List[dict],
@@ -457,9 +682,15 @@ def _finalize_retrieval(
     deadline: float | None = None,
     cancellation: Callable[[], bool] | None = None,
     retrieval_degraded_code: str | None = None,
+    retrieval_context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """生产流水线：召回候选 → Auto-merge → Rerank（top_k）→ 阈值过滤。"""
-    candidates, merge_meta = _auto_merge_candidates(retrieved)
+    deduplicated = dedupe_documents(retrieved)
+    candidates, merge_meta = _auto_merge_candidates(
+        deduplicated,
+        deadline=deadline,
+        cancellation=cancellation,
+    )
     reranked_docs, rerank_meta = _rerank_documents(
         query=query,
         docs=candidates,
@@ -474,12 +705,14 @@ def _finalize_retrieval(
         **rerank_meta,
         **merge_meta,
         **candidate_config,
+        **dict(retrieval_context or {}),
         "retrieval_mode": retrieval_mode,
         "retrieval_pipeline": "recall_merge_rerank",
         "candidate_k": candidate_k,
         "retrieval_top_k": top_k,
         "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
         "recall_count": len(retrieved),
+        "deduplicated_recall_count": len(deduplicated),
         "rerank_min_score": RERANK_MIN_SCORE,
         "rerank_threshold_applied": threshold_applied,
         "post_rerank_count": post_rerank_count,
@@ -494,11 +727,37 @@ def retrieve_documents(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
     *,
+    tenant_id: str = "default",
+    knowledge_base_id: str | None = None,
     deadline: float | None = None,
     cancellation: Callable[[], bool] | None = None,
 ) -> Dict[str, Any]:
+    snapshot = resolve_retrieval_snapshot(
+        tenant_id=tenant_id,
+        knowledge_base_id=knowledge_base_id,
+        deadline=deadline,
+        cancellation=cancellation,
+    )
     candidate_k, candidate_config = resolve_candidate_k(top_k)
-    filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
+    if not snapshot.targets:
+        return _finalize_retrieval(
+            query=query,
+            retrieved=[],
+            candidate_k=candidate_k,
+            candidate_config=candidate_config,
+            top_k=top_k,
+            retrieval_mode="catalog_empty",
+            deadline=deadline,
+            cancellation=cancellation,
+            retrieval_context={
+                "retrieval_index_id": snapshot.index_id,
+                "retrieval_target_count": 0,
+                "retrieval_required_target_count": 0,
+                "retrieval_optional_target_count": 0,
+                "retrieval_optional_missing_count": 0,
+                "retrieval_target_results": [],
+            },
+        )
     embedding_deadline = _bounded_deadline(deadline, EMBEDDING_TIMEOUT_SECONDS)
     embedding_context = ProviderCallContext(
         provider=EMBEDDING_PROVIDER_ID,
@@ -506,13 +765,18 @@ def retrieve_documents(
         deadline=embedding_deadline,
         cancellation=cancellation,
     )
+    embedding_scope = EmbeddingScope(
+        namespace=_embedding_scope.namespace,
+        tenant_id=snapshot.tenant_id,
+        index_id=snapshot.index_id,
+    )
 
     def _embed_query() -> list[float]:
         query_method = getattr(_embedding_service, "embed_query", None)
         if callable(query_method):
             vector = query_method(
                 query,
-                scope=_embedding_scope,
+                scope=embedding_scope,
                 deadline=embedding_deadline,
                 cancellation=cancellation,
             )
@@ -547,56 +811,61 @@ def retrieve_documents(
         ) from exc
 
     vector_deadline = _bounded_deadline(deadline, VECTOR_TIMEOUT_SECONDS)
-
-    def _hybrid_retrieve() -> tuple[bool, List[dict]]:
-        try:
-            return False, _validate_retrieved_documents(
-                _milvus_manager.hybrid_retrieve(
-                    dense_embedding=dense_embedding,
-                    query=query,
-                    top_k=candidate_k,
-                    filter_expr=filter_expr,
-                    timeout=_remaining_timeout(vector_deadline, VECTOR_TIMEOUT_SECONDS),
-                )
-            )
-        except HybridRetrievalUnsupported:
-            return True, []
-
-    fallback_required, retrieved = _provider_executor.call(
-        _hybrid_retrieve,
-        context=ProviderCallContext(
-            provider="milvus",
-            operation=ProviderOperation.VECTOR_SEARCH,
-            deadline=vector_deadline,
+    target_groups: List[List[dict]] = []
+    target_results: list[dict[str, Any]] = []
+    active_modes: list[str] = []
+    optional_missing_count = 0
+    allow_unrouted_adapter = len(snapshot.targets) == 1
+    for target in snapshot.targets:
+        missing, mode, documents = _retrieve_target(
+            target,
+            dense_embedding=dense_embedding,
+            query=query,
+            candidate_k=candidate_k,
+            vector_deadline=vector_deadline,
             cancellation=cancellation,
-        ),
-        policy=_VECTOR_POLICY,
-    )
-    retrieval_mode = "hybrid"
-    degraded_code = None
-    if fallback_required:
-        retrieved = _provider_executor.call(
-            lambda: _validate_retrieved_documents(
-                _milvus_manager.dense_retrieve(
-                    dense_embedding=dense_embedding,
-                    top_k=candidate_k,
-                    filter_expr=filter_expr,
-                    timeout=_remaining_timeout(
-                        vector_deadline,
-                        VECTOR_TIMEOUT_SECONDS,
-                    ),
-                )
-            ),
-            context=ProviderCallContext(
-                provider="milvus",
-                operation=ProviderOperation.VECTOR_SEARCH,
-                deadline=vector_deadline,
-                cancellation=cancellation,
-            ),
-            policy=_VECTOR_POLICY,
+            allow_unrouted_adapter=allow_unrouted_adapter,
         )
+        if missing:
+            optional_missing_count += 1
+        else:
+            active_modes.append(mode)
+            target_groups.append(documents)
+        target_results.append(
+            {
+                "collection_name": target.collection_name,
+                "storage_layout": str(target.storage_layout),
+                "required": bool(target.required),
+                "mode": mode,
+                "hit_count": len(documents),
+            }
+        )
+
+    retrieved = _interleave_target_documents(target_groups)
+    mode_set = set(active_modes)
+    if not active_modes:
+        retrieval_mode = "catalog_empty"
+    elif mode_set == {"hybrid"}:
+        retrieval_mode = "hybrid"
+    elif mode_set == {"dense_fallback"}:
         retrieval_mode = "dense_fallback"
-        degraded_code = "HYBRID_RETRIEVAL_DEGRADED"
+    else:
+        retrieval_mode = "hybrid_dense_fusion"
+    degraded_code = (
+        "HYBRID_RETRIEVAL_DEGRADED" if "dense_fallback" in mode_set else None
+    )
+    retrieval_context = {
+        "retrieval_index_id": snapshot.index_id,
+        "retrieval_target_count": len(snapshot.targets),
+        "retrieval_required_target_count": sum(
+            1 for target in snapshot.targets if target.required
+        ),
+        "retrieval_optional_target_count": sum(
+            1 for target in snapshot.targets if not target.required
+        ),
+        "retrieval_optional_missing_count": optional_missing_count,
+        "retrieval_target_results": target_results,
+    }
 
     return _finalize_retrieval(
         query=query,
@@ -608,4 +877,5 @@ def retrieve_documents(
         deadline=deadline,
         cancellation=cancellation,
         retrieval_degraded_code=degraded_code,
+        retrieval_context=retrieval_context,
     )

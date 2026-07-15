@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    CHAR,
+    CheckConstraint,
     JSON,
     Boolean,
     DateTime,
@@ -298,6 +300,7 @@ class KnowledgeBase(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
+    catalog_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
@@ -307,6 +310,32 @@ class KnowledgeBase(Base):
 
     documents = relationship(
         "Document", back_populates="knowledge_base", cascade="all, delete-orphan"
+    )
+
+
+class DocumentCatalogState(Base):
+    __tablename__ = "document_catalog_states"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    legacy_collection: Mapped[str] = mapped_column(String(160), nullable=False)
+    legacy_knowledge_base_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="RESTRICT"), nullable=True
+    )
+    legacy_knowledge_base_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    legacy_adoption_fence: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    legacy_adoption_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    legacy_corpus_fingerprint: Mapped[str | None] = mapped_column(
+        CHAR(64), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
@@ -329,10 +358,30 @@ class Document(Base):
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    current_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "document_versions.id",
+            name="fk_documents_current_version",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    pending_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "document_versions.id",
+            name="fk_documents_pending_version",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    publication_fence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    version_counter: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(
         String(32), default="pending", nullable=False, index=True
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
@@ -342,15 +391,52 @@ class Document(Base):
 
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")
     versions = relationship(
-        "DocumentVersion", back_populates="document", cascade="all, delete-orphan"
+        "DocumentVersion",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        foreign_keys="DocumentVersion.document_id",
+    )
+    current_version = relationship(
+        "DocumentVersion",
+        foreign_keys=[current_version_id],
+        post_update=True,
+    )
+    pending_version = relationship(
+        "DocumentVersion",
+        foreign_keys=[pending_version_id],
+        post_update=True,
     )
 
 
 class DocumentVersion(Base):
     __tablename__ = "document_versions"
     __table_args__ = (
+        Index(
+            "uq_document_content_build_active",
+            "document_id",
+            "content_sha256",
+            "build_fingerprint",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('uploaded', 'parsing', 'indexing', 'staged', 'ready')"
+            ),
+            sqlite_where=text(
+                "status IN ('uploaded', 'parsing', 'indexing', 'staged', 'ready')"
+            ),
+        ),
         UniqueConstraint(
-            "document_id", "content_sha256", name="uq_document_content_hash"
+            "document_id", "version_number", name="uq_document_version_number"
+        ),
+        UniqueConstraint(
+            "vector_collection",
+            "legacy_identity",
+            name="uq_legacy_source_identity",
+        ),
+        Index("ix_document_versions_cleanup_after", "cleanup_after"),
+        CheckConstraint(
+            "status IN ('uploaded', 'parsing', 'indexing', 'staged', "
+            "'ready', 'failed', 'superseded')",
+            name="ck_document_versions_status",
         ),
     )
 
@@ -359,6 +445,8 @@ class DocumentVersion(Base):
         ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
     )
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    build_fingerprint: Mapped[str] = mapped_column(CHAR(64), default="", nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     source_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
     media_type: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -372,12 +460,25 @@ class DocumentVersion(Base):
         String(160), default="", nullable=False
     )
     index_version: Mapped[str] = mapped_column(String(64), default="v1", nullable=False)
+    storage_layout: Mapped[str] = mapped_column(
+        String(32), default="versioned", nullable=False
+    )
+    vector_collection: Mapped[str] = mapped_column(
+        String(160), default="", nullable=False
+    )
+    legacy_identity: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), default="uploaded", nullable=False, index=True
     )
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    parent_chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cleanup_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    index_cleaned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cleanup_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
@@ -385,14 +486,29 @@ class DocumentVersion(Base):
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    document = relationship("Document", back_populates="versions")
+    document = relationship(
+        "Document", back_populates="versions", foreign_keys=[document_id]
+    )
     jobs = relationship(
         "IndexJob", back_populates="document_version", cascade="all, delete-orphan"
+    )
+    manifests = relationship(
+        "IndexManifest",
+        back_populates="document_version",
+        cascade="all, delete-orphan",
     )
 
 
 class IndexJob(Base):
     __tablename__ = "index_jobs"
+    __table_args__ = (
+        UniqueConstraint("document_version_id", name="uq_index_job_document_version"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'retry_wait', 'staged', "
+            "'completed', 'failed', 'cancelled', 'dead_letter')",
+            name="ck_index_jobs_status",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     document_version_id: Mapped[str] = mapped_column(
@@ -409,6 +525,10 @@ class IndexJob(Base):
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    publication_fence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    expected_current_version_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     owner_worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -416,6 +536,7 @@ class IndexJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
     step_state_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
@@ -430,7 +551,10 @@ class IndexManifest(Base):
     __tablename__ = "index_manifests"
     __table_args__ = (
         UniqueConstraint(
-            "document_version_id", "chunk_id", name="uq_index_manifest_chunk"
+            "document_version_id",
+            "store_kind",
+            "chunk_id",
+            name="uq_index_manifest_chunk",
         ),
     )
 
@@ -441,11 +565,17 @@ class IndexManifest(Base):
         index=True,
     )
     chunk_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    store_kind: Mapped[str] = mapped_column(
+        String(32), default="vector", nullable=False
+    )
     section_id: Mapped[str] = mapped_column(String(256), default="", nullable=False)
-    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    chunk_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     indexed_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
+
+    document_version = relationship("DocumentVersion", back_populates="manifests")
 
 
 class ParentChunk(Base):
@@ -467,6 +597,7 @@ class ParentChunk(Base):
     section_id: Mapped[str] = mapped_column(String(256), default="", nullable=False)
     index_version: Mapped[str] = mapped_column(String(64), default="v1", nullable=False)
     acl_tags: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    content_hash: Mapped[str] = mapped_column(CHAR(64), default="", nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     file_type: Mapped[str] = mapped_column(String(50), default="", nullable=False)

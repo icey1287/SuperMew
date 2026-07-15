@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import math
+import re
 import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
@@ -63,12 +64,18 @@ class LiveRagEvalAdapter:
         *,
         timeout_seconds: float = 60.0,
         user_id: str = "rag_eval",
+        expected_index_id: str | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if timeout_seconds <= 0 or not math.isfinite(timeout_seconds):
             raise ValueError("timeout_seconds must be positive and finite")
         self.timeout_seconds = float(timeout_seconds)
         self.user_id = str(user_id).strip() or "rag_eval"
+        self.expected_index_id = (
+            str(expected_index_id).strip() if expected_index_id is not None else None
+        )
+        if self.expected_index_id == "":
+            raise ValueError("expected_index_id must not be empty")
         self._clock = clock
 
     def execute(self, dataset: RagEvalDataset) -> RagEvalObservationBundle:
@@ -86,6 +93,7 @@ class LiveRagEvalAdapter:
             )
 
         observations: list[RagEvalObservation] = []
+        observed_index_id = self.expected_index_id
         try:
             provider_runtime.start_sync()
         except BaseExceptionGroup as exc:
@@ -119,6 +127,19 @@ class LiveRagEvalAdapter:
                             answer,
                             ctx,
                         )
+                    case_index_ids = _retrieval_index_ids(initial, final)
+                    if len(case_index_ids) > 1:
+                        raise RagEvalExecutionError(
+                            f"live RAG evaluation mixed document indexes in case {case.id}"
+                        )
+                    if case_index_ids:
+                        case_index_id = next(iter(case_index_ids))
+                        if observed_index_id is None:
+                            observed_index_id = case_index_id
+                        elif case_index_id != observed_index_id:
+                            raise RagEvalExecutionError(
+                                "live RAG evaluation document index changed during execution"
+                            )
                     observations.append(
                         observation_from_rag_results(
                             case,
@@ -140,6 +161,8 @@ class LiveRagEvalAdapter:
                             ),
                         )
                     )
+                except RagEvalExecutionError:
+                    raise
                 except Exception as exc:
                     raise RagEvalExecutionError(
                         f"live RAG evaluation failed for case {case.id}"
@@ -244,6 +267,9 @@ def rag_source_fingerprint(root: str | Path) -> str:
     relative_paths = (
         "backend/core/settings.py",
         "backend/chat/request_context.py",
+        "backend/documents/catalog.py",
+        "backend/documents/publication.py",
+        "backend/documents/retrieval.py",
         "backend/indexing/document_loader.py",
         "backend/indexing/embedding.py",
         "backend/indexing/html_processor.py",
@@ -320,7 +346,13 @@ def live_rag_profile_snapshot(*, profile_id: str, index_id: str) -> dict[str, An
     milvus = MilvusSettings.from_env()
     pipeline = importlib.import_module("backend.rag.pipeline")
     utils = importlib.import_module("backend.rag.utils")
-    effective_index_id = utils._embedding_scope.index_id  # noqa: SLF001
+    try:
+        snapshot = utils.resolve_retrieval_snapshot()
+    except Exception as exc:
+        raise RagEvalExecutionError(
+            "live RAG profile could not resolve the effective document index"
+        ) from exc
+    effective_index_id = snapshot.index_id
     if index_id != effective_index_id:
         raise RagEvalExecutionError(
             "explicit index-id does not match the effective RAG index identity"
@@ -346,6 +378,10 @@ def live_rag_profile_snapshot(*, profile_id: str, index_id: str) -> dict[str, An
         },
         "retrieval": {
             "collection_name": milvus.collection_name,
+            "collection_names": sorted(
+                {target.collection_name for target in snapshot.targets}
+            ),
+            "target_count": len(snapshot.targets),
             "milvus_uri_sha256": _identity_hash(milvus.uri),
             "embedding_scope_index_id": effective_index_id,
             "top_k": utils.RETRIEVAL_TOP_K,
@@ -385,6 +421,24 @@ def _sub_traces(trace: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return ()
     return tuple(dict(item) for item in value if isinstance(item, Mapping))
+
+
+def _retrieval_index_ids(*results: Mapping[str, Any]) -> set[str]:
+    identities: set[str] = set()
+
+    def _collect(trace: Mapping[str, Any]) -> None:
+        index_id = _optional_text(trace.get("retrieval_index_id"))
+        if index_id is not None:
+            identities.add(index_id)
+        for sub_trace in _sub_traces(trace):
+            _collect(sub_trace)
+
+    for result in results:
+        result_index_id = _optional_text(result.get("retrieval_index_id"))
+        if result_index_id is not None:
+            identities.add(result_index_id)
+        _collect(_trace(result))
+    return identities
 
 
 def _route(
@@ -475,7 +529,14 @@ def _chunks_from_trace(
             continue
         chunk_id = _optional_text(item.get("chunk_id"))
         text = _optional_text(item.get("text"))
-        content_sha256 = _content_hash(text) if text is not None else None
+        document_version_id = _optional_text(item.get("document_version_id"))
+        content_sha256 = _manifest_content_hash(item.get("content_hash"))
+        if document_version_id is not None and content_sha256 is None:
+            raise RagEvalExecutionError(
+                "versioned retrieved chunk is missing manifest content_hash"
+            )
+        if document_version_id is None and content_sha256 is None and text is not None:
+            content_sha256 = _content_hash(text)
         identity = chunk_id, content_sha256
         if identity == (None, None) or identity in seen:
             continue
@@ -502,6 +563,13 @@ def _chunks_from_trace(
 def _content_hash(value: str) -> str:
     normalized = unicodedata.normalize("NFC", " ".join(value.split()))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _manifest_content_hash(value: Any) -> str | None:
+    normalized = _optional_text(value)
+    if normalized is None or re.fullmatch(r"[0-9a-fA-F]{64}", normalized) is None:
+        return None
+    return normalized.lower()
 
 
 def _optional_text(value: Any) -> str | None:
