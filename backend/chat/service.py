@@ -5,17 +5,22 @@ from uuid import uuid4
 
 from langchain_core.messages import (
     AIMessage,
-    AIMessageChunk,
     HumanMessage,
     SystemMessage,
 )
 
+from backend.agent.factory import runtime_factory
+from backend.agent.memory import memory_manager
+from backend.agent.models import ModelRole, model_registry
+from backend.agent.runtime import (
+    AgentRuntimeInput,
+    AgentRuntimeResult,
+    extract_message_content,
+)
 from backend.chat.request_context import ChatRequestContext
-from backend.chat.runtime import create_agent_for_request, fast_model, model
 from backend.chat.storage import storage
 from backend.schemas.chat import PendingHitlState, normalize_rag_trace
 
-CONTEXT_WINDOW_MESSAGES = 6
 PENDING_HITL_KEY = "pending_hitl"
 HITL_STATUSES = {"needs_clarification", "needs_scope_selection"}
 HITL_ROUTES = {"clarify", "scope_select"}
@@ -150,18 +155,11 @@ def _pending_resume_state(pending_hitl: dict | None) -> dict | None:
 
 
 def _extract_ai_content(msg) -> str:
-    content = getattr(msg, "content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text = ""
-        for block in content:
-            if isinstance(block, str):
-                text += block
-            elif isinstance(block, dict) and block.get("type") == "text":
-                text += block.get("text", "")
-        return text
-    return str(content or "")
+    return extract_message_content(msg)
+
+
+def _get_answer_model():
+    return model_registry.get(ModelRole.ANSWER)
 
 
 def _format_retrieved_chunks(docs: list[dict]) -> str:
@@ -231,39 +229,14 @@ def _answer_resumed_rag_sync(
     route = rag_result.get("route") or trace.get("route")
     if status == "no_knowledge" or route == "no_knowledge" or not docs:
         return _no_knowledge_response()
-    res = model.invoke(_build_resume_answer_messages(pending_hitl, user_answer, docs))
+    res = _get_answer_model().invoke(
+        _build_resume_answer_messages(pending_hitl, user_answer, docs)
+    )
     return _extract_ai_content(res)
 
 
-def _build_context_messages(
-    messages: list,
-    persistent_note: str,
-    user_text: str,
-) -> list:
-    short_term = (
-        messages[-CONTEXT_WINDOW_MESSAGES:]
-        if len(messages) > CONTEXT_WINDOW_MESSAGES
-        else messages
-    )
-    context_messages: list = []
-    if persistent_note:
-        context_messages.append(
-            SystemMessage(
-                content=(
-                    "【对话持久化笔记（你的工作记忆）】\n"
-                    f"{persistent_note}\n"
-                    "请参考以上笔记保持对话连贯性，避免重复回答已解决的问题。"
-                )
-            )
-        )
-    context_messages.extend(short_term)
-    context_messages.append(HumanMessage(content=user_text))
-    return context_messages
-
-
 def _should_update_persistent_note(messages: list, current_note: str) -> bool:
-    """Only pay for note maintenance once short-term context actually starts trimming."""
-    return bool(current_note) or len(messages) > CONTEXT_WINDOW_MESSAGES
+    return memory_manager.should_update(messages, current_note)
 
 
 async def update_persistent_note(
@@ -272,15 +245,11 @@ async def update_persistent_note(
     ai_response: str,
     history_messages: list | None = None,
 ) -> str:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: _update_persistent_note_sync(
-            current_note,
-            user_text,
-            ai_response,
-            history_messages=history_messages,
-        ),
+    return await memory_manager.update(
+        current_note,
+        user_text,
+        ai_response,
+        history_messages=history_messages,
     )
 
 
@@ -296,35 +265,12 @@ def _update_persistent_note_sync(
     *,
     history_messages: list | None = None,
 ) -> str:
-    try:
-        history_text = ""
-        if history_messages:
-            history_lines = []
-            for message in history_messages:
-                role = "用户" if isinstance(message, HumanMessage) else "AI"
-                history_lines.append(f"{role}：{_extract_ai_content(message)}")
-            history_text = (
-                "\n\n▼ 首次建立笔记时需要一并概括的此前对话：\n"
-                + "\n".join(history_lines)
-                + "\n\n"
-            )
-        prompt = (
-            "你是一个【Context Manager Agent】(上下文管理器)，负责维护多轮对话中的「持久化笔记」。\n"
-            "笔记是模型在有限上下文窗口下的长效工作记忆，记录已解决的问题与关键事实。\n\n"
-            "更新规则：\n"
-            "1. 将新信息与现有笔记智能合并，不要简单拼接。\n"
-            "2. 过滤噪音，控制在 500 字以内，用简明条目输出。\n"
-            "3. 若信息冲突，保留最可靠或最新版本。\n\n"
-            f"▼ 现有笔记：\n{current_note if current_note else '无'}\n\n"
-            f"{history_text}"
-            f"▼ 最新一轮对话：\n用户：{user_text}\nAI：{ai_response}\n\n"
-            "请直接输出更新后的笔记（纯文本，不要解释或 Markdown 代码块）："
-        )
-        res = fast_model.invoke([HumanMessage(content=prompt)])
-        return (res.content or "").strip()
-    except Exception as e:
-        print(f"Context Manager Error: {e}")
-        return current_note
+    return memory_manager.update_sync(
+        current_note,
+        user_text,
+        ai_response,
+        history_messages=history_messages,
+    )
 
 
 def chat_with_agent(
@@ -381,43 +327,25 @@ def chat_with_agent(
                     pending_hitl, user_text, rag_result
                 )
         else:
-            request_agent = create_agent_for_request(ctx)
-            context_messages = _build_context_messages(
-                messages[:-1], persistent_note, effective_user_text
+            runtime = runtime_factory.create(
+                ctx,
+                persistent_note=persistent_note,
             )
-            result = request_agent.invoke(
-                {"messages": context_messages},
-                config={"recursion_limit": 8},
+            runtime_result = runtime.invoke(
+                AgentRuntimeInput(
+                    history=messages[:-1],
+                    user_text=effective_user_text,
+                )
             )
-
-            response_content = ""
-            if isinstance(result, dict):
-                if "output" in result:
-                    response_content = result["output"]
-                elif "messages" in result and result["messages"]:
-                    msg = result["messages"][-1]
-                    response_content = getattr(msg, "content", str(msg))
-                else:
-                    response_content = str(result)
-            elif hasattr(result, "content"):
-                response_content = result.content
-            else:
-                response_content = str(result)
-
-            stored_trace = ctx.take_rag_trace()
-            rag_trace = normalize_rag_trace(
-                stored_trace.get("rag_trace") if stored_trace else None
-            )
-            resume_state_from_trace = (
-                stored_trace.get("hitl_resume_state") if stored_trace else None
-            )
+            response_content = runtime_result.content
+            rag_trace = runtime_result.rag_trace
             next_pending_hitl = None
             if _is_hitl_trace(rag_trace):
                 next_pending_hitl = _build_pending_hitl(
                     rag_trace,
                     original_question or user_text,
                     previous_answers=hitl_answers,
-                    resume_state=resume_state_from_trace,
+                    resume_state=runtime_result.hitl_resume_state,
                 )
                 response_content = _format_hitl_message(
                     next_pending_hitl["prompt"],
@@ -554,7 +482,7 @@ async def chat_with_agent_stream(
                     user_text,
                     rag_result.get("docs") or [],
                 )
-                async for msg in model.astream(answer_messages):
+                async for msg in _get_answer_model().astream(answer_messages):
                     content = _extract_ai_content(msg)
                     if content:
                         full_response += content
@@ -601,9 +529,9 @@ async def chat_with_agent_stream(
             )
             return
 
-        request_agent = create_agent_for_request(ctx)
-        context_messages = _build_context_messages(
-            messages[:-1], persistent_note, effective_user_text
+        runtime = runtime_factory.create(
+            ctx,
+            persistent_note=persistent_note,
         )
 
         session_title = None
@@ -613,41 +541,24 @@ async def chat_with_agent_stream(
 
         full_response = ""
         agent_error = None
+        runtime_result: AgentRuntimeResult | None = None
 
         async def _agent_worker():
-            nonlocal full_response, agent_error
+            nonlocal full_response, agent_error, runtime_result
             try:
-                async for msg, _metadata in request_agent.astream(
-                    {"messages": context_messages},
-                    stream_mode="messages",
-                    config={"recursion_limit": 8},
+                async for runtime_event in runtime.astream(
+                    AgentRuntimeInput(
+                        history=messages[:-1],
+                        user_text=effective_user_text,
+                    )
                 ):
-                    if not isinstance(msg, AIMessageChunk):
-                        continue
-                    if getattr(msg, "tool_call_chunks", None):
-                        continue
-
-                    content = ""
-                    if isinstance(msg.content, str):
-                        content = msg.content
-                    elif isinstance(msg.content, list):
-                        for block in msg.content:
-                            if isinstance(block, str):
-                                content += block
-                            elif (
-                                isinstance(block, dict) and block.get("type") == "text"
-                            ):
-                                content += block.get("text", "")
-
-                    if content:
-                        stored_trace = ctx.peek_rag_trace()
-                        rag_trace = normalize_rag_trace(
-                            stored_trace.get("rag_trace") if stored_trace else None
+                    if runtime_event.type == "content":
+                        full_response += runtime_event.content
+                        await output_queue.put(
+                            {"type": "content", "content": runtime_event.content}
                         )
-                        if _is_hitl_trace(rag_trace):
-                            continue
-                        full_response += content
-                        await output_queue.put({"type": "content", "content": content})
+                    elif runtime_event.result is not None:
+                        runtime_result = runtime_event.result
             except Exception as e:
                 agent_error = str(e)
                 await output_queue.put({"type": "error", "content": str(e)})
@@ -673,13 +584,13 @@ async def chat_with_agent_stream(
             if not agent_task.done():
                 agent_task.cancel()
 
-        stored_trace = ctx.take_rag_trace()
-        rag_trace = normalize_rag_trace(
-            stored_trace.get("rag_trace") if stored_trace else None
-        )
-        resume_state_from_trace = (
-            stored_trace.get("hitl_resume_state") if stored_trace else None
-        )
+        if runtime_result is not None:
+            full_response = runtime_result.content or full_response
+            rag_trace = runtime_result.rag_trace
+            resume_state_from_trace = runtime_result.hitl_resume_state
+        else:
+            rag_trace = None
+            resume_state_from_trace = None
         next_pending_hitl = None
         hitl_response_content = ""
         if _is_hitl_trace(rag_trace):

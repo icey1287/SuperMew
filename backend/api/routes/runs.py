@@ -8,9 +8,10 @@ from backend.events.bus import event_bus
 from backend.events.journal import journal
 from backend.events.sse import format_sse_event, format_sse_heartbeat
 from backend.infra.auth import get_current_user
-from backend.runs.service import service
+from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 from backend.runs.resume import resume_coordinator
+from backend.runs.service import service
 from backend.schemas.events import RunEventsResponse
 from backend.schemas.runs import (
     RunCreateRequest,
@@ -24,6 +25,31 @@ from backend.schemas.runs import (
 
 
 router = APIRouter(prefix="/v1", tags=["runs"])
+
+
+async def _reserve_run(*, username: str, thread_id: str, request: RunCreateRequest):
+    reservation = await run_in_threadpool(
+        service.create_run,
+        username=username,
+        thread_id=thread_id,
+        message=request.message,
+        idempotency_key=request.idempotency_key,
+        expected_thread_version=request.expected_thread_version,
+        multitask_strategy=request.multitask_strategy,
+        on_disconnect=request.on_disconnect,
+    )
+    if reservation.run.supersedes_run_id:
+        await run_in_threadpool(
+            service.request_cancel,
+            username=username,
+            run_id=reservation.run.supersedes_run_id,
+        )
+        await cancellation_registry.request_cancel(reservation.run.supersedes_run_id)
+    await run_agent_executor.spawn_once(
+        username=username,
+        run_id=reservation.run.id,
+    )
+    return reservation
 
 
 def _event_cursor(after: int, last_event_id: str | None) -> int:
@@ -69,13 +95,13 @@ async def create_thread(
     request: ThreadCreateRequest,
     current_user: User = Depends(get_current_user),
 ):
-    return ThreadResponse(
-        **service.create_thread(
-            username=current_user.username,
-            thread_id=request.thread_id,
-            title=request.title,
-        )
+    thread = await run_in_threadpool(
+        service.create_thread,
+        username=current_user.username,
+        thread_id=request.thread_id,
+        title=request.title,
     )
+    return ThreadResponse(**thread)
 
 
 @router.post(
@@ -88,14 +114,10 @@ async def create_run(
     request: RunCreateRequest,
     current_user: User = Depends(get_current_user),
 ):
-    reservation = service.create_run(
+    reservation = await _reserve_run(
         username=current_user.username,
         thread_id=thread_id,
-        message=request.message,
-        idempotency_key=request.idempotency_key,
-        expected_thread_version=request.expected_thread_version,
-        multitask_strategy=request.multitask_strategy,
-        on_disconnect=request.on_disconnect,
+        request=request,
     )
     return RunCreateResponse(
         run=RunResponse(**reservation.run.__dict__),
@@ -106,18 +128,28 @@ async def create_run(
 
 @router.get("/runs/{run_id}", response_model=RunResponse)
 async def get_run(run_id: str, current_user: User = Depends(get_current_user)):
-    return RunResponse(
-        **service.get_run(username=current_user.username, run_id=run_id).__dict__
+    run = await run_in_threadpool(
+        service.get_run,
+        username=current_user.username,
+        run_id=run_id,
     )
+    return RunResponse(**run.__dict__)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunResponse)
 async def cancel_run(run_id: str, current_user: User = Depends(get_current_user)):
-    service.request_cancel(username=current_user.username, run_id=run_id)
-    await cancellation_registry.request_cancel(run_id)
-    return RunResponse(
-        **service.get_run(username=current_user.username, run_id=run_id).__dict__
+    await run_in_threadpool(
+        service.request_cancel,
+        username=current_user.username,
+        run_id=run_id,
     )
+    await cancellation_registry.request_cancel(run_id)
+    run = await run_in_threadpool(
+        service.get_run,
+        username=current_user.username,
+        run_id=run_id,
+    )
+    return RunResponse(**run.__dict__)
 
 
 @router.post(
@@ -138,6 +170,13 @@ async def resume_run(
         answer=request.answer,
         idempotency_key=request.idempotency_key,
     )
+    await run_agent_executor.resume_once(
+        username=current_user.username,
+        run_id=run_id,
+        hitl_token=request.hitl_token,
+        answer=request.answer,
+        idempotency_key=request.idempotency_key,
+    )
     return RunResumeResponse(
         run=RunResponse(**acceptance.run.__dict__),
         checkpoint_id=acceptance.checkpoint_id,
@@ -152,7 +191,8 @@ async def get_run_events(
     limit: int = Query(default=500, ge=1, le=1000),
     current_user: User = Depends(get_current_user),
 ):
-    events = journal.read_after(
+    events = await run_in_threadpool(
+        journal.read_after,
         username=current_user.username,
         run_id=run_id,
         after=after,
@@ -185,14 +225,10 @@ async def create_run_stream(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     current_user: User = Depends(get_current_user),
 ):
-    reservation = service.create_run(
+    reservation = await _reserve_run(
         username=current_user.username,
         thread_id=thread_id,
-        message=request.message,
-        idempotency_key=request.idempotency_key,
-        expected_thread_version=request.expected_thread_version,
-        multitask_strategy=request.multitask_strategy,
-        on_disconnect=request.on_disconnect,
+        request=request,
     )
     return _stream_response(
         username=current_user.username,

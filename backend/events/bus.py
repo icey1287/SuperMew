@@ -32,12 +32,16 @@ class PersistentEventBus:
         run_id: str,
         event_type: RunEventType | str,
         data: dict | None = None,
+        worker_id: str | None = None,
+        fencing_token: int | None = None,
     ) -> RunEventV1:
         appended = await asyncio.to_thread(
             self.journal.append,
             run_id=run_id,
             event_type=event_type,
             data=data,
+            worker_id=worker_id,
+            fencing_token=fencing_token,
         )
         if self.transport is not None:
             try:

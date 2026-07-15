@@ -117,6 +117,54 @@ class RunSettings(_EnvSettings):
     )
 
 
+class AgentSettings(_EnvSettings):
+    recursion_limit: int = Field(
+        default=32,
+        ge=2,
+        le=100,
+        validation_alias="AGENT_RECURSION_LIMIT",
+    )
+    max_model_calls: int = Field(
+        default=4,
+        ge=1,
+        le=100,
+        validation_alias="AGENT_MAX_MODEL_CALLS",
+    )
+    max_tool_calls: int = Field(
+        default=6,
+        ge=1,
+        le=100,
+        validation_alias="AGENT_MAX_TOOL_CALLS",
+    )
+    max_repeated_tool_calls: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        validation_alias="AGENT_MAX_REPEATED_TOOL_CALLS",
+    )
+    max_context_tokens: int = Field(
+        default=12000,
+        ge=1024,
+        validation_alias="AGENT_MAX_CONTEXT_TOKENS",
+    )
+    response_reserve_tokens: int = Field(
+        default=2048,
+        ge=256,
+        validation_alias="AGENT_RESPONSE_RESERVE_TOKENS",
+    )
+    memory_message_threshold: int = Field(
+        default=6,
+        ge=2,
+        le=100,
+        validation_alias="AGENT_MEMORY_MESSAGE_THRESHOLD",
+    )
+
+    @property
+    def minimum_recursion_limit(self) -> int:
+        tool_rounds = min(self.max_tool_calls, max(self.max_model_calls - 1, 0))
+        return 8 + (tool_rounds * 5)
+
+
 class SecuritySettings(_EnvSettings):
     jwt_secret_key: SecretStr = Field(
         default=SecretStr(""),
@@ -219,6 +267,12 @@ class StorageSettings(_EnvSettings):
 
 class WorkerSettings(_EnvSettings):
     worker_id: str = Field(default="", validation_alias="WORKER_ID")
+    max_concurrent_runs: int = Field(
+        default=8,
+        ge=1,
+        le=128,
+        validation_alias="RUN_WORKER_MAX_CONCURRENCY",
+    )
     lease_seconds: int = Field(
         default=60, ge=10, validation_alias="WORKER_LEASE_SECONDS"
     )
@@ -262,6 +316,7 @@ class AppSettings(BaseModel):
     models: ModelSettings
     rag: RagSettings
     runs: RunSettings
+    agent: AgentSettings
     security: SecuritySettings
     storage: StorageSettings
     worker: WorkerSettings
@@ -302,6 +357,16 @@ class AppSettings(BaseModel):
                 f"不支持的 CONFIG_VERSION={self.app.config_version}，当前仅支持 1"
             )
 
+        if self.agent.response_reserve_tokens >= self.agent.max_context_tokens:
+            problems.append(
+                "AGENT_RESPONSE_RESERVE_TOKENS 必须小于 AGENT_MAX_CONTEXT_TOKENS"
+            )
+        if self.agent.recursion_limit < self.agent.minimum_recursion_limit:
+            problems.append(
+                "AGENT_RECURSION_LIMIT 与模型/工具调用预算不匹配，"
+                f"当前至少需要 {self.agent.minimum_recursion_limit}"
+            )
+
         if problems:
             raise ValueError("；".join(problems))
 
@@ -337,6 +402,7 @@ def get_settings() -> AppSettings:
         models=ModelSettings(),
         rag=RagSettings(),
         runs=RunSettings(),
+        agent=AgentSettings(),
         security=SecuritySettings(),
         storage=StorageSettings(),
         worker=WorkerSettings(),

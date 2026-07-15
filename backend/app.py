@@ -25,6 +25,7 @@ from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
 from backend.events.outbox import default_publisher
 from backend.infra.database import init_db
+from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     async def lifespan(_: FastAPI):
         settings.validate_startup()
         init_db()
+        await run_agent_executor.start()
         stop_event = asyncio.Event()
         publisher_task = asyncio.create_task(default_publisher.run(stop_event))
         cancellation_task = asyncio.create_task(
@@ -45,6 +47,7 @@ def create_app() -> FastAPI:
         try:
             yield
         finally:
+            await run_agent_executor.close()
             stop_event.set()
             try:
                 await asyncio.wait_for(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Literal
 
 import redis.asyncio as redis_async
 
@@ -11,9 +11,6 @@ from backend.core.settings import get_settings
 from backend.runs.repository import RunRecord
 from backend.runs.service import RunService, service
 from backend.runs.state import RunStatus
-
-
-T = TypeVar("T")
 
 
 class RedisCancellationTransport:
@@ -83,6 +80,7 @@ class CancellationToken:
     event: asyncio.Event
     transport: RedisCancellationTransport | None = None
     _partial_chunks: list[str] = field(default_factory=list)
+    reason: Literal["user", "shutdown", "ownership_lost"] | None = None
 
     @property
     def cancelled(self) -> bool:
@@ -96,13 +94,20 @@ class CancellationToken:
         if content:
             self._partial_chunks.append(content)
 
+    def request(
+        self,
+        reason: Literal["user", "shutdown", "ownership_lost"],
+    ) -> None:
+        self.reason = reason
+        self.event.set()
+
     async def checkpoint(self) -> None:
         if self.event.is_set():
             raise asyncio.CancelledError
         if self.transport is not None:
             try:
                 if await self.transport.is_requested(self.run_id):
-                    self.event.set()
+                    self.request("user")
                     raise asyncio.CancelledError
             except asyncio.CancelledError:
                 raise
@@ -141,7 +146,7 @@ class CancellationRegistry:
         if self.transport is not None:
             try:
                 if await self.transport.is_requested(run_id):
-                    token.event.set()
+                    token.request("user")
             except Exception:
                 pass
         return token
@@ -150,12 +155,16 @@ class CancellationRegistry:
         async with self._lock:
             self._registrations.pop(run_id, None)
 
-    async def cancel_local(self, run_id: str) -> bool:
+    async def cancel_local(
+        self,
+        run_id: str,
+        reason: Literal["user", "shutdown", "ownership_lost"] = "user",
+    ) -> bool:
         async with self._lock:
             registration = self._registrations.get(run_id)
             if registration is None:
                 return False
-            registration.token.event.set()
+            registration.token.request(reason)
             task = registration.task
         if task is not None and not task.done():
             task.cancel()
@@ -171,7 +180,7 @@ class CancellationRegistry:
         return True
 
     async def request_cancel(self, run_id: str, *, propagate: bool = True) -> bool:
-        local = await self.cancel_local(run_id)
+        local = await self.cancel_local(run_id, reason="user")
         if propagate and self.transport is not None:
             try:
                 await self.transport.request(run_id)
@@ -197,7 +206,18 @@ class CancellationRegistry:
             await self.transport.close()
 
 
-Runner = Callable[[CancellationToken], Awaitable[T]]
+@dataclass(frozen=True)
+class RunExecutionOutcome:
+    kind: Literal["completed", "waiting_input"]
+    content: str = ""
+    rag_trace: dict | None = None
+    fencing_token: int | None = None
+
+
+Runner = Callable[
+    [CancellationToken],
+    Awaitable[str | RunExecutionOutcome],
+]
 
 
 class RunExecutionManager:
@@ -209,26 +229,58 @@ class RunExecutionManager:
         self.service = run_service
         self.registry = registry or cancellation_registry
 
-    def spawn(
+    async def execute(
         self,
         *,
         run: RunRecord,
-        runner: Runner[str],
-    ) -> asyncio.Task:
-        async def execute() -> None:
-            task = asyncio.current_task()
-            token = await self.registry.register(run.id, task)
-            try:
-                await token.checkpoint()
-                content = await runner(token)
-                await token.checkpoint()
-                self.service.complete_run(
+        runner: Runner,
+    ) -> None:
+        task = asyncio.current_task()
+        token = await self.registry.register(run.id, task)
+        try:
+            await token.checkpoint()
+            value = await runner(token)
+            await token.checkpoint()
+            outcome = (
+                value
+                if isinstance(value, RunExecutionOutcome)
+                else RunExecutionOutcome(kind="completed", content=value)
+            )
+            if outcome.kind == "waiting_input":
+                current = await asyncio.to_thread(
+                    self.service.repository.get_internal,
                     run_id=run.id,
-                    content=content,
-                    fencing_token=run.fencing_token,
                 )
-            except asyncio.CancelledError:
-                self.service.repository.finalize(
+                durable_pause = await asyncio.to_thread(
+                    self.service.repository.has_durable_checkpoint,
+                    run_id=run.id,
+                )
+                if (
+                    current.status
+                    not in {
+                        RunStatus.WAITING_INPUT.value,
+                        RunStatus.PENDING.value,
+                        RunStatus.RUNNING.value,
+                    }
+                    or not durable_pause
+                ):
+                    raise RuntimeError(
+                        "waiting_input outcome requires a durable checkpoint transition"
+                    )
+                return
+            await asyncio.to_thread(
+                self.service.complete_run,
+                run_id=run.id,
+                content=outcome.content,
+                fencing_token=outcome.fencing_token or run.fencing_token,
+                rag_trace=outcome.rag_trace,
+            )
+        except asyncio.CancelledError:
+            if token.reason == "ownership_lost":
+                return
+            if token.reason == "user":
+                await asyncio.to_thread(
+                    self.service.repository.finalize,
                     run_id=run.id,
                     target_status=RunStatus.CANCELLED,
                     content=token.partial_content or "运行已由用户取消。",
@@ -237,18 +289,37 @@ class RunExecutionManager:
                     error_detail_redacted="cancelled by user",
                     partial=True,
                 )
-            except Exception:
-                self.service.fail_run(
+            else:
+                await asyncio.to_thread(
+                    self.service.fail_run,
                     run_id=run.id,
-                    error_code="RUN_EXECUTION_FAILED",
-                    message=token.partial_content or "运行失败，请稍后重试。",
+                    error_code="RUN_INTERRUPTED",
+                    message=token.partial_content or "运行因服务重启而中断。",
                     fencing_token=run.fencing_token,
                     partial=bool(token.partial_content),
                 )
-            finally:
-                await self.registry.unregister(run.id)
+        except Exception:
+            await asyncio.to_thread(
+                self.service.fail_run,
+                run_id=run.id,
+                error_code="RUN_EXECUTION_FAILED",
+                message=token.partial_content or "运行失败，请稍后重试。",
+                fencing_token=run.fencing_token,
+                partial=bool(token.partial_content),
+            )
+        finally:
+            await self.registry.unregister(run.id)
 
-        return asyncio.create_task(execute(), name=f"run-execution:{run.id}")
+    def spawn(
+        self,
+        *,
+        run: RunRecord,
+        runner: Runner,
+    ) -> asyncio.Task:
+        return asyncio.create_task(
+            self.execute(run=run, runner=runner),
+            name=f"run-execution:{run.id}",
+        )
 
 
 default_cancellation_transport = RedisCancellationTransport()

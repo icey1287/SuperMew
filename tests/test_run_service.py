@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, Run, User, utcnow
+from backend.db.models import Base, ChatMessage, Run, RunEvent, User, utcnow
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
@@ -147,10 +147,46 @@ class RunServiceTests(unittest.TestCase):
             fencing_token=claimed.fencing_token,
             lease_seconds=30,
         )
-        recovered = self.service.reconcile_orphans(
-            now=utcnow() + timedelta(seconds=2)
-        )
+        recovered = self.service.reconcile_orphans(now=utcnow() + timedelta(seconds=2))
         self.assertEqual([], recovered)
+
+    def test_heartbeat_does_not_emit_waiting_event_and_wait_transition_does(self):
+        reservation = self.create()
+        claimed = self.repository.claim(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+            lease_seconds=1,
+        )
+        self.repository.heartbeat(
+            run_id=claimed.id,
+            worker_id="worker-1",
+            fencing_token=claimed.fencing_token,
+            lease_seconds=30,
+        )
+        waiting = self.service.wait_for_input(
+            run_id=claimed.id,
+            worker_id="worker-1",
+            fencing_token=claimed.fencing_token,
+        )
+
+        self.assertEqual(RunStatus.WAITING_INPUT, waiting.status)
+        self.assertIsNone(waiting.owner_worker_id)
+        with self.Session() as db:
+            events = (
+                db.query(RunEvent)
+                .filter(
+                    RunEvent.run_id == claimed.id,
+                    RunEvent.event_type == "run.waiting_input",
+                )
+                .all()
+            )
+            assistant = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == waiting.assistant_message_id)
+                .one()
+            )
+            self.assertEqual(1, len(events))
+            self.assertEqual("waiting_input", assistant.status)
 
     def test_run_ownership_is_enforced(self):
         reservation = self.create()

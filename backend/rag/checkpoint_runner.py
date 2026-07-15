@@ -54,6 +54,15 @@ class ConsumedResume:
 
 
 @dataclass(frozen=True)
+class PendingResume:
+    username: str
+    run_id: str
+    hitl_token: str
+    answer: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
 class RagRunOutcome:
     result: dict
     fencing_token: int
@@ -270,6 +279,7 @@ class HitlCheckpointRepository:
                             status_code=409,
                         )
                     should_resume = False
+                    started_now = False
                     if worker_id:
                         if run.status == RunStatus.PENDING.value:
                             run.status = RunStatus.RUNNING.value
@@ -280,6 +290,7 @@ class HitlCheckpointRepository:
                             )
                             run.updated_at = utcnow()
                             should_resume = True
+                            started_now = True
                         elif run.status == RunStatus.RUNNING.value:
                             if run.owner_worker_id != worker_id:
                                 raise AppError(
@@ -288,6 +299,19 @@ class HitlCheckpointRepository:
                                     status_code=409,
                                 )
                             should_resume = True
+                    if started_now:
+                        append_event_in_session(
+                            db,
+                            run=run,
+                            thread_id=thread.session_id,
+                            event_type=RunEventType.RUN_STARTED,
+                            data={
+                                "status": run.status,
+                                "worker_id": worker_id,
+                                "fencing_token": run.fencing_token,
+                                "resume_checkpoint_id": checkpoint.checkpoint_id,
+                            },
+                        )
                     return ConsumedResume(
                         checkpoint_id=checkpoint.checkpoint_id,
                         answer=clean_answer,
@@ -337,6 +361,19 @@ class HitlCheckpointRepository:
                         "status": run.status,
                     },
                 )
+                if worker_id:
+                    append_event_in_session(
+                        db,
+                        run=run,
+                        thread_id=thread.session_id,
+                        event_type=RunEventType.RUN_STARTED,
+                        data={
+                            "status": run.status,
+                            "worker_id": worker_id,
+                            "fencing_token": run.fencing_token,
+                            "resume_checkpoint_id": checkpoint.checkpoint_id,
+                        },
+                    )
                 return ConsumedResume(
                     checkpoint_id=checkpoint.checkpoint_id,
                     answer=clean_answer,
@@ -350,6 +387,45 @@ class HitlCheckpointRepository:
                 "HITL 恢复请求发生幂等冲突",
                 status_code=409,
             ) from exc
+        finally:
+            db.close()
+
+    def list_pending_resumes(self, *, limit: int = 500) -> list[PendingResume]:
+        db = self._session_factory()
+        try:
+            rows = (
+                db.query(RunCheckpoint, Run, User)
+                .join(Run, Run.id == RunCheckpoint.run_id)
+                .join(User, User.id == Run.user_id)
+                .filter(
+                    Run.status == RunStatus.PENDING.value,
+                    RunCheckpoint.consumed_at.is_not(None),
+                    RunCheckpoint.resume_idempotency_key.is_not(None),
+                )
+                .order_by(RunCheckpoint.consumed_at.desc())
+                .limit(max(1, min(limit, 5000)))
+                .all()
+            )
+            pending: list[PendingResume] = []
+            seen: set[str] = set()
+            for checkpoint, run, user in rows:
+                if run.id in seen:
+                    continue
+                payload = checkpoint.resume_payload_json or {}
+                answer = str(payload.get("answer") or "").strip()
+                if not answer or not checkpoint.resume_idempotency_key:
+                    continue
+                seen.add(run.id)
+                pending.append(
+                    PendingResume(
+                        username=user.username,
+                        run_id=run.id,
+                        hitl_token=checkpoint.hitl_token or "",
+                        answer=answer,
+                        idempotency_key=checkpoint.resume_idempotency_key,
+                    )
+                )
+            return pending
         finally:
             db.close()
 
@@ -435,8 +511,6 @@ class CheckpointedRagRunner:
         context: ChatRequestContext,
         worker_id: str,
     ) -> RagRunOutcome:
-        from backend.rag.pipeline import build_rag_graph
-
         consumed = self.checkpoints.consume_resume(
             username=username,
             run_id=run_id,
@@ -445,6 +519,23 @@ class CheckpointedRagRunner:
             idempotency_key=idempotency_key,
             worker_id=worker_id,
         )
+        return self.resume_consumed(
+            run_id=run_id,
+            consumed=consumed,
+            context=context,
+            worker_id=worker_id,
+        )
+
+    def resume_consumed(
+        self,
+        *,
+        run_id: str,
+        consumed: ConsumedResume,
+        context: ChatRequestContext,
+        worker_id: str,
+    ) -> RagRunOutcome:
+        from backend.rag.pipeline import build_rag_graph
+
         with self.saver_factory() as saver:
             graph = build_rag_graph(checkpointer=saver)
             config = self._config(run_id)

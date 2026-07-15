@@ -2,6 +2,7 @@ import json
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from backend.chat import chat_with_agent, chat_with_agent_stream
 from backend.db.models import User
@@ -17,7 +18,12 @@ async def chat_endpoint(
     request: ChatRequest, current_user: User = Depends(get_current_user)
 ):
     session_id = request.session_id or "default_session"
-    resp = chat_with_agent(request.message, current_user.username, session_id)
+    resp = await run_in_threadpool(
+        chat_with_agent,
+        request.message,
+        current_user.username,
+        session_id,
+    )
     if isinstance(resp, dict):
         return ChatResponse(**resp)
     return ChatResponse(response=resp)

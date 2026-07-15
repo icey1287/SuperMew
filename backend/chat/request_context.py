@@ -24,6 +24,7 @@ class ChatRequestContext:
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _active: bool = True
     _rag_trace: Optional[dict] = None
+    _checkpoint_pause: Optional[dict] = None
     _knowledge_tool_slots_used: int = 0
     _started_at: float = field(default_factory=time.monotonic)
     _last_step_at: Optional[float] = None
@@ -95,7 +96,9 @@ class ChatRequestContext:
         except Exception:
             logger.exception("Failed to emit RAG step")
 
-    def store_rag_trace(self, rag_trace: dict, hitl_resume_state: Optional[dict] = None) -> None:
+    def store_rag_trace(
+        self, rag_trace: dict, hitl_resume_state: Optional[dict] = None
+    ) -> None:
         current_trace = normalize_rag_trace(rag_trace)
         if not current_trace:
             return
@@ -103,9 +106,9 @@ class ChatRequestContext:
             if self._active:
                 self._rag_trace = {"rag_trace": current_trace}
                 if hitl_resume_state:
-                    self._rag_trace["hitl_resume_state"] = HitlResumeState.model_validate(
-                        hitl_resume_state
-                    ).model_dump()
+                    self._rag_trace["hitl_resume_state"] = (
+                        HitlResumeState.model_validate(hitl_resume_state).model_dump()
+                    )
 
     def take_rag_trace(self) -> Optional[dict]:
         with self._lock:
@@ -117,6 +120,17 @@ class ChatRequestContext:
         with self._lock:
             return self._rag_trace
 
+    def store_checkpoint_pause(self, pause: dict) -> None:
+        with self._lock:
+            if self._active:
+                self._checkpoint_pause = dict(pause)
+
+    def take_checkpoint_pause(self) -> Optional[dict]:
+        with self._lock:
+            pause = self._checkpoint_pause
+            self._checkpoint_pause = None
+            return pause
+
     def reset_knowledge_tool_budget(self) -> None:
         with self._lock:
             self._knowledge_tool_slots_used = 0
@@ -127,6 +141,10 @@ class ChatRequestContext:
                 return False
             self._knowledge_tool_slots_used += 1
             return True
+
+    def elapsed_ms(self) -> int:
+        with self._lock:
+            return max(int((time.monotonic() - self._started_at) * 1000), 0)
 
     def close(self) -> None:
         with self._lock:

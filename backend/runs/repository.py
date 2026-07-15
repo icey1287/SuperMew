@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
-from backend.db.models import ChatMessage, ChatSession, Run, User, utcnow
+from backend.db.models import ChatMessage, ChatSession, Run, RunCheckpoint, User, utcnow
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
@@ -61,6 +61,21 @@ class RunReservation:
     run: RunRecord
     created: bool
     thread_version: int
+
+
+@dataclass(frozen=True)
+class ExecutionMessage:
+    role: str
+    content: str
+
+
+@dataclass(frozen=True)
+class RunExecutionSnapshot:
+    run: RunRecord
+    username: str
+    user_text: str
+    history: tuple[ExecutionMessage, ...]
+    persistent_note: str
 
 
 def hash_run_request(
@@ -442,6 +457,154 @@ class RunRepository:
         finally:
             db.close()
 
+    def get_internal(self, *, run_id: str) -> RunRecord:
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(Run, ChatSession)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .filter(Run.id == run_id)
+                .first()
+            )
+            if not row:
+                raise AppError(
+                    ErrorCode.RUN_NOT_FOUND,
+                    "Run 不存在",
+                    status_code=404,
+                )
+            run, thread = row
+            return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    def has_durable_checkpoint(self, *, run_id: str) -> bool:
+        db = self._session_factory()
+        try:
+            return (
+                db.query(RunCheckpoint.id)
+                .filter(RunCheckpoint.run_id == run_id)
+                .first()
+                is not None
+            )
+        finally:
+            db.close()
+
+    def find_pending(self, *, username: str, thread_id: str) -> RunRecord | None:
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(Run, ChatSession)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .join(User, User.id == Run.user_id)
+                .filter(
+                    User.username == username,
+                    ChatSession.session_id == thread_id,
+                    Run.status == RunStatus.PENDING.value,
+                )
+                .order_by(Run.created_at.asc())
+                .first()
+            )
+            if not row:
+                return None
+            run, thread = row
+            return self._record(run, thread.session_id)
+        finally:
+            db.close()
+
+    def list_pending(self, *, limit: int = 500) -> list[tuple[str, RunRecord]]:
+        db = self._session_factory()
+        try:
+            rows = (
+                db.query(Run, ChatSession, User)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .join(User, User.id == Run.user_id)
+                .filter(Run.status == RunStatus.PENDING.value)
+                .order_by(Run.created_at.asc())
+                .limit(max(1, min(limit, 5000)))
+                .all()
+            )
+            return [
+                (user.username, self._record(run, thread.session_id))
+                for run, thread, user in rows
+            ]
+        finally:
+            db.close()
+
+    def load_execution_snapshot(
+        self,
+        *,
+        username: str,
+        run_id: str,
+        worker_id: str,
+        fencing_token: int,
+    ) -> RunExecutionSnapshot:
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(Run, ChatSession, User)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .join(User, User.id == Run.user_id)
+                .filter(Run.id == run_id, User.username == username)
+                .first()
+            )
+            if not row:
+                raise AppError(
+                    ErrorCode.RUN_NOT_FOUND,
+                    "Run 不存在",
+                    status_code=404,
+                )
+            run, thread, user = row
+            self._assert_fencing(run, fencing_token)
+            if (
+                run.status != RunStatus.RUNNING.value
+                or run.owner_worker_id != worker_id
+            ):
+                raise AppError(
+                    ErrorCode.RUN_STATE_CONFLICT,
+                    "当前 worker 不再拥有该 Run",
+                    status_code=409,
+                )
+            user_message = (
+                db.query(ChatMessage)
+                .filter(
+                    ChatMessage.id == run.user_message_id,
+                    ChatMessage.session_ref_id == thread.id,
+                    ChatMessage.run_id == run.id,
+                )
+                .first()
+            )
+            if not user_message or user_message.message_type != "human":
+                raise AppError(
+                    ErrorCode.RUN_STATE_CONFLICT,
+                    "Run 缺少已预留的用户消息",
+                    status_code=409,
+                )
+            history_rows = (
+                db.query(ChatMessage)
+                .filter(
+                    ChatMessage.session_ref_id == thread.id,
+                    ChatMessage.sequence < user_message.sequence,
+                    ChatMessage.status == "completed",
+                )
+                .order_by(ChatMessage.sequence.asc())
+                .all()
+            )
+            return RunExecutionSnapshot(
+                run=self._record(run, thread.session_id),
+                username=user.username,
+                user_text=user_message.content,
+                history=tuple(
+                    ExecutionMessage(role=item.message_type, content=item.content)
+                    for item in history_rows
+                    if item.message_type in {"human", "ai", "system"}
+                ),
+                persistent_note=str(
+                    (thread.metadata_json or {}).get("persistent_note") or ""
+                ),
+            )
+        finally:
+            db.close()
+
     @staticmethod
     def _assert_fencing(run: Run, fencing_token: int | None) -> None:
         if fencing_token is not None and run.fencing_token != fencing_token:
@@ -558,13 +721,6 @@ class RunRepository:
                     .filter(ChatSession.id == run.thread_ref_id)
                     .first()
                 )
-                append_event_in_session(
-                    db,
-                    run=run,
-                    thread_id=thread.session_id,
-                    event_type=RunEventType.RUN_WAITING_INPUT,
-                    data={"status": run.status},
-                )
                 return self._record(run, thread.session_id)
         finally:
             db.close()
@@ -592,11 +748,28 @@ class RunRepository:
                         status_code=409,
                     )
                 self._transition(run, RunStatus.WAITING_INPUT)
+                run.owner_worker_id = None
                 run.lease_expires_at = None
                 thread = (
                     db.query(ChatSession)
                     .filter(ChatSession.id == run.thread_ref_id)
                     .first()
+                )
+                if run.assistant_message_id:
+                    message = (
+                        db.query(ChatMessage)
+                        .filter(ChatMessage.id == run.assistant_message_id)
+                        .first()
+                    )
+                    if message:
+                        message.status = "waiting_input"
+                        message.updated_at = utcnow()
+                append_event_in_session(
+                    db,
+                    run=run,
+                    thread_id=thread.session_id,
+                    event_type=RunEventType.RUN_WAITING_INPUT,
+                    data={"status": run.status},
                 )
                 return self._record(run, thread.session_id)
         finally:

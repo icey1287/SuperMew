@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
+from backend.agent.runtime import AgentRuntimeEvent, AgentRuntimeResult
+
 service = importlib.import_module("backend.chat.service")
 
 
@@ -17,32 +19,47 @@ class FakeStorage:
     def load_with_meta(self, user_id, session_id):
         return list(self.messages), dict(self.metadata)
 
-    def save(self, user_id, session_id, messages, metadata=None, extra_message_data=None):
+    def save(
+        self, user_id, session_id, messages, metadata=None, extra_message_data=None
+    ):
         self.messages = list(messages)
         if metadata is not None:
             self.metadata = {**self.metadata, **metadata}
-        self.saves.append({
-            "messages": list(messages),
-            "metadata": metadata,
-            "extra_message_data": extra_message_data,
-        })
+        self.saves.append(
+            {
+                "messages": list(messages),
+                "metadata": metadata,
+                "extra_message_data": extra_message_data,
+            }
+        )
 
 
-class FakeStreamAgent:
-    def __init__(self, ctx, trace=None, chunks=None, captured_prompts=None, resume_state=None):
+class FakeRuntime:
+    def __init__(
+        self, ctx, trace=None, chunks=None, captured_prompts=None, resume_state=None
+    ):
         self.ctx = ctx
         self.trace = trace
         self.chunks = chunks or []
         self.captured_prompts = captured_prompts
         self.resume_state = resume_state
 
-    async def astream(self, payload, stream_mode=None, config=None):
+    async def astream(self, request):
         if self.captured_prompts is not None:
-            self.captured_prompts.append(payload["messages"][-1].content)
-        if self.trace:
-            self.ctx.store_rag_trace(self.trace, self.resume_state)
-        for chunk in self.chunks:
-            yield AIMessageChunk(content=chunk), {}
+            self.captured_prompts.append(request.user_text)
+        hitl = self.trace and self.trace.get("route") in {"clarify", "scope_select"}
+        if not hitl:
+            for chunk in self.chunks:
+                yield AgentRuntimeEvent(type="content", content=chunk)
+        yield AgentRuntimeEvent(
+            type="completed",
+            result=AgentRuntimeResult(
+                content="" if hitl else "".join(self.chunks),
+                rag_trace=self.trace,
+                hitl_resume_state=self.resume_state,
+                runtime_trace=(),
+            ),
+        )
 
 
 class FakeDirectModel:
@@ -62,7 +79,7 @@ def _parse_sse_events(chunks):
         payload = chunk.strip()
         if not payload.startswith("data: "):
             continue
-        data = payload[len("data: "):]
+        data = payload[len("data: ") :]
         if data == "[DONE]":
             events.append({"type": "DONE"})
         else:
@@ -86,7 +103,9 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
             AIMessage(content="第一轮回答"),
         ]
 
-        with patch.object(service, "fast_model", fake_model):
+        with patch.object(
+            service.memory_manager.models, "get", return_value=fake_model
+        ):
             note = service._update_persistent_note_sync(
                 "",
                 "最新问题",
@@ -99,17 +118,23 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("用户：第一轮问题", prompt)
         self.assertIn("AI：第一轮回答", prompt)
 
-    async def test_stream_immediately_reports_progress_and_skips_note_for_short_chat(self):
+    async def test_stream_immediately_reports_progress_and_skips_note_for_short_chat(
+        self,
+    ):
         fake_storage = FakeStorage()
         update_note = AsyncMock(return_value="updated note")
 
-        def make_agent(ctx):
-            return FakeStreamAgent(ctx, chunks=["直接回答"])
+        fake_factory = Mock()
+        fake_factory.create.side_effect = lambda ctx, **kwargs: FakeRuntime(
+            ctx, chunks=["直接回答"]
+        )
 
         with (
             patch.object(service, "storage", fake_storage),
-            patch.object(service, "create_agent_for_request", make_agent),
-            patch.object(service, "generate_session_title", Mock(return_value="短问题")),
+            patch.object(service, "runtime_factory", fake_factory),
+            patch.object(
+                service, "generate_session_title", Mock(return_value="短问题")
+            ),
             patch.object(service, "update_persistent_note", update_note),
         ):
             chunks = await _collect_stream("你好", "u", "s")
@@ -138,18 +163,20 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         fake_storage = FakeStorage()
         update_note = AsyncMock(return_value="updated note")
 
-        def make_agent(ctx):
-            return FakeStreamAgent(
-                ctx,
-                trace=trace,
-                chunks=["请补充角色名"],
-                resume_state=resume_state,
-            )
+        fake_factory = Mock()
+        fake_factory.create.side_effect = lambda ctx, **kwargs: FakeRuntime(
+            ctx,
+            trace=trace,
+            chunks=["请补充角色名"],
+            resume_state=resume_state,
+        )
 
         with (
             patch.object(service, "storage", fake_storage),
-            patch.object(service, "create_agent_for_request", make_agent),
-            patch.object(service, "generate_session_title", Mock(return_value="角色问题")),
+            patch.object(service, "runtime_factory", fake_factory),
+            patch.object(
+                service, "generate_session_title", Mock(return_value="角色问题")
+            ),
             patch.object(service, "update_persistent_note", update_note),
         ):
             chunks = await _collect_stream("这个角色的属性是什么？", "u", "s")
@@ -166,7 +193,10 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("这个角色的属性是什么？", pending_hitl["original_question"])
         self.assertEqual("请补充角色名", pending_hitl["prompt"])
         self.assertEqual(resume_state, pending_hitl["resume_state"])
-        self.assertEqual("请补充角色名\n\n可选方向：\n- 丹瑾\n- 丹恒", fake_storage.messages[-1].content)
+        self.assertEqual(
+            "请补充角色名\n\n可选方向：\n- 丹瑾\n- 丹恒",
+            fake_storage.messages[-1].content,
+        )
         update_note.assert_not_called()
 
     async def test_stream_resume_uses_saved_rag_state_without_reentering_agent(self):
@@ -197,34 +227,54 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
             metadata={service.PENDING_HITL_KEY: pending_hitl},
         )
         fake_model = FakeDirectModel(["丹瑾是湮灭属性。[1]"])
-        resume_mock = Mock(return_value={
-            "docs": [{"filename": "chars.pdf", "page_number": 1, "text": "丹瑾是湮灭属性。"}],
-            "retrieval_status": "answerable",
-            "route": "answer",
-            "rag_trace": {"retrieval_status": "answerable", "route": "answer"},
-        })
-        create_agent_mock = Mock(side_effect=AssertionError("agent should not be created on HITL resume"))
+        resume_mock = Mock(
+            return_value={
+                "docs": [
+                    {
+                        "filename": "chars.pdf",
+                        "page_number": 1,
+                        "text": "丹瑾是湮灭属性。",
+                    }
+                ],
+                "retrieval_status": "answerable",
+                "route": "answer",
+                "rag_trace": {"retrieval_status": "answerable", "route": "answer"},
+            }
+        )
+        fake_factory = Mock()
+        fake_factory.create.side_effect = AssertionError(
+            "runtime should not be created on HITL resume"
+        )
 
         with (
             patch.object(service, "storage", fake_storage),
-            patch.object(service, "create_agent_for_request", create_agent_mock),
+            patch.object(service, "runtime_factory", fake_factory),
             patch.object(service, "_resume_rag_from_hitl_sync", resume_mock),
-            patch.object(service, "model", fake_model),
-            patch.object(service, "update_persistent_note", AsyncMock(return_value="updated note")),
+            patch.object(service, "_get_answer_model", return_value=fake_model),
+            patch.object(
+                service,
+                "update_persistent_note",
+                AsyncMock(return_value="updated note"),
+            ),
         ):
             chunks = await _collect_stream("丹瑾", "u", "s")
 
         events = _parse_sse_events(chunks)
-        self.assertEqual(["丹瑾是湮灭属性。[1]"], [
-            event["content"] for event in events if event.get("type") == "content"
-        ])
-        self.assertFalse([event for event in events if event.get("type") == "hitl_request"])
+        self.assertEqual(
+            ["丹瑾是湮灭属性。[1]"],
+            [event["content"] for event in events if event.get("type") == "content"],
+        )
+        self.assertFalse(
+            [event for event in events if event.get("type") == "hitl_request"]
+        )
         self.assertIsNone(fake_storage.metadata.get(service.PENDING_HITL_KEY))
         self.assertEqual("丹瑾", fake_storage.messages[-2].content)
         self.assertEqual("丹瑾是湮灭属性。[1]", fake_storage.messages[-1].content)
         resume_mock.assert_called_once()
-        create_agent_mock.assert_not_called()
-        self.assertIn("原始问题：\n这个角色的属性是什么？", fake_model.messages[-1][-1].content)
+        fake_factory.create.assert_not_called()
+        self.assertIn(
+            "原始问题：\n这个角色的属性是什么？", fake_model.messages[-1][-1].content
+        )
         self.assertIn("用户补充：\n丹瑾", fake_model.messages[-1][-1].content)
 
 

@@ -77,6 +77,8 @@ class RunEventJournal:
         run_id: str,
         event_type: RunEventType | str,
         data: dict | None = None,
+        worker_id: str | None = None,
+        fencing_token: int | None = None,
     ) -> JournalAppend:
         db = self._session_factory()
         try:
@@ -86,6 +88,19 @@ class RunEventJournal:
                     raise AppError(
                         ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
                     )
+                if worker_id is not None or fencing_token is not None:
+                    if (
+                        worker_id is None
+                        or fencing_token is None
+                        or run.owner_worker_id != worker_id
+                        or run.fencing_token != fencing_token
+                        or run.status not in {"running", "cancelling"}
+                    ):
+                        raise AppError(
+                            ErrorCode.RUN_STATE_CONFLICT,
+                            "当前 worker 不再拥有该 Run 的事件写权限",
+                            status_code=409,
+                        )
                 thread = (
                     db.query(ChatSession)
                     .filter(ChatSession.id == run.thread_ref_id)

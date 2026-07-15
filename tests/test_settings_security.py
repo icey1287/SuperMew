@@ -3,6 +3,7 @@ import unittest
 from pydantic import SecretStr
 
 from backend.core.settings import (
+    AgentSettings,
     AppSettings,
     ApplicationSettings,
     ModelSettings,
@@ -27,6 +28,7 @@ def make_settings(
         models=ModelSettings(_env_file=None, ARK_API_KEY="test", MODEL="answer"),
         rag=RagSettings(_env_file=None),
         runs=RunSettings(_env_file=None),
+        agent=AgentSettings(_env_file=None),
         security=SecuritySettings(
             _env_file=None,
             JWT_SECRET_KEY=secret,
@@ -66,6 +68,17 @@ class SettingsSecurityTests(unittest.TestCase):
         dumped = str(settings.redacted_dict())
         self.assertNotIn("x" * 40, dumped)
         self.assertNotIn("app:strong", dumped)
+
+    def test_agent_budget_relationships_are_validated_at_startup(self):
+        settings = make_settings(secret="x" * 40)
+        settings.agent.response_reserve_tokens = settings.agent.max_context_tokens
+        with self.assertRaisesRegex(ValueError, "RESPONSE_RESERVE"):
+            settings.validate_startup()
+
+        settings = make_settings(secret="x" * 40)
+        settings.agent.recursion_limit = 8
+        with self.assertRaisesRegex(ValueError, "RECURSION_LIMIT"):
+            settings.validate_startup()
 
 
 if __name__ == "__main__":
