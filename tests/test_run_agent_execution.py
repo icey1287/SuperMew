@@ -29,6 +29,7 @@ from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy
 from backend.skills import ActivatedSkill, SkillPin
+from backend.guardrails import RunToolApprovalGrant
 from test_native_checkpoint_hitl import NativeCheckpointGraphTests
 
 
@@ -57,6 +58,16 @@ class FakeRuntime:
                         "elapsed_ms": 1,
                         "audit_metadata": {
                             "statement_fingerprint": "a" * 64,
+                        },
+                        "guardrail_audit": {
+                            "decision": "ALLOW",
+                            "reason_code": "ALLOWED",
+                            "policy_version": "1.1.0",
+                            "policy_hash": "b" * 64,
+                            "safe_metadata": {
+                                "context_complete": True,
+                                "tool_name": "fake_tool",
+                            },
                         },
                     }
                 )
@@ -317,6 +328,12 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.runtime_factory.create_kwargs[0]["deadline_seconds"],
             0,
         )
+        self.assertEqual(
+            "default",
+            self.runtime_factory.create_kwargs[0]["tenant_id"],
+        )
+        self.assertEqual("chat", self.runtime_factory.create_kwargs[0]["channel"])
+        self.assertIsNone(self.runtime_factory.create_kwargs[0]["approval_grant"])
 
         replay = self.service.create_run(
             username="alice",
@@ -379,6 +396,44 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("1.0.0", run.skill_version)
             self.assertEqual("a" * 64, run.skill_content_hash)
             self.assertEqual("explicit_slash", run.skill_activation_source)
+
+    async def test_run_bound_approval_survives_execution_snapshot_rebuild(self):
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-approved-tool",
+            message="运行隔离代码",
+            idempotency_key="approved-tool-request",
+            tenant_id="tenant-a",
+            channel="chat",
+            approved_tools=frozenset({"sandbox_execute"}),
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        create_kwargs = self.runtime_factory.create_kwargs[-1]
+        grant = create_kwargs["approval_grant"]
+        self.assertIsInstance(grant, RunToolApprovalGrant)
+        self.assertEqual("tenant-a", create_kwargs["tenant_id"])
+        self.assertEqual("chat", create_kwargs["channel"])
+        self.assertTrue(
+            grant.allows(
+                "sandbox_execute",
+                user_id="alice",
+                tenant_id="tenant-a",
+                thread_id="thread-approved-tool",
+                run_id=reservation.run.id,
+            )
+        )
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == reservation.run.id).one()
+            self.assertEqual("tenant-a", run.tenant_id)
+            self.assertEqual("chat", run.channel)
+            self.assertEqual(["sandbox_execute"], run.approved_tools_json)
 
     async def test_provider_failure_keeps_typed_code_and_redacted_terminal_payload(
         self,
@@ -640,7 +695,10 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 db.query(ToolAudit).filter(ToolAudit.run_id == reservation.run.id).one()
             )
             self.assertEqual("fake_tool", audit.tool_name)
-            self.assertEqual("allowed", audit.decision)
+            self.assertEqual("ALLOW", audit.decision)
+            self.assertEqual("ALLOWED", audit.reason_code)
+            self.assertEqual("1.1.0", audit.policy_version)
+            self.assertEqual("b" * 64, audit.policy_hash)
             self.assertTrue(audit.success)
             self.assertNotIn("先调用工具", str(audit.metadata_json))
             self.assertEqual(
@@ -651,6 +709,8 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             item for item in events if item.type.value == "tool.completed"
         )
         self.assertNotIn("audit_metadata", tool_event.data)
+        self.assertNotIn("guardrail_audit", tool_event.data)
+        self.assertNotIn("b" * 64, str(tool_event.data))
 
     async def test_owned_event_append_rejects_stale_writer_after_terminal(self):
         self.runtime_factory.release_after_first = asyncio.Event()

@@ -23,20 +23,29 @@ schema 过滤与执行拒绝只认识一个可空名称集合。随着 SQL、Web
    `ToolSession.apply_skill()` 只收窄权限，不能扩权。
 
 工具 descriptor 固定声明：name、description、group、version、input/output schema、
-timeout、max concurrency、idempotency、required roles/secrets、approval、network
-policy 与 result size limit。Registry 在授权时取以下交集：
+timeout、max concurrency、idempotency、required roles/secrets、`requires_approval`、network
+policy、`resource_scope` 与 result size limit。`resource_scope` 描述工具将接触的语义资源，
+与其他 descriptor 字段一起进入 canonical catalog hash；它不能由 Tool 参数或模型临时改写。
+Registry 在授权时取以下交集：
 
 ```text
 调用方工具上限
 ∩ 当前数据库角色
 ∩ 当前可用 Secret 名称
-∩ 审批与网络策略
+∩ Run-bound approval grant 与网络策略
 ∩ active Skill allowed_tools
 ∩ resident/deferred 暴露状态
 ```
 
 空集合就是空权限；`None` 不再进入 Runtime Context。control 工具也不能越过调用方的
 空 allowlist。
+
+`requires_approval=true` 的 descriptor 只有在可信 `RunToolApprovalGrant` 明确包含该工具时
+才可进入 `ToolSession`。grant 只持久化工具名称，并绑定 user、tenant、Thread 与 Run 完整
+身份；它不是模型可生成、可复用或可写入 prompt 的 approval token。即使 Registry 已在建图时
+认可 grant，`ToolPolicyMiddleware` 仍必须在每次 handler 执行前按当前身份重新校验。当前没有
+互动审批 UX：只有 trusted admin 能在创建 durable Run 时预先授权，授权集合改变后必须重建
+该 Run 的 Runtime/ToolSession 才能改变可见性，不能原地扩权。完整决策矩阵见 ADR-0020。
 
 所有经 Registry 绑定的工具统一向模型返回 `ToolResultV1`。领域 Adapter 的原始输出先
 按 descriptor output schema 校验，再封装为成功结果；timeout、非法输出和超限结果

@@ -4,11 +4,13 @@ import importlib.util
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from backend.chat.request_context import ChatRequestContext
 from backend.tools.knowledge import make_search_knowledge_base
+from backend.web_research.contracts import WebEvidence, WebResearchResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,16 +62,21 @@ class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_fetch_capabilities_are_request_owned_and_cannot_rebind(self):
         ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
         ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
-        evidence_id = f"web_ev_{'a' * 64}"
-        url = "https://research.dev/article"
+        evidence = WebEvidence.create(
+            canonical_url="https://research.dev/article",
+            title="Research",
+            snippet="Evidence",
+            content="Evidence body",
+            retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+        )
+        evidence_id = evidence.evidence_id
+        url = evidence.canonical_url
 
-        ctx_a.record_web_evidence({evidence_id: url})
+        ctx_a.record_web_search_result(WebResearchResult.create([evidence]))
 
         self.assertEqual(url, ctx_a.resolve_web_evidence(evidence_id))
         self.assertIsNone(ctx_b.resolve_web_evidence(evidence_id))
         self.assertNotIn(url, repr(ctx_a))
-        with self.assertRaisesRegex(ValueError, "cannot be rebound"):
-            ctx_a.record_web_evidence({evidence_id: "https://research.dev/other"})
 
         ctx_a.close()
         self.assertIsNone(ctx_a.resolve_web_evidence(evidence_id))

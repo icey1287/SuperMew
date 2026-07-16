@@ -46,6 +46,9 @@ class RunService:
         expected_thread_version: int | None = None,
         multitask_strategy: MultitaskStrategy | str | None = None,
         on_disconnect: str | None = None,
+        tenant_id: str = "default",
+        channel: str = "chat",
+        approved_tools: frozenset[str] = frozenset(),
     ) -> RunReservation:
         compact_message = message.strip()
         settings = get_settings()
@@ -59,6 +62,9 @@ class RunService:
             on_disconnect=on_disconnect,
             multitask_strategy=multitask_strategy,
             title=(" ".join(compact_message.split())[:16] or "新会话"),
+            tenant_id=tenant_id,
+            channel=channel,
+            approved_tools=approved_tools,
         )
 
     def get_run(self, *, username: str, run_id: str) -> RunRecord:

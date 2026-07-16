@@ -172,6 +172,13 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             def close(self):
                 events.append("web.close")
 
+        class SandboxRuntime:
+            def start(self):
+                events.append("sandbox.start")
+
+            def close(self):
+                events.append("sandbox.close")
+
         class Publisher:
             async def run(self, stop_event):
                 events.append("publisher.run")
@@ -195,6 +202,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ),
             sql_assistant=SimpleNamespace(enabled=True),
             web_research=SimpleNamespace(enabled=True),
+            sandbox=SimpleNamespace(enabled=True),
             validate_startup=lambda: events.append("settings.validate"),
         )
 
@@ -225,6 +233,21 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "clear_web_research_runtime",
                 side_effect=lambda _runtime: events.append("web.clear"),
             ),
+            patch.object(
+                app_module,
+                "build_sandbox_runtime",
+                return_value=SandboxRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "install_sandbox_runtime",
+                side_effect=lambda _runtime: events.append("sandbox.install"),
+            ),
+            patch.object(
+                app_module,
+                "clear_sandbox_runtime",
+                side_effect=lambda _runtime: events.append("sandbox.clear"),
+            ),
             patch.object(app_module, "run_agent_executor", Executor()),
             patch.object(app_module, "default_publisher", Publisher()),
             patch.object(app_module, "cancellation_registry", Cancellation()),
@@ -246,12 +269,20 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertLess(
                     events.index("web.install"),
+                    events.index("sandbox.start"),
+                )
+                self.assertLess(
+                    events.index("sandbox.start"),
+                    events.index("sandbox.install"),
+                )
+                self.assertLess(
+                    events.index("sandbox.install"),
                     events.index("runs.start"),
                 )
 
-        self.assertLess(events.index("runs.close"), events.index("provider.close"))
-        self.assertLess(events.index("runs.close"), events.index("sql.close"))
-        self.assertLess(events.index("runs.close"), events.index("web.clear"))
+        self.assertLess(events.index("runs.close"), events.index("sandbox.clear"))
+        self.assertLess(events.index("sandbox.clear"), events.index("sandbox.close"))
+        self.assertLess(events.index("sandbox.close"), events.index("web.clear"))
         self.assertLess(events.index("web.clear"), events.index("web.close"))
         self.assertLess(events.index("web.close"), events.index("sql.close"))
         self.assertLess(events.index("sql.close"), events.index("provider.close"))
@@ -281,11 +312,19 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def close(self):
                 events.append("runs.close")
 
+        class SandboxRuntime:
+            def start(self):
+                events.append("sandbox.start")
+
+            def close(self):
+                events.append("sandbox.close")
+
         settings = SimpleNamespace(
             security=SimpleNamespace(
                 cors_origins=["http://localhost:5173"],
                 cors_allow_credentials=True,
             ),
+            sandbox=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
         )
 
@@ -293,6 +332,21 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db"),
             patch.object(app_module, "provider_runtime", Provider()),
+            patch.object(
+                app_module,
+                "build_sandbox_runtime",
+                return_value=SandboxRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "install_sandbox_runtime",
+                side_effect=lambda _runtime: events.append("sandbox.install"),
+            ),
+            patch.object(
+                app_module,
+                "clear_sandbox_runtime",
+                side_effect=lambda _runtime: events.append("sandbox.clear"),
+            ),
             patch.object(app_module, "run_agent_executor", FailingExecutor()),
         ):
             app = app_module.create_app()
@@ -301,7 +355,16 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     self.fail("lifespan should not yield after failed recovery")
 
         self.assertEqual(
-            ["provider.start", "runs.start", "runs.close", "provider.close"],
+            [
+                "provider.start",
+                "sandbox.start",
+                "sandbox.install",
+                "runs.start",
+                "runs.close",
+                "sandbox.clear",
+                "sandbox.close",
+                "provider.close",
+            ],
             events,
         )
 
@@ -405,6 +468,109 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             ["provider.start", "web.start", "web.close", "provider.close"],
+            events,
+        )
+
+    async def test_partial_sandbox_start_closes_all_started_runtimes_in_reverse_order(
+        self,
+    ):
+        import backend.app as app_module
+
+        events: list[str] = []
+
+        class Provider:
+            async def start(self):
+                events.append("provider.start")
+
+            async def aclose(self):
+                events.append("provider.close")
+
+        class SqlRuntime:
+            def start(self):
+                events.append("sql.start")
+
+            def close(self):
+                events.append("sql.close")
+
+        class WebRuntime:
+            def start(self):
+                events.append("web.start")
+
+            def close(self):
+                events.append("web.close")
+
+        class FailingSandboxRuntime:
+            def start(self):
+                events.append("sandbox.start")
+                raise RuntimeError("sandbox startup failed")
+
+            def close(self):
+                events.append("sandbox.close")
+
+        settings = SimpleNamespace(
+            security=SimpleNamespace(
+                cors_origins=["http://localhost:5173"],
+                cors_allow_credentials=True,
+            ),
+            sql_assistant=SimpleNamespace(enabled=True),
+            web_research=SimpleNamespace(enabled=True),
+            sandbox=SimpleNamespace(enabled=True),
+            validate_startup=lambda: None,
+        )
+
+        with (
+            patch.object(app_module, "get_settings", return_value=settings),
+            patch.object(app_module, "init_db"),
+            patch.object(app_module, "provider_runtime", Provider()),
+            patch.object(
+                app_module,
+                "get_sql_assistant_runtime",
+                return_value=SqlRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "build_web_research_runtime",
+                return_value=WebRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "install_web_research_runtime",
+                side_effect=lambda _runtime: events.append("web.install"),
+            ),
+            patch.object(
+                app_module,
+                "clear_web_research_runtime",
+                side_effect=lambda _runtime: events.append("web.clear"),
+            ),
+            patch.object(
+                app_module,
+                "build_sandbox_runtime",
+                return_value=FailingSandboxRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "install_sandbox_runtime",
+                side_effect=lambda _runtime: events.append("sandbox.install"),
+            ),
+        ):
+            app = app_module.create_app()
+            with self.assertRaisesRegex(RuntimeError, "sandbox startup failed"):
+                async with app.router.lifespan_context(app):
+                    self.fail("lifespan should not yield after failed Sandbox startup")
+
+        self.assertEqual(
+            [
+                "provider.start",
+                "sql.start",
+                "web.start",
+                "web.install",
+                "sandbox.start",
+                "sandbox.close",
+                "web.clear",
+                "web.close",
+                "sql.close",
+                "provider.close",
+            ],
             events,
         )
 

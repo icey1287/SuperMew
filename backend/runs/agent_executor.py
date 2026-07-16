@@ -16,6 +16,7 @@ from backend.agent.runtime import AgentRuntimeInput, AgentRuntimeResult
 from backend.chat.request_context import ChatRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
+from backend.guardrails import RunToolApprovalGrant
 from backend.events.bus import PersistentEventBus, event_bus
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.rag.checkpoint_runner import (
@@ -509,11 +510,24 @@ class RunAgentExecutor:
             persistent_note=snapshot.persistent_note,
             user_db_id=snapshot.user_db_id,
             roles=frozenset({snapshot.role}),
+            tenant_id=snapshot.tenant_id,
+            channel=snapshot.channel,
             run_id=snapshot.run.id,
             allowed_tools=(
                 frozenset() if disable_tools else self._runtime_tool_ceiling()
             ),
             deadline_seconds=remaining_deadline,
+            approval_grant=(
+                RunToolApprovalGrant(
+                    user_id=snapshot.username,
+                    tenant_id=snapshot.tenant_id,
+                    thread_id=snapshot.run.thread_id,
+                    run_id=snapshot.run.id,
+                    tool_names=snapshot.approved_tools,
+                )
+                if snapshot.approved_tools
+                else None
+            ),
             tool_overrides=(
                 {"search_knowledge_base": knowledge_tool}
                 if knowledge_tool is not None
@@ -655,7 +669,7 @@ class RunAgentExecutor:
                     public_item = {
                         key: value
                         for key, value in item.items()
-                        if key != "audit_metadata"
+                        if key not in {"audit_metadata", "guardrail_audit"}
                     }
                     await self._publish_owned(
                         run,
@@ -703,6 +717,12 @@ class RunAgentExecutor:
         audit_metadata = item.get("audit_metadata")
         if isinstance(audit_metadata, dict):
             metadata["tool_observability"] = dict(audit_metadata)
+        guardrail_audit = item.get("guardrail_audit")
+        if not isinstance(guardrail_audit, dict):
+            guardrail_audit = {}
+        guardrail_metadata = guardrail_audit.get("safe_metadata")
+        if isinstance(guardrail_metadata, dict):
+            metadata["guardrail_context"] = dict(guardrail_metadata)
         audit_key = str(item.get("tool_audit_key") or "")
         if len(audit_key) != 64:
             audit_key = hashlib.sha256(
@@ -720,7 +740,16 @@ class RunAgentExecutor:
             tool_call_id=str(item.get("tool_call_id") or "") or None,
             tool_name=tool_name,
             tool_version=str(getattr(descriptor, "version", "")),
-            decision="denied" if stage == "tool.denied" else "allowed",
+            decision=str(
+                guardrail_audit.get("decision")
+                or ("DENY" if stage == "tool.denied" else "ALLOW")
+            ),
+            reason_code=str(
+                guardrail_audit.get("reason_code")
+                or ("REGISTRY_POLICY_DENIED" if stage == "tool.denied" else "ALLOWED")
+            ),
+            policy_version=(str(guardrail_audit.get("policy_version") or "") or None),
+            policy_hash=(str(guardrail_audit.get("policy_hash") or "") or None),
             success=stage == "tool.completed",
             error_code=(
                 str(item.get("error_code") or "TOOL_POLICY_DENIED")

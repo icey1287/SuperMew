@@ -13,6 +13,7 @@ from backend.core.settings import (
     RagSettings,
     RerankSettings,
     RunSettings,
+    SandboxSettings,
     SecuritySettings,
     SkillSettings,
     SqlAssistantSettings,
@@ -370,6 +371,52 @@ class SettingsSecurityTests(unittest.TestCase):
                 _env_file=None,
                 WEB_RESEARCH_USER_AGENT="safe\r\nX-Leak: value",
             )
+
+    def test_sandbox_is_disabled_without_touching_docker_by_default(self):
+        sandbox = SandboxSettings(_env_file=None)
+
+        self.assertFalse(sandbox.enabled)
+        self.assertEqual("", sandbox.docker_image)
+        self.assertEqual("docker", sandbox.adapter)
+        make_settings(secret="x" * 40).validate_startup()
+
+    def test_enabled_sandbox_requires_an_immutable_image(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sandbox.enabled = True
+
+        with self.assertRaisesRegex(ValueError, "SANDBOX_DOCKER_IMAGE"):
+            settings.validate_startup()
+
+        with self.assertRaises(ValidationError):
+            SandboxSettings(
+                _env_file=None,
+                SANDBOX_ENABLED=True,
+                SANDBOX_DOCKER_IMAGE="python:3.12",
+            )
+
+        settings.sandbox.docker_image = "sha256:" + ("a" * 64)
+        settings.validate_startup()
+
+    def test_sandbox_budget_relationships_are_validated(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sandbox.max_file_bytes = 20
+        settings.sandbox.max_total_file_bytes = 10
+        with self.assertRaisesRegex(ValueError, "MAX_FILE_BYTES"):
+            settings.validate_startup()
+
+        settings = make_settings(secret="x" * 40)
+        settings.sandbox.max_total_file_bytes = settings.sandbox.workspace_bytes + 1
+        with self.assertRaisesRegex(ValueError, "MAX_TOTAL_FILE_BYTES"):
+            settings.validate_startup()
+
+    def test_production_sandbox_requires_rootless_daemon(self):
+        settings = make_settings(secret="x" * 40, environment="production")
+        settings.sandbox.enabled = True
+        settings.sandbox.docker_image = "sha256:" + ("b" * 64)
+        settings.sandbox.require_rootless = False
+
+        with self.assertRaisesRegex(ValueError, "rootless"):
+            settings.validate_startup()
 
 
 if __name__ == "__main__":

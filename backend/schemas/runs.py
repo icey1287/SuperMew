@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RunSchema(BaseModel):
@@ -30,6 +30,25 @@ class RunCreateRequest(RunSchema):
     expected_thread_version: int | None = Field(default=None, ge=0)
     multitask_strategy: Literal["reject", "enqueue", "cancel_previous"] | None = None
     on_disconnect: Literal["cancel", "continue"] | None = None
+    approved_tools: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("approved_tools")
+    @classmethod
+    def validate_approved_tools(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("approved_tools 不能包含重复项")
+        if any(
+            not name
+            or len(name) > 128
+            or not name[0].islower()
+            or any(
+                not (character.islower() or character.isdigit() or character in "_.-")
+                for character in name
+            )
+            for name in value
+        ):
+            raise ValueError("approved_tools 包含非法工具名称")
+        return value
 
 
 class RunErrorResponse(RunSchema):

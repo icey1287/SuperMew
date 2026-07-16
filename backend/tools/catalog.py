@@ -6,7 +6,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.core.settings import SqlAssistantSettings, WebResearchSettings
+from backend.core.settings import (
+    SandboxSettings,
+    SqlAssistantSettings,
+    WebResearchSettings,
+)
+from backend.tools.sandbox import SANDBOX_METADATA_KEYS
 from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA
 from backend.tools.knowledge import make_search_knowledge_base
 from backend.tools.registry import (
@@ -78,6 +83,11 @@ class WebFetchInput(_StrictInput):
     evidence_id: str = Field(pattern=r"^web_ev_[0-9a-f]{64}$")
 
 
+class SandboxExecuteInput(_StrictInput):
+    language: Literal["python", "sh"]
+    source: str = Field(min_length=1, max_length=4_194_304)
+
+
 _STRING_OUTPUT_SCHEMA = {"type": "string"}
 
 
@@ -92,14 +102,20 @@ def build_default_tool_registry(
     *,
     sql_assistant_settings: SqlAssistantSettings | None = None,
     web_research_settings: WebResearchSettings | None = None,
+    sandbox_settings: SandboxSettings | None = None,
 ) -> ToolRegistry:
     sql_settings = sql_assistant_settings or SqlAssistantSettings()
     web_settings = web_research_settings or WebResearchSettings()
+    sandbox_config = sandbox_settings or SandboxSettings()
     web_search_schema = WebSearchInput.model_json_schema()
     web_search_schema["properties"]["query"]["maxLength"] = web_settings.max_query_bytes
     web_search_schema["properties"]["max_results"].update(
         default=web_settings.default_search_results,
         maximum=web_settings.max_search_results,
+    )
+    sandbox_schema = SandboxExecuteInput.model_json_schema()
+    sandbox_schema["properties"]["source"]["maxLength"] = (
+        sandbox_config.max_source_bytes
     )
     registry = ToolRegistry()
     registry.register(
@@ -118,6 +134,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="restricted",
             result_size_limit=524_288,
+            resource_scope="knowledge-read",
         ),
         make_search_knowledge_base,
         exposure=ToolExposure.RESIDENT,
@@ -138,6 +155,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="restricted",
             result_size_limit=65_536,
+            resource_scope="public-web",
         ),
         make_weather_tool,
         exposure=ToolExposure.RESIDENT,
@@ -158,6 +176,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="none",
             result_size_limit=524_288,
+            resource_scope="none",
             observability_metadata_keys=frozenset(
                 {"skill_name", "skill_version", "activation_source"}
             ),
@@ -181,6 +200,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="none",
             result_size_limit=262_144,
+            resource_scope="none",
             observability_metadata_keys=frozenset({"revealed_count"}),
         ),
         _control_placeholder("tool_search"),
@@ -210,6 +230,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="private-data",
             result_size_limit=sql_settings.max_result_bytes,
+            resource_scope="private-data-read",
             observability_metadata_keys=SQL_SCHEMA_METADATA_KEYS,
         ),
         make_sql_schema,
@@ -240,6 +261,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="private-data",
             result_size_limit=sql_settings.max_result_bytes,
+            resource_scope="private-data-read",
             observability_metadata_keys=SQL_QUERY_METADATA_KEYS,
         ),
         make_sql_query,
@@ -264,6 +286,7 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="restricted",
             result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
+            resource_scope="public-web",
             observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
         ),
         partial(
@@ -291,9 +314,39 @@ def build_default_tool_registry(
             requires_approval=False,
             network_policy="restricted",
             result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
+            resource_scope="public-web",
             observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
         ),
         make_web_fetch,
+        exposure=ToolExposure.DEFERRED,
+    )
+    registry.register(
+        ToolDescriptor(
+            name="sandbox_execute",
+            description=(
+                "Execute bounded Python or shell source in a Run-owned, "
+                "network-disabled isolated Sandbox."
+            ),
+            group="sandbox-execution",
+            version="1.0.0",
+            input_schema=sandbox_schema,
+            output_schema=TOOL_RESULT_V1_SCHEMA,
+            timeout=(
+                sandbox_config.timeout_seconds
+                + sandbox_config.cleanup_timeout_seconds
+                + 1.0
+            ),
+            max_concurrency=sandbox_config.max_concurrency,
+            idempotent=False,
+            required_roles=frozenset({"admin"}),
+            required_secrets=frozenset({"SANDBOX_RUNTIME"}),
+            requires_approval=True,
+            network_policy="none",
+            result_size_limit=sandbox_config.max_output_bytes + 65_536,
+            resource_scope="code-execution",
+            observability_metadata_keys=SANDBOX_METADATA_KEYS,
+        ),
+        _control_placeholder("sandbox_execute"),
         exposure=ToolExposure.DEFERRED,
     )
     registry.freeze()
@@ -305,6 +358,7 @@ def configured_secret_names(
     *,
     sql_assistant_settings: SqlAssistantSettings | None = None,
     web_research_settings: WebResearchSettings | None = None,
+    sandbox_settings: SandboxSettings | None = None,
 ) -> frozenset[str]:
     required: set[str] = set()
     for name in registry.names:
@@ -321,6 +375,11 @@ def configured_secret_names(
         if name == "BRAVE_SEARCH_API_KEY":
             web_settings = web_research_settings or WebResearchSettings()
             if web_settings.search_configured:
+                configured.add(name)
+            continue
+        if name == "SANDBOX_RUNTIME":
+            sandbox_config = sandbox_settings or SandboxSettings()
+            if sandbox_config.enabled and sandbox_config.docker_image:
                 configured.add(name)
             continue
         if os.getenv(name, "").strip():

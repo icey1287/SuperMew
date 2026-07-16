@@ -14,6 +14,7 @@ def _runtime(
     worker_required: bool = True,
     sql_enabled: bool = False,
     web_enabled: bool = False,
+    sandbox_enabled: bool = False,
 ):
     snapshot = SimpleNamespace(
         running=running,
@@ -36,6 +37,7 @@ def _runtime(
             ),
             sql_assistant=SimpleNamespace(enabled=sql_enabled),
             web_research=SimpleNamespace(enabled=web_enabled),
+            sandbox=SimpleNamespace(enabled=sandbox_enabled),
         ),
         readiness=lambda: snapshot,
     )
@@ -214,6 +216,36 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(200, response.status_code)
 
+    async def test_ready_does_not_probe_or_gate_a_disabled_sandbox(self):
+        with (
+            patch.object(
+                health,
+                "provider_runtime",
+                _runtime(running=True, embedding_ready=True, warmup=True),
+            ),
+            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(
+                health,
+                "get_sandbox_runtime",
+                side_effect=AssertionError("disabled Sandbox must not be probed"),
+            ) as get_runtime,
+        ):
+            response = await health.ready()
+
+        self.assertEqual(200, response.status_code)
+        get_runtime.assert_not_called()
+        self.assertEqual(
+            {
+                "enabled": False,
+                "ready": False,
+                "adapter": "disabled",
+                "daemon_reachable": False,
+                "image_available": False,
+                "active_executions": 0,
+            },
+            json.loads(response.body)["sandbox"],
+        )
+
     async def test_ready_gates_enabled_sql_runtime_and_exposes_only_safe_state(self):
         runtime = _runtime(
             running=True,
@@ -304,6 +336,61 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
                 "search_ready": True,
             },
             payload["web_research"],
+        )
+
+    async def test_ready_gates_enabled_sandbox_and_exposes_only_safe_state(self):
+        runtime = _runtime(
+            running=True,
+            embedding_ready=True,
+            warmup=True,
+            sandbox_enabled=True,
+        )
+        snapshots = iter(
+            (
+                SimpleNamespace(
+                    ready=False,
+                    adapter="docker",
+                    daemon_reachable=False,
+                    image_available=True,
+                    active_executions=0,
+                    internal_path="must-not-escape",
+                ),
+                SimpleNamespace(
+                    ready=True,
+                    adapter="docker",
+                    daemon_reachable=True,
+                    image_available=True,
+                    active_executions=1,
+                    container_id="must-not-escape",
+                ),
+            )
+        )
+        sandbox_runtime = SimpleNamespace(readiness=lambda: next(snapshots))
+        with (
+            patch.object(health, "provider_runtime", runtime),
+            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(
+                health,
+                "get_sandbox_runtime",
+                return_value=sandbox_runtime,
+            ),
+        ):
+            unavailable = await health.ready()
+            ready = await health.ready()
+
+        self.assertEqual(503, unavailable.status_code)
+        self.assertEqual(200, ready.status_code)
+        payload = json.loads(ready.body)
+        self.assertEqual(
+            {
+                "enabled": True,
+                "ready": True,
+                "adapter": "docker",
+                "daemon_reachable": True,
+                "image_available": True,
+                "active_executions": 1,
+            },
+            payload["sandbox"],
         )
 
     async def test_ready_is_read_only_and_fails_when_catalog_state_is_missing(self):

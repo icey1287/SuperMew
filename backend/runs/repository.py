@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -94,18 +95,30 @@ class RunExecutionSnapshot:
     user_db_id: int
     username: str
     role: str
+    tenant_id: str
+    channel: str
+    approved_tools: frozenset[str]
     user_text: str
     history: tuple[ExecutionMessage, ...]
     persistent_note: str
 
 
 def hash_run_request(
-    message: str, *, model_name: str = "", schema_version: int = 1
+    message: str,
+    *,
+    model_name: str = "",
+    tenant_id: str = "default",
+    channel: str = "chat",
+    approved_tools: frozenset[str] = frozenset(),
+    schema_version: int = 1,
 ) -> str:
     payload = json.dumps(
         {
             "message": message,
             "model_name": model_name,
+            "tenant_id": tenant_id,
+            "channel": channel,
+            "approved_tools": sorted(approved_tools),
             "schema_version": schema_version,
         },
         ensure_ascii=False,
@@ -178,6 +191,43 @@ class RunRepository:
                 status_code=400,
             )
         return key
+
+    @staticmethod
+    def _security_identifier(value: str, *, field_name: str, maximum: int) -> str:
+        candidate = (value or "").strip()
+        if (
+            not candidate
+            or len(candidate) > maximum
+            or re.fullmatch(r"[a-z][a-z0-9_.:-]*", candidate) is None
+        ):
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                f"{field_name} 不是有效的安全标识符",
+                status_code=400,
+            )
+        return candidate
+
+    @staticmethod
+    def _approved_tools(values: frozenset[str]) -> frozenset[str]:
+        try:
+            normalized = frozenset(values)
+        except TypeError as exc:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "approved_tools 必须是工具名称集合",
+                status_code=400,
+            ) from exc
+        if len(normalized) > 32 or any(
+            not isinstance(name, str)
+            or re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", name) is None
+            for name in normalized
+        ):
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "approved_tools 包含非法工具名称",
+                status_code=400,
+            )
+        return normalized
 
     @staticmethod
     def _thread_query(db: Session, user_id: int, thread_id: str):
@@ -283,11 +333,28 @@ class RunRepository:
         on_disconnect: str | None = None,
         multitask_strategy: MultitaskStrategy | str | None = None,
         title: str | None = None,
+        tenant_id: str = "default",
+        channel: str = "chat",
+        approved_tools: frozenset[str] = frozenset(),
     ) -> RunReservation:
         key = self._validate_idempotency_key(idempotency_key)
+        normalized_tenant = self._security_identifier(
+            tenant_id,
+            field_name="tenant_id",
+            maximum=64,
+        )
+        normalized_channel = self._security_identifier(
+            channel,
+            field_name="channel",
+            maximum=32,
+        )
+        normalized_approved_tools = self._approved_tools(approved_tools)
         calculated_hash = request_hash or hash_run_request(
             message,
             model_name=model_name,
+            tenant_id=normalized_tenant,
+            channel=normalized_channel,
+            approved_tools=normalized_approved_tools,
         )
         settings = get_settings().runs
         strategy = MultitaskStrategy(multitask_strategy or settings.multitask_strategy)
@@ -353,6 +420,9 @@ class RunRepository:
                     id=run_id,
                     thread_ref_id=thread.id,
                     user_id=user.id,
+                    tenant_id=normalized_tenant,
+                    channel=normalized_channel,
+                    approved_tools_json=sorted(normalized_approved_tools),
                     status=initial_status,
                     idempotency_key=key,
                     request_hash=calculated_hash,
@@ -632,6 +702,9 @@ class RunRepository:
                 user_db_id=user.id,
                 username=user.username,
                 role=user.role,
+                tenant_id=run.tenant_id,
+                channel=run.channel,
+                approved_tools=frozenset(run.approved_tools_json or ()),
                 user_text=user_message.content,
                 history=tuple(
                     ExecutionMessage(role=item.message_type, content=item.content)
@@ -724,6 +797,9 @@ class RunRepository:
         tool_name: str,
         tool_version: str,
         decision: str,
+        reason_code: str | None,
+        policy_version: str | None,
+        policy_hash: str | None,
         success: bool,
         error_code: str | None,
         duration_ms: int,
@@ -766,6 +842,17 @@ class RunRepository:
             normalized_tool_name = tool_name[:128]
             normalized_tool_version = tool_version[:64]
             normalized_decision = decision[:32]
+            normalized_reason_code = reason_code[:64] if reason_code else None
+            normalized_policy_version = policy_version[:64] if policy_version else None
+            normalized_policy_hash = policy_hash or None
+            if normalized_policy_hash is not None and (
+                len(normalized_policy_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in normalized_policy_hash
+                )
+            ):
+                raise ValueError("policy_hash must be a lowercase SHA-256 digest")
             normalized_success = bool(success)
             normalized_error_code = error_code[:64] if error_code else None
             normalized_duration_ms = max(int(duration_ms), 0)
@@ -783,6 +870,9 @@ class RunRepository:
                 normalized_tool_version,
                 run.skill_name or "",
                 normalized_decision,
+                normalized_reason_code,
+                normalized_policy_version,
+                normalized_policy_hash,
                 normalized_success,
                 normalized_error_code,
                 normalized_duration_ms,
@@ -804,6 +894,9 @@ class RunRepository:
                     existing.tool_version,
                     existing.skill_name,
                     existing.decision,
+                    existing.reason_code,
+                    existing.policy_version,
+                    existing.policy_hash,
                     existing.success,
                     existing.error_code,
                     existing.duration_ms,
@@ -828,6 +921,9 @@ class RunRepository:
                     tool_version=normalized_tool_version,
                     skill_name=run.skill_name or "",
                     decision=normalized_decision,
+                    reason_code=normalized_reason_code,
+                    policy_version=normalized_policy_version,
+                    policy_hash=normalized_policy_hash,
                     success=normalized_success,
                     error_code=normalized_error_code,
                     duration_ms=normalized_duration_ms,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
+from uuid import uuid4
 
 from langchain.agents import create_agent
 
@@ -13,6 +15,12 @@ from backend.agent.runtime import AgentRuntime
 from backend.chat.request_context import ChatRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AppSettings, SkillSettings, get_settings
+from backend.guardrails import (
+    DEFAULT_GUARDRAIL_POLICY,
+    GuardrailPolicy,
+    RunToolApprovalGrant,
+    ToolGuardrail,
+)
 from backend.skills import (
     ActivatedSkill,
     SkillAccess,
@@ -25,6 +33,7 @@ from backend.skills import (
 from backend.tools.catalog import configured_secret_names, tool_registry
 from backend.tools.control import make_control_tool_overrides
 from backend.tools.registry import ToolAccess, ToolRegistry
+from backend.tools.sandbox import make_sandbox_execute
 
 
 SYSTEM_PROMPT = (
@@ -70,6 +79,8 @@ class AgentRuntimeFactory:
         secret_names_provider: Callable[[ToolRegistry], frozenset[str]] = (
             configured_secret_names
         ),
+        guardrail_factory: Callable[..., ToolGuardrail] = ToolGuardrail,
+        guardrail_policy: GuardrailPolicy | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.models = models
@@ -87,6 +98,27 @@ class AgentRuntimeFactory:
             max_content_bytes=skill_settings.max_content_bytes,
         )
         self.secret_names_provider = secret_names_provider
+        self.guardrail_factory = guardrail_factory
+        descriptor_snapshot = tuple(
+            descriptor
+            for name in self.tools.names
+            if (descriptor := self.tools.descriptor(name)) is not None
+        )
+        self.guardrail_policy = guardrail_policy or replace(
+            DEFAULT_GUARDRAIL_POLICY,
+            known_tool_groups=(
+                DEFAULT_GUARDRAIL_POLICY.known_tool_groups
+                | {descriptor.group for descriptor in descriptor_snapshot}
+            ),
+            known_network_policies=(
+                DEFAULT_GUARDRAIL_POLICY.known_network_policies
+                | {descriptor.network_policy for descriptor in descriptor_snapshot}
+            ),
+            known_resource_scopes=(
+                DEFAULT_GUARDRAIL_POLICY.known_resource_scopes
+                | {descriptor.resource_scope for descriptor in descriptor_snapshot}
+            ),
+        )
 
     def budget(self) -> RuntimeBudget:
         settings = self.settings.agent
@@ -240,11 +272,13 @@ class AgentRuntimeFactory:
         persistent_note: str = "",
         user_db_id: int | None = None,
         roles: frozenset[str] = frozenset({"user"}),
+        tenant_id: str | None = None,
+        channel: str = "chat",
         run_id: str | None = None,
         request_id: str | None = None,
         allowed_tools: frozenset[str] | None = None,
         available_secrets: frozenset[str] | None = None,
-        approved_tools: frozenset[str] = frozenset(),
+        approval_grant: RunToolApprovalGrant | None = None,
         allowed_network_policies: frozenset[str] = frozenset(
             {"none", "restricted", "private-data"}
         ),
@@ -262,16 +296,51 @@ class AgentRuntimeFactory:
             if deadline_seconds is None
             else max(deadline_seconds, 0.0)
         )
+        effective_run_id = run_id or f"legacy-{uuid4().hex}"
+        app_settings = getattr(self.settings, "app", None)
+        effective_tenant_id = tenant_id or getattr(
+            app_settings,
+            "default_tenant_id",
+            "default",
+        )
+        if approval_grant is not None and not approval_grant.is_bound_to(
+            user_id=request_context.user_id,
+            tenant_id=effective_tenant_id,
+            thread_id=request_context.session_id,
+            run_id=effective_run_id,
+        ):
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "工具审批不属于当前 Run。",
+                status_code=403,
+                category="guardrail",
+                stage="approval_binding",
+            )
+        approved_tools = (
+            approval_grant.tool_names if approval_grant is not None else frozenset()
+        )
+        request_context.configure_guardrail_context(
+            tenant_id=effective_tenant_id,
+            run_id=effective_run_id,
+        )
+        destination_verifier = request_context.destination_capability_verifier()
         context = AgentRuntimeContext(
             request_context=request_context,
             user_id=request_context.user_id,
             thread_id=request_context.session_id,
             user_db_id=user_db_id,
             roles=frozenset(roles),
-            run_id=run_id,
+            tenant_id=effective_tenant_id,
+            channel=channel,
+            run_id=effective_run_id,
             request_id=request_id,
             persistent_note=persistent_note,
             allowed_tools=frozenset(),
+            approval_grant=approval_grant,
+            guardrail=self.guardrail_factory(
+                self.guardrail_policy,
+                destination_verifier=destination_verifier,
+            ),
             budget=budget,
             deadline_at=time.monotonic() + remaining,
             trace_queue=trace_queue,
@@ -290,6 +359,8 @@ class AgentRuntimeFactory:
         overrides = dict(tool_overrides or {})
         for name, adapter in make_control_tool_overrides(holder).items():
             overrides.setdefault(name, adapter)
+        if "sandbox_execute" in self.tools.names:
+            overrides.setdefault("sandbox_execute", make_sandbox_execute(context))
         tool_session = self.tools.bind(
             request_context,
             access,

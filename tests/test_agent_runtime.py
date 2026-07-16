@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -40,6 +41,7 @@ from backend.agent.runtime import AgentRuntime, AgentRuntimeInput
 from backend.chat.request_context import ChatRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AgentSettings, ModelSettings, RunSettings
+from backend.guardrails import DEFAULT_GUARDRAIL_POLICY, ToolGuardrail
 from backend.providers import (
     ProviderCode,
     ProviderError,
@@ -95,13 +97,46 @@ def _context(*, note="", allowed_tools=None, budget=None):
     request_context = ChatRequestContext.for_sync(
         user_id="alice", session_id="thread-1"
     )
+    resolved_allowed = frozenset(allowed_tools or ())
+
+    class RuntimeTestToolSession:
+        visible_names = resolved_allowed
+
+        @staticmethod
+        def is_allowed(name: str) -> bool:
+            return name in resolved_allowed
+
+        @staticmethod
+        def describe(name: str):
+            if name not in resolved_allowed:
+                return None
+            return SimpleNamespace(
+                name=name,
+                group="runtime-test",
+                network_policy="none",
+                resource_scope="none",
+                requires_approval=False,
+            )
+
+    policy = replace(
+        DEFAULT_GUARDRAIL_POLICY,
+        known_tool_groups=(
+            DEFAULT_GUARDRAIL_POLICY.known_tool_groups | {"runtime-test"}
+        ),
+        resident_tools=(DEFAULT_GUARDRAIL_POLICY.resident_tools | resolved_allowed),
+    )
+    request_context.configure_guardrail_context(tenant_id="default", run_id="run-1")
     context = AgentRuntimeContext(
         request_context=request_context,
         user_id="alice",
         thread_id="thread-1",
+        tenant_id="default",
+        run_id="run-1",
         budget=budget or _budget(),
         persistent_note=note,
-        allowed_tools=allowed_tools,
+        allowed_tools=resolved_allowed,
+        tool_session=RuntimeTestToolSession(),
+        guardrail=ToolGuardrail(policy),
         current_date="2026-07-14",
     )
     return request_context, context

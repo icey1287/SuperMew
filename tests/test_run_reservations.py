@@ -105,6 +105,24 @@ class RunReservationTests(unittest.TestCase):
         self.assertEqual(RunStatus.PENDING, first.run.status)
         self.assertEqual(RunStatus.PENDING, second.run.status)
 
+    def test_security_context_participates_in_request_idempotency_hash(self):
+        base = hash_run_request("hello")
+        approved = hash_run_request(
+            "hello",
+            tenant_id="tenant-a",
+            channel="chat",
+            approved_tools=frozenset({"sandbox_execute"}),
+        )
+        other_channel = hash_run_request(
+            "hello",
+            tenant_id="tenant-a",
+            channel="worker",
+            approved_tools=frozenset({"sandbox_execute"}),
+        )
+
+        self.assertNotEqual(base, approved)
+        self.assertNotEqual(approved, other_channel)
+
 
 if __name__ == "__main__":
     unittest.main()

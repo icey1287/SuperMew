@@ -9,6 +9,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Optional
 
+from backend.guardrails import (
+    DestinationCapability,
+    DestinationCapabilityBinding,
+    RunDestinationCapabilityAuthority,
+)
+
 from backend.schemas.chat import HitlResumeState, normalize_rag_trace
 from backend.web_research.citations import (
     WebCitationLedger,
@@ -22,7 +28,12 @@ logger = logging.getLogger(__name__)
 
 _WEB_EVIDENCE_ID = re.compile(r"web_ev_[0-9a-f]{64}")
 _MAX_WEB_EVIDENCE_ITEMS = 64
-_MAX_WEB_EVIDENCE_URL_BYTES = 16 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class _WebFetchAuthorization:
+    canonical_url: str
+    capability: DestinationCapability | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -41,7 +52,14 @@ class ChatRequestContext:
     _knowledge_tool_slots_used: int = 0
     _provider_deadline_at: Optional[float] = None
     _provider_cancellation_probe: Optional[Callable[[], bool]] = None
-    _web_evidence_urls: dict[str, str] = field(default_factory=dict, repr=False)
+    _web_fetch_authorizations: dict[str, _WebFetchAuthorization] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _destination_authority: RunDestinationCapabilityAuthority | None = field(
+        default=None,
+        repr=False,
+    )
     _web_citation_ledger: WebCitationLedger = field(
         default_factory=WebCitationLedger,
         repr=False,
@@ -211,6 +229,51 @@ class ChatRequestContext:
         with self._lock:
             return self._provider_deadline_at, self._provider_cancellation_probe
 
+    def configure_guardrail_context(self, *, tenant_id: str, run_id: str) -> None:
+        """Install one request-owned destination authority before tools are bound."""
+
+        binding = DestinationCapabilityBinding(
+            user_id=self.user_id,
+            tenant_id=tenant_id,
+            thread_id=self.session_id,
+            run_id=run_id,
+        )
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("request context is closed")
+            current = self._destination_authority
+            if current is not None:
+                if current.binding != binding:
+                    raise ValueError("guardrail context cannot be rebound")
+                return
+            self._destination_authority = RunDestinationCapabilityAuthority(binding)
+
+    def destination_capability_verifier(
+        self,
+    ) -> RunDestinationCapabilityAuthority | None:
+        with self._lock:
+            return self._destination_authority if self._active else None
+
+    def destination_capability_for_tool(
+        self,
+        tool_name: str,
+        arguments: object,
+    ) -> DestinationCapability | None:
+        """Resolve internal claims from public tool arguments without trusting them."""
+
+        if tool_name != "web_fetch" or not isinstance(arguments, Mapping):
+            return None
+        evidence_id = arguments.get("evidence_id")
+        if not isinstance(evidence_id, str) or not _WEB_EVIDENCE_ID.fullmatch(
+            evidence_id
+        ):
+            return None
+        with self._lock:
+            if not self._active:
+                return None
+            authorization = self._web_fetch_authorizations.get(evidence_id)
+            return None if authorization is None else authorization.capability
+
     def mark_web_research_attempted(self) -> None:
         """Record a Web Tool attempt without retaining its query or arguments."""
 
@@ -229,19 +292,31 @@ class ChatRequestContext:
         with self._lock:
             if not self._active:
                 return
-            if len(set(self._web_evidence_urls).union(capabilities)) > (
+            if len(set(self._web_fetch_authorizations).union(capabilities)) > (
                 _MAX_WEB_EVIDENCE_ITEMS
             ):
                 raise WebCitationLedgerError(WebCitationLedgerCode.EVIDENCE_LIMIT)
             for evidence_id, canonical_url in capabilities.items():
-                existing = self._web_evidence_urls.get(evidence_id)
-                if existing is not None and existing != canonical_url:
+                existing = self._web_fetch_authorizations.get(evidence_id)
+                if existing is not None and existing.canonical_url != canonical_url:
                     raise ValueError("web evidence identity cannot be rebound")
+            authority = self._destination_authority
+            staged_authorizations: dict[str, _WebFetchAuthorization] = {}
+            for evidence_id, canonical_url in capabilities.items():
+                if evidence_id not in self._web_fetch_authorizations:
+                    staged_authorizations[evidence_id] = _WebFetchAuthorization(
+                        canonical_url=canonical_url,
+                        capability=(
+                            authority.issue(canonical_url)
+                            if authority is not None
+                            else None
+                        ),
+                    )
             self._web_citation_ledger.register_result(
                 result,
                 kind=WebEvidenceKind.SEARCH_SNIPPET,
             )
-            self._web_evidence_urls.update(capabilities)
+            self._web_fetch_authorizations.update(staged_authorizations)
 
     def record_web_fetch_result(self, result: WebResearchResult) -> None:
         """Register fetched evidence without minting a new network capability."""
@@ -277,42 +352,6 @@ class ChatRequestContext:
                 raise WebCitationLedgerError(WebCitationLedgerCode.CONTEXT_CLOSED)
             return self._web_citation_ledger.finalize(content).content
 
-    def record_web_evidence(self, evidence_urls: Mapping[str, str]) -> None:
-        """Bind validated web evidence identities to URLs for this request only."""
-
-        if not isinstance(evidence_urls, Mapping):
-            raise TypeError("evidence_urls must be a mapping")
-        if len(evidence_urls) > _MAX_WEB_EVIDENCE_ITEMS:
-            raise ValueError("too many web evidence items")
-        normalized: dict[str, str] = {}
-        for evidence_id, canonical_url in evidence_urls.items():
-            if not isinstance(evidence_id, str) or not _WEB_EVIDENCE_ID.fullmatch(
-                evidence_id
-            ):
-                raise ValueError("invalid web evidence identity")
-            if not isinstance(canonical_url, str):
-                raise TypeError("web evidence URL must be a string")
-            if (
-                not canonical_url.startswith(("http://", "https://"))
-                or not canonical_url.isascii()
-                or "\x00" in canonical_url
-                or len(canonical_url.encode("ascii")) > _MAX_WEB_EVIDENCE_URL_BYTES
-            ):
-                raise ValueError("invalid web evidence URL")
-            normalized[evidence_id] = canonical_url
-        with self._lock:
-            if not self._active:
-                return
-            if len(set(self._web_evidence_urls).union(normalized)) > (
-                _MAX_WEB_EVIDENCE_ITEMS
-            ):
-                raise ValueError("too many web evidence items")
-            for evidence_id, canonical_url in normalized.items():
-                existing = self._web_evidence_urls.get(evidence_id)
-                if existing is not None and existing != canonical_url:
-                    raise ValueError("web evidence identity cannot be rebound")
-            self._web_evidence_urls.update(normalized)
-
     def resolve_web_evidence(self, evidence_id: str) -> str | None:
         """Resolve a fetch capability issued by web_search in this request."""
 
@@ -323,16 +362,22 @@ class ChatRequestContext:
         with self._lock:
             if not self._active:
                 return None
-            return self._web_evidence_urls.get(evidence_id)
+            authorization = self._web_fetch_authorizations.get(evidence_id)
+            return None if authorization is None else authorization.canonical_url
 
     def elapsed_ms(self) -> int:
         with self._lock:
             return max(int((time.monotonic() - self._started_at) * 1000), 0)
 
     def close(self) -> None:
+        authority = None
         with self._lock:
             self._active = False
             self.output_queue = None
             self.loop = None
-            self._web_evidence_urls.clear()
+            self._web_fetch_authorizations.clear()
             self._web_citation_ledger.clear()
+            authority = self._destination_authority
+            self._destination_authority = None
+        if authority is not None:
+            authority.close()

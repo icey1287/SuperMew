@@ -25,6 +25,13 @@ from langchain_core.messages.utils import count_tokens_approximately
 
 from backend.agent.context import AgentRuntimeContext, RuntimeBudget
 from backend.core.errors import AppError, ErrorCode, public_error_from_exception
+from backend.guardrails import (
+    GuardrailDecision,
+    GuardrailReasonCode,
+    ToolArgsSummary,
+    ToolGuardrailRequest,
+    ToolGuardrailResult,
+)
 from backend.providers import (
     ProviderCallContext,
     ProviderExecutor,
@@ -127,6 +134,22 @@ def _tool_audit_key(tool_call: dict) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _guardrail_trace_fields(
+    result: ToolGuardrailResult | None,
+) -> dict[str, Any]:
+    if result is None:
+        return {}
+    return {
+        "guardrail_audit": {
+            "decision": result.decision.value,
+            "reason_code": result.reason_code.value,
+            "policy_version": result.policy_version,
+            "policy_hash": result.policy_hash,
+            "safe_metadata": dict(result.safe_metadata),
+        }
+    }
 
 
 def estimate_request_tokens(
@@ -489,11 +512,19 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 error_code=str(public.code),
                 retryable=public.retryable,
                 fallback_applied=False,
+                **_guardrail_trace_fields(context.guardrail_result(tool_audit_key)),
             )
             raise
+        guardrail_fields = _guardrail_trace_fields(
+            context.guardrail_result(tool_audit_key)
+        )
         typed_result = _typed_tool_result(response)
         if typed_result is not None and not typed_result.success:
-            if typed_result.error_code == "TOOL_POLICY_DENIED":
+            if typed_result.error_code in {
+                "TOOL_POLICY_DENIED",
+                "TOOL_GUARDRAIL_DENIED",
+                "TOOL_APPROVAL_REQUIRED",
+            }:
                 return response
             context.record_trace(
                 "tool.failed",
@@ -506,6 +537,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 fallback_applied=False,
                 result_size=_typed_result_size(typed_result),
                 audit_metadata=_typed_audit_metadata(typed_result),
+                **guardrail_fields,
             )
             return response
         context.record_trace(
@@ -516,6 +548,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             duration_ms=int((time.monotonic() - started) * 1000),
             result_size=_typed_result_size(typed_result),
             audit_metadata=_typed_audit_metadata(typed_result),
+            **guardrail_fields,
         )
         return response
 
@@ -539,11 +572,19 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 error_code=str(public.code),
                 retryable=public.retryable,
                 fallback_applied=False,
+                **_guardrail_trace_fields(context.guardrail_result(tool_audit_key)),
             )
             raise
+        guardrail_fields = _guardrail_trace_fields(
+            context.guardrail_result(tool_audit_key)
+        )
         typed_result = _typed_tool_result(response)
         if typed_result is not None and not typed_result.success:
-            if typed_result.error_code == "TOOL_POLICY_DENIED":
+            if typed_result.error_code in {
+                "TOOL_POLICY_DENIED",
+                "TOOL_GUARDRAIL_DENIED",
+                "TOOL_APPROVAL_REQUIRED",
+            }:
                 return response
             context.record_trace(
                 "tool.failed",
@@ -556,6 +597,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 fallback_applied=False,
                 result_size=_typed_result_size(typed_result),
                 audit_metadata=_typed_audit_metadata(typed_result),
+                **guardrail_fields,
             )
             return response
         context.record_trace(
@@ -566,6 +608,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             duration_ms=int((time.monotonic() - started) * 1000),
             result_size=_typed_result_size(typed_result),
             audit_metadata=_typed_audit_metadata(typed_result),
+            **guardrail_fields,
         )
         return response
 
@@ -761,13 +804,122 @@ class ToolPolicyMiddleware(AgentMiddleware):
     def _deny(request: ToolCallRequest) -> ToolMessage | None:
         context = _runtime_context(request.runtime)
         tool_name = str(request.tool_call.get("name") or "")
+        tool_call = dict(request.tool_call)
+        tool_call_id = str(tool_call.get("id") or "unknown")
+        tool_audit_key = _tool_audit_key(tool_call)
         if context.is_tool_allowed(tool_name):
-            return None
+            descriptor = context.tool_descriptor(tool_name)
+            arguments = tool_call.get("args")
+            active_skill = context.active_skill_name()
+            guardrail_request = ToolGuardrailRequest(
+                user_id=context.user_id,
+                roles=context.roles,
+                tenant_id=context.tenant_id,
+                thread_id=context.thread_id,
+                run_id=context.run_id,
+                tool_name=tool_name,
+                tool_group=getattr(descriptor, "group", None),
+                tool_args_summary=ToolArgsSummary.from_mapping(arguments),
+                active_skill=active_skill,
+                active_skill_registered=active_skill is not None,
+                active_skill_scope_allows=(
+                    context.active_skill_allows_tool(tool_name)
+                    if active_skill is not None
+                    else False
+                ),
+                channel=context.channel,
+                network_policy=getattr(descriptor, "network_policy", None),
+                destination_capability=(
+                    context.request_context.destination_capability_for_tool(
+                        tool_name,
+                        arguments,
+                    )
+                ),
+                resource_scope=getattr(descriptor, "resource_scope", None),
+                descriptor_requires_approval=getattr(
+                    descriptor,
+                    "requires_approval",
+                    None,
+                ),
+                approval_granted=context.is_tool_approved(tool_name),
+            )
+            result = (
+                context.guardrail.evaluate(guardrail_request)
+                if context.guardrail is not None
+                else None
+            )
+            if result is not None:
+                context.record_guardrail_result(tool_audit_key, result)
+            if result is not None and result.decision is GuardrailDecision.ALLOW:
+                return None
+            decision = result.decision if result is not None else GuardrailDecision.DENY
+            error_code = (
+                "TOOL_APPROVAL_REQUIRED"
+                if decision is GuardrailDecision.REQUIRE_APPROVAL
+                else "TOOL_GUARDRAIL_DENIED"
+            )
+            context.record_trace(
+                "tool.denied",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_audit_key=tool_audit_key,
+                error_code=error_code,
+                **_guardrail_trace_fields(result),
+            )
+            return ToolMessage(
+                content=new_tool_failure(
+                    error_code=error_code,
+                    retryable=False,
+                    data={
+                        "message": (
+                            "该工具需要当前 Run 的人工批准。"
+                            if decision is GuardrailDecision.REQUIRE_APPROVAL
+                            else "当前工具调用未通过安全策略。"
+                        ),
+                    },
+                    observability_metadata={"tool_name": tool_name},
+                ).model_dump_json(),
+                tool_call_id=tool_call_id,
+                status="error",
+            )
         context.record_trace(
             "tool.denied",
             tool_name=tool_name,
-            tool_call_id=str(request.tool_call.get("id") or ""),
-            tool_audit_key=_tool_audit_key(dict(request.tool_call)),
+            tool_call_id=tool_call_id,
+            tool_audit_key=tool_audit_key,
+            error_code="TOOL_POLICY_DENIED",
+            **_guardrail_trace_fields(
+                ToolGuardrailResult(
+                    decision=GuardrailDecision.DENY,
+                    reason_code=GuardrailReasonCode.REGISTRY_POLICY_DENIED,
+                    policy_version=(
+                        context.guardrail.policy.version
+                        if context.guardrail is not None
+                        else "unavailable"
+                    ),
+                    policy_hash=(
+                        context.guardrail.policy.policy_hash
+                        if context.guardrail is not None
+                        else "0" * 64
+                    ),
+                    safe_metadata={
+                        "active_skill": context.active_skill_name() or "inactive",
+                        "active_skill_registered": context.active_skill_name()
+                        is not None,
+                        "active_skill_scope_allows": False,
+                        "approval_granted": context.is_tool_approved(tool_name),
+                        "channel": context.channel,
+                        "context_complete": False,
+                        "descriptor_requires_approval": None,
+                        "destination_capability_present": False,
+                        "network_policy": "unknown",
+                        "resource_scope": "unknown",
+                        "role_count": len(context.roles),
+                        "tool_group": "unknown",
+                        "tool_name": tool_name or "unknown",
+                    },
+                )
+            ),
         )
         return ToolMessage(
             content=new_tool_failure(
@@ -776,7 +928,7 @@ class ToolPolicyMiddleware(AgentMiddleware):
                 data={"message": "当前 Run 无权执行该工具。"},
                 observability_metadata={"tool_name": tool_name},
             ).model_dump_json(),
-            tool_call_id=str(request.tool_call.get("id") or "unknown"),
+            tool_call_id=tool_call_id,
             status="error",
         )
 

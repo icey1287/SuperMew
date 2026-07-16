@@ -28,6 +28,11 @@ from backend.infra.database import init_db
 from backend.providers.runtime import provider_runtime
 from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
+from backend.sandbox import (
+    build_sandbox_runtime,
+    clear_sandbox_runtime,
+    install_sandbox_runtime,
+)
 from backend.sql_assistant.runtime import get_sql_assistant_runtime
 from backend.web_research.runtime import (
     build_web_research_runtime,
@@ -50,6 +55,9 @@ def create_app() -> FastAPI:
         web_start_attempted = False
         web_runtime = None
         web_installed = False
+        sandbox_start_attempted = False
+        sandbox_runtime = None
+        sandbox_installed = False
         executor_start_attempted = False
         stop_event: asyncio.Event | None = None
         publisher_task: asyncio.Task | None = None
@@ -70,6 +78,11 @@ def create_app() -> FastAPI:
                 await asyncio.to_thread(web_runtime.start)
                 install_web_research_runtime(web_runtime)
                 web_installed = True
+            sandbox_runtime = build_sandbox_runtime(settings)
+            sandbox_start_attempted = True
+            await asyncio.to_thread(sandbox_runtime.start)
+            install_sandbox_runtime(sandbox_runtime)
+            sandbox_installed = True
             executor_start_attempted = True
             await run_agent_executor.start()
             stop_event = asyncio.Event()
@@ -116,6 +129,16 @@ def create_app() -> FastAPI:
                         await closer()
                     except BaseException as exc:
                         cleanup_errors.append(exc)
+            if sandbox_installed:
+                try:
+                    clear_sandbox_runtime(sandbox_runtime)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            if sandbox_start_attempted and sandbox_runtime is not None:
+                try:
+                    await asyncio.to_thread(sandbox_runtime.close)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
             if web_installed:
                 try:
                     clear_web_research_runtime(web_runtime)

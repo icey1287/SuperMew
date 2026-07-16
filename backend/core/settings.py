@@ -9,6 +9,8 @@ from urllib.parse import unquote, urlsplit
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from backend.sandbox.contracts import validate_image_digest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -31,6 +33,11 @@ class ApplicationSettings(_EnvSettings):
     )
     host: str = Field(default="0.0.0.0", validation_alias="HOST")
     port: int = Field(default=8000, validation_alias="PORT")
+    default_tenant_id: str = Field(
+        default="default",
+        pattern=r"^[a-z][a-z0-9_.:-]{0,63}$",
+        validation_alias="DEFAULT_TENANT_ID",
+    )
 
 
 class ModelSettings(_EnvSettings):
@@ -527,7 +534,133 @@ class SkillSettings(_EnvSettings):
         le=4_194_304,
         validation_alias="SKILL_MAX_CONTENT_BYTES",
     )
-    sandbox_enabled: bool = Field(default=False, validation_alias="SANDBOX_ENABLED")
+
+
+class SandboxSettings(_EnvSettings):
+    """Fail-closed configuration for the isolated Sandbox Module."""
+
+    enabled: bool = Field(default=False, validation_alias="SANDBOX_ENABLED")
+    adapter: Literal["docker", "disabled"] = Field(
+        default="docker",
+        validation_alias="SANDBOX_ADAPTER",
+    )
+    docker_image: str = Field(default="", validation_alias="SANDBOX_DOCKER_IMAGE")
+    docker_binary: str = Field(
+        default="docker",
+        pattern=r"^[^\x00-\x20\x7f]{1,1024}$",
+        validation_alias="SANDBOX_DOCKER_BINARY",
+    )
+    docker_host: str | None = Field(
+        default=None,
+        validation_alias="SANDBOX_DOCKER_HOST",
+    )
+    require_rootless: bool = Field(
+        default=False,
+        validation_alias="SANDBOX_REQUIRE_ROOTLESS",
+    )
+    max_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        validation_alias="SANDBOX_MAX_CONCURRENCY",
+    )
+    timeout_seconds: float = Field(
+        default=15.0,
+        ge=0.1,
+        le=600,
+        allow_inf_nan=False,
+        validation_alias="SANDBOX_TIMEOUT_SECONDS",
+    )
+    cpu_limit: float = Field(
+        default=0.5,
+        ge=0.05,
+        le=8,
+        allow_inf_nan=False,
+        validation_alias="SANDBOX_CPU_LIMIT",
+    )
+    memory_bytes: int = Field(
+        default=268_435_456,
+        ge=33_554_432,
+        le=8_589_934_592,
+        validation_alias="SANDBOX_MEMORY_BYTES",
+    )
+    pids_limit: int = Field(
+        default=32,
+        ge=4,
+        le=512,
+        validation_alias="SANDBOX_PIDS_LIMIT",
+    )
+    workspace_bytes: int = Field(
+        default=67_108_864,
+        ge=1_048_576,
+        le=1_073_741_824,
+        validation_alias="SANDBOX_WORKSPACE_BYTES",
+    )
+    max_source_bytes: int = Field(
+        default=65_536,
+        ge=1,
+        le=4_194_304,
+        validation_alias="SANDBOX_MAX_SOURCE_BYTES",
+    )
+    max_output_bytes: int = Field(
+        default=65_536,
+        ge=1,
+        le=16_777_216,
+        validation_alias="SANDBOX_MAX_OUTPUT_BYTES",
+    )
+    max_files: int = Field(
+        default=32,
+        ge=1,
+        le=4_096,
+        validation_alias="SANDBOX_MAX_FILES",
+    )
+    max_file_bytes: int = Field(
+        default=8_388_608,
+        ge=1,
+        le=536_870_912,
+        validation_alias="SANDBOX_MAX_FILE_BYTES",
+    )
+    max_total_file_bytes: int = Field(
+        default=33_554_432,
+        ge=1,
+        le=1_073_741_824,
+        validation_alias="SANDBOX_MAX_TOTAL_FILE_BYTES",
+    )
+    max_path_bytes: int = Field(
+        default=240,
+        ge=16,
+        le=4_096,
+        validation_alias="SANDBOX_MAX_PATH_BYTES",
+    )
+    max_path_depth: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        validation_alias="SANDBOX_MAX_PATH_DEPTH",
+    )
+    cleanup_timeout_seconds: float = Field(
+        default=3.0,
+        ge=0.1,
+        le=30,
+        allow_inf_nan=False,
+        validation_alias="SANDBOX_CLEANUP_TIMEOUT_SECONDS",
+    )
+
+    @field_validator("docker_image")
+    @classmethod
+    def validate_docker_image(cls, value: str) -> str:
+        normalized = value.strip()
+        return validate_image_digest(normalized) if normalized else ""
+
+    @field_validator("docker_host")
+    @classmethod
+    def validate_docker_host(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip()
+        if not normalized.startswith("unix://") or len(normalized) > 2_048:
+            raise ValueError("SANDBOX_DOCKER_HOST 只能使用本地 Unix endpoint")
+        return normalized
 
 
 _POSTGRES_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
@@ -925,6 +1058,9 @@ class AppSettings(BaseModel):
     worker: WorkerSettings
     observability: ObservabilitySettings
     skills: SkillSettings
+    sandbox: SandboxSettings = Field(
+        default_factory=lambda: SandboxSettings(_env_file=None)
+    )
     sql_assistant: SqlAssistantSettings
     web_research: WebResearchSettings
 
@@ -988,6 +1124,27 @@ class AppSettings(BaseModel):
 
         if self.web_research.enabled and not self.web_research.search_configured:
             problems.append("启用 Web Research 时必须配置 BRAVE_SEARCH_API_KEY")
+
+        sandbox = self.sandbox
+        if sandbox.enabled:
+            if sandbox.adapter != "docker":
+                problems.append("启用 Sandbox 时 SANDBOX_ADAPTER 必须为 docker")
+            if not sandbox.docker_image:
+                problems.append(
+                    "启用 Sandbox 时必须配置 digest-pinned SANDBOX_DOCKER_IMAGE"
+                )
+            if self.app.environment == "production" and not sandbox.require_rootless:
+                problems.append("生产环境 Sandbox 必须要求 rootless Docker daemon")
+        if sandbox.max_file_bytes > sandbox.max_total_file_bytes:
+            problems.append(
+                "SANDBOX_MAX_FILE_BYTES 不能大于 SANDBOX_MAX_TOTAL_FILE_BYTES"
+            )
+        if sandbox.max_total_file_bytes > sandbox.workspace_bytes:
+            problems.append(
+                "SANDBOX_MAX_TOTAL_FILE_BYTES 不能大于 SANDBOX_WORKSPACE_BYTES"
+            )
+        if sandbox.max_source_bytes >= sandbox.workspace_bytes:
+            problems.append("SANDBOX_MAX_SOURCE_BYTES 必须小于 SANDBOX_WORKSPACE_BYTES")
 
         if self.app.config_version != 1:
             problems.append(
@@ -1193,6 +1350,7 @@ def get_settings() -> AppSettings:
         worker=WorkerSettings(),
         observability=ObservabilitySettings(),
         skills=SkillSettings(),
+        sandbox=SandboxSettings(),
         sql_assistant=SqlAssistantSettings(),
         web_research=WebResearchSettings(),
     )

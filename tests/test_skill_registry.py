@@ -579,10 +579,12 @@ def test_registry_rejects_missing_skill_and_example_skill_loads() -> None:
             "sql_query",
             "web_search",
             "web_fetch",
+            "sandbox_execute",
         },
     )
     assert registry.names == (
         "knowledge-base",
+        "sandbox",
         "sql-assistant",
         "web-research",
     )

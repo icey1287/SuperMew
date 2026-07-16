@@ -98,7 +98,7 @@ def _write_analysis_skill(root: Path) -> None:
                 "version: 1.0.0",
                 "description: Analyze data with the deferred SQL tool.",
                 "allowed_tools:",
-                "  - sql_query",
+                "  - analysis_query",
                 "required_roles: []",
                 "required_secrets: []",
                 "entrypoint: SKILL.md",
@@ -107,7 +107,7 @@ def _write_analysis_skill(root: Path) -> None:
         encoding="utf-8",
     )
     (skill_dir / "SKILL.md").write_text(
-        "# Analysis\nReveal sql_query, execute it once, then summarize.",
+        "# Analysis\nReveal analysis_query, execute it once, then summarize.",
         encoding="utf-8",
     )
 
@@ -117,11 +117,12 @@ def _descriptor(
     description: str,
     *,
     argument: str,
+    group: str = "runtime-test",
 ) -> ToolDescriptor:
     return ToolDescriptor(
         name=name,
         description=description,
-        group="runtime-test",
+        group=group,
         version="1.0.0",
         input_schema={
             "type": "object",
@@ -155,6 +156,7 @@ def _registry_with_deferred_sql(calls: list[str]) -> ToolRegistry:
             "describe_skill",
             "Activate an authorized skill.",
             argument="name",
+            group="registry-control",
         ),
         _control_placeholder("describe_skill"),
         exposure=ToolExposure.CONTROL,
@@ -164,28 +166,29 @@ def _registry_with_deferred_sql(calls: list[str]) -> ToolRegistry:
             "tool_search",
             "Reveal authorized deferred SQL schemas.",
             argument="query",
+            group="registry-control",
         ),
         _control_placeholder("tool_search"),
         exposure=ToolExposure.CONTROL,
     )
 
-    def make_sql_query(_request_context):
-        @tool("sql_query")
-        def sql_query(query: str) -> str:
+    def make_analysis_query(_request_context):
+        @tool("analysis_query")
+        def analysis_query(query: str) -> str:
             """Execute a read-only SQL query for an authorized Run."""
 
             calls.append(query)
             return f"rows for: {query}"
 
-        return sql_query
+        return analysis_query
 
     registry.register(
         _descriptor(
-            "sql_query",
+            "analysis_query",
             "Execute a read-only SQL query against authorized business data.",
             argument="query",
         ),
-        make_sql_query,
+        make_analysis_query,
         exposure=ToolExposure.DEFERRED,
     )
     return registry
@@ -740,7 +743,10 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
 ):
     sql_calls: list[str] = []
     registry = _registry_with_deferred_sql(sql_calls)
-    skills = _empty_skills(tmp_path / "empty-skills", registry)
+    skill_root = tmp_path / "skills"
+    skill_root.mkdir()
+    _write_analysis_skill(skill_root)
+    skills = SkillRegistry.load(skill_root, registry.names)
     model = ScriptedChatModel(
         responses=[
             AIMessage(
@@ -758,7 +764,7 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
                 content="",
                 tool_calls=[
                     {
-                        "name": "sql_query",
+                        "name": "analysis_query",
                         "args": {"query": "select count(*) from orders"},
                         "id": "call-sql-query",
                         "type": "tool_call",
@@ -781,20 +787,20 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
     )
     runtime = factory.create(
         request_context,
-        allowed_tools=frozenset({"tool_search", "sql_query"}),
+        allowed_tools=frozenset({"tool_search", "analysis_query"}),
     )
     try:
         result = await runtime.ainvoke(
-            AgentRuntimeInput(history=[], user_text="Count the orders")
+            AgentRuntimeInput(history=[], user_text="/analysis\nCount the orders")
         )
     finally:
         request_context.close()
 
     assert result.content == "SQL completed"
     assert model.bound_tool_names[0] == ["tool_search"]
-    assert set(model.bound_tool_names[1]) == {"tool_search", "sql_query"}
+    assert set(model.bound_tool_names[1]) == {"tool_search", "analysis_query"}
     assert sql_calls == ["select count(*) from orders"]
-    assert runtime.context.tool_session.is_allowed("sql_query")
+    assert runtime.context.tool_session.is_allowed("analysis_query")
     assert "tool.denied" not in {event["stage"] for event in result.runtime_trace}
 
 
@@ -864,13 +870,14 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
     assert first_result.content == "first complete"
     assert second_result.content == "second complete"
     assert first_runtime.context.skill_session.active.name == "analysis"
-    assert first_runtime.context.tool_session.is_allowed("sql_query")
-    assert "sql_query" in first_model.bound_tool_names[-1]
+    assert first_runtime.context.tool_session.is_allowed("analysis_query")
+    assert "analysis_query" in first_model.bound_tool_names[-1]
 
     assert second_runtime.context.skill_session.active is None
-    assert not second_runtime.context.tool_session.is_allowed("sql_query")
+    assert not second_runtime.context.tool_session.is_allowed("analysis_query")
     assert all(
-        "sql_query" not in bound_names for bound_names in second_model.bound_tool_names
+        "analysis_query" not in bound_names
+        for bound_names in second_model.bound_tool_names
     )
     assert any(
         '<active_skill state="inactive" />' in text

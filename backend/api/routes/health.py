@@ -9,6 +9,7 @@ from backend.api.resources import (
     milvus_manager,
 )
 from backend.providers.runtime import provider_runtime
+from backend.sandbox import get_sandbox_runtime
 from backend.sql_assistant.runtime import get_sql_assistant_runtime
 from backend.web_research.runtime import get_web_research_runtime
 
@@ -57,6 +58,21 @@ async def ready() -> JSONResponse:
             web_search_ready = bool(web_snapshot.get("search_ready"))
         except Exception:
             web_ready = False
+    sandbox_enabled = bool(
+        getattr(
+            getattr(provider_runtime.settings, "sandbox", None),
+            "enabled",
+            False,
+        )
+    )
+    sandbox_snapshot = None
+    sandbox_ready = False
+    if sandbox_enabled:
+        try:
+            sandbox_snapshot = get_sandbox_runtime().readiness()
+            sandbox_ready = bool(sandbox_snapshot.ready)
+        except Exception:
+            sandbox_ready = False
     try:
         catalog_state = await asyncio.to_thread(
             document_catalog.legacy_adoption_state,
@@ -98,6 +114,7 @@ async def ready() -> JSONResponse:
         and catalog_target_matches
         and (not sql_enabled or sql_ready)
         and (not web_enabled or web_ready)
+        and (not sandbox_enabled or sandbox_ready)
         and (
             not worker_settings.indexing_worker_required
             or bool(worker_state and worker_state.ready)
@@ -131,6 +148,26 @@ async def ready() -> JSONResponse:
                 "enabled": web_enabled,
                 "ready": web_ready,
                 "search_ready": web_search_ready,
+            },
+            "sandbox": {
+                "enabled": sandbox_enabled,
+                "ready": sandbox_ready,
+                "adapter": (
+                    sandbox_snapshot.adapter
+                    if sandbox_snapshot is not None
+                    else (None if sandbox_enabled else "disabled")
+                ),
+                "daemon_reachable": bool(
+                    sandbox_snapshot and sandbox_snapshot.daemon_reachable
+                ),
+                "image_available": bool(
+                    sandbox_snapshot and sandbox_snapshot.image_available
+                ),
+                "active_executions": (
+                    sandbox_snapshot.active_executions
+                    if sandbox_snapshot is not None
+                    else 0
+                ),
             },
             "document_catalog": {
                 "available": catalog_available,

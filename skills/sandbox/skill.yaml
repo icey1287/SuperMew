@@ -1,0 +1,11 @@
+schema_version: 1
+name: sandbox
+version: 1.0.0
+description: Execute bounded Python or shell source in an approved isolated workspace.
+allowed_tools:
+  - sandbox_execute
+required_roles:
+  - admin
+required_secrets:
+  - SANDBOX_RUNTIME
+entrypoint: SKILL.md

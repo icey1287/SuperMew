@@ -150,6 +150,30 @@ BRAVE_SEARCH_API_KEY=<由 Secret 管理系统注入>
 Markdown 链接；事实必须就近引用，并披露来源冲突、检索时间与覆盖缺口。
 完整预算、上线验证、轮换和紧急禁用见 `docs/runbooks/web-research.md`。
 
+所有 Registry-bound Tool 在 handler 前还会经过确定性 Guardrail，决策只有 `ALLOW`、`DENY`
+与 `REQUIRE_APPROVAL`。`shell`、`code`、`process`、`network-private`、`high-risk` group 永久
+hard deny；Web fetch 的 destination capability 绑定 user、tenant、Thread、Run、Tool、network
+policy 与 resource scope，模型始终只能提交 `evidence_id`。Guardrail 详细 reason 与 policy
+version/hash 只进入脱敏 ToolAudit，不进入公开 Run Event/SSE。
+
+隔离 Sandbox 默认关闭。它使用本地 digest-pinned image、固定非 root runner、只读 rootfs、
+无网络、无 bind mount 和有大小上限的 tmpfs workspace；执行结束只返回有界 stdout/stderr，
+不导出文件或宿主路径。生产环境必须连接专用 rootless Docker daemon：
+
+```dotenv
+SANDBOX_ENABLED=true
+SANDBOX_ADAPTER=docker
+SANDBOX_DOCKER_IMAGE=sha256:<local-image-sha256>
+SANDBOX_DOCKER_HOST=unix:///path/to/supermew-rootless.sock
+SANDBOX_REQUIRE_ROOTLESS=true
+```
+
+当前没有互动审批 UX。只有 trusted admin 能在创建 durable Run 时通过
+`approved_tools=["sandbox_execute"]` 预先授权；grant 绑定该 Run 完整身份，Runtime 构造和每次
+执行都会复核。Sandbox 启用但 daemon/image 不 ready 时 `/health/ready` 返回 503；关闭时不会
+探测 Docker，也不影响 readiness。发布、烟雾测试、审计和事件响应见
+`docs/runbooks/guardrails-and-sandbox.md`。
+
 浏览器访问：
 - 前端页面：`http://127.0.0.1:8000/` （后端静态托管编译后的 `frontend/dist` 资源）
 - API 文档：`http://127.0.0.1:8000/docs`
@@ -273,6 +297,8 @@ npm run build
     - [runtime.py](backend/chat/runtime.py)：模型客户端与每请求 Agent 创建。
     - [request_context.py](backend/chat/request_context.py)：每请求 RAG step、RAG trace、工具预算上下文。
     - [storage.py](backend/chat/storage.py)：会话 PostgreSQL + Redis。
+  - `guardrails/`：Tool 调用前的确定性 policy、Run-bound approval 与 destination capability。
+  - `sandbox/`：隔离执行契约、进程级 Runtime，以及 disabled/Docker Adapter。
   - `rag/`：检索增强
     - [pipeline.py](backend/rag/pipeline.py)：LangGraph RAG 工作流。
     - [utils.py](backend/rag/utils.py)：混合检索、Rerank、Auto-merging。
@@ -281,7 +307,7 @@ npm run build
     - [document_loader.py](backend/indexing/document_loader.py)：PDF/Word/Excel 分块。
     - [milvus_client.py](backend/indexing/milvus_client.py)、[milvus_writer.py](backend/indexing/milvus_writer.py)。
     - [parent_chunk_store.py](backend/indexing/parent_chunk_store.py)：父级分块 DocStore。
-  - `tools/`：LangChain Agent 可调用的 `@tool`（天气、知识库检索）。
+  - `tools/`：Tool/Skill Registry 接入 Adapter（知识库、天气、SQL、Web、Sandbox）。
   - `infra/`：[database.py](backend/infra/database.py)、[cache.py](backend/infra/cache.py)、[auth.py](backend/infra/auth.py)。
   - `db/`：[models.py](backend/db/models.py)：ORM 模型。
   - `schemas/`：Pydantic 请求/响应（auth / chat / documents）。
@@ -385,6 +411,9 @@ npm run build
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
 - 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`
 - 密码参数：`PASSWORD_PBKDF2_ROUNDS`
+- 隔离 Sandbox：`SANDBOX_ENABLED`、`SANDBOX_ADAPTER`、`SANDBOX_DOCKER_IMAGE`、
+  `SANDBOX_DOCKER_HOST`、`SANDBOX_REQUIRE_ROOTLESS` 与各项 `SANDBOX_MAX_*` 预算；默认关闭，
+  启用后参与 readiness。
 - 检索候选池：`RETRIEVAL_CANDIDATE_K`（固定候选数，优先）、`RETRIEVAL_CANDIDATE_MULTIPLIER`（未设 K 时 `max(top_k × 倍数, top_k)`，默认 `3`）
 - Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
 - 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`

@@ -8,6 +8,7 @@ from backend.events.bus import event_bus
 from backend.events.journal import journal
 from backend.events.sse import format_sse_event, format_sse_heartbeat
 from backend.infra.auth import get_current_user
+from backend.core.settings import get_settings
 from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 from backend.runs.resume import resume_coordinator
@@ -23,31 +24,61 @@ from backend.schemas.runs import (
     ThreadCreateRequest,
     ThreadResponse,
 )
+from backend.tools.catalog import tool_registry
 
 
 router = APIRouter(prefix="/v1", tags=["runs"])
 
 
-async def _reserve_run(*, username: str, thread_id: str, request: RunCreateRequest):
+async def _reserve_run(*, user: User, thread_id: str, request: RunCreateRequest):
+    approved_tools = frozenset(request.approved_tools)
+    if approved_tools and user.role != "admin":
+        raise AppError(
+            ErrorCode.POLICY_DENIED,
+            "只有管理员可以为 Run 预先批准高风险工具。",
+            status_code=403,
+            category="guardrail",
+            stage="approval",
+        )
+    invalid_approvals = {
+        name
+        for name in approved_tools
+        if (
+            (descriptor := tool_registry.descriptor(name)) is None
+            or not descriptor.requires_approval
+        )
+    }
+    if invalid_approvals:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST,
+            "approved_tools 只能包含已声明需审批的工具。",
+            status_code=400,
+            category="guardrail",
+            stage="approval",
+        )
+    settings = get_settings()
     reservation = await run_in_threadpool(
         service.create_run,
-        username=username,
+        username=user.username,
         thread_id=thread_id,
         message=request.message,
         idempotency_key=request.idempotency_key,
         expected_thread_version=request.expected_thread_version,
         multitask_strategy=request.multitask_strategy,
         on_disconnect=request.on_disconnect,
+        tenant_id=settings.app.default_tenant_id,
+        channel="chat",
+        approved_tools=approved_tools,
     )
     if reservation.run.supersedes_run_id:
         await run_in_threadpool(
             service.request_cancel,
-            username=username,
+            username=user.username,
             run_id=reservation.run.supersedes_run_id,
         )
         await cancellation_registry.request_cancel(reservation.run.supersedes_run_id)
     await run_agent_executor.spawn_once(
-        username=username,
+        username=user.username,
         run_id=reservation.run.id,
     )
     return reservation
@@ -116,7 +147,7 @@ async def create_run(
     current_user: User = Depends(get_current_user),
 ):
     reservation = await _reserve_run(
-        username=current_user.username,
+        user=current_user,
         thread_id=thread_id,
         request=request,
     )
@@ -231,7 +262,7 @@ async def create_run_stream(
     current_user: User = Depends(get_current_user),
 ):
     reservation = await _reserve_run(
-        username=current_user.username,
+        user=current_user,
         thread_id=thread_id,
         request=request,
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -8,6 +9,7 @@ from html import escape
 from typing import Any
 
 from backend.chat.request_context import ChatRequestContext
+from backend.guardrails import RunToolApprovalGrant, ToolGuardrail, ToolGuardrailResult
 
 
 @dataclass(frozen=True)
@@ -38,12 +40,16 @@ class AgentRuntimeContext:
     budget: RuntimeBudget
     user_db_id: int | None = None
     roles: frozenset[str] = field(default_factory=lambda: frozenset({"user"}))
+    tenant_id: str = "default"
+    channel: str = "chat"
     run_id: str | None = None
     request_id: str | None = None
     persistent_note: str = ""
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
+    approval_grant: RunToolApprovalGrant | None = None
     tool_session: Any | None = None
     skill_session: Any | None = None
+    guardrail: ToolGuardrail | None = None
     tool_catalog_hash: str = ""
     deadline_at: float | None = None
     current_date: str = field(
@@ -55,6 +61,11 @@ class AgentRuntimeContext:
     trimmed_message_count: int = 0
     _tool_fingerprint_counts: dict[str, int] = field(default_factory=dict)
     _tool_fingerprint_history: list[str] = field(default_factory=list)
+    _guardrail_results: dict[str, ToolGuardrailResult] = field(default_factory=dict)
+    _security_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        repr=False,
+    )
 
     def check_deadline(self) -> None:
         if self.deadline_at is not None and time.monotonic() >= self.deadline_at:
@@ -101,6 +112,58 @@ class AgentRuntimeContext:
         if self.tool_session is not None:
             return frozenset(self.tool_session.visible_names)
         return self.allowed_tools or frozenset()
+
+    def active_skill_name(self) -> str | None:
+        active = (
+            getattr(self.skill_session, "active", None)
+            if self.skill_session is not None
+            else None
+        )
+        name = getattr(active, "name", None)
+        return name if isinstance(name, str) and name else None
+
+    def active_skill_allows_tool(self, name: str) -> bool:
+        active = (
+            getattr(self.skill_session, "active", None)
+            if self.skill_session is not None
+            else None
+        )
+        allowed = getattr(active, "allowed_tools", frozenset())
+        return bool(active is not None and name in frozenset(allowed))
+
+    def tool_descriptor(self, name: str) -> Any | None:
+        if self.tool_session is None:
+            return None
+        describe = getattr(self.tool_session, "describe", None)
+        return describe(name) if callable(describe) else None
+
+    def is_tool_approved(self, name: str) -> bool:
+        grant = self.approval_grant
+        return bool(
+            grant is not None
+            and self.run_id is not None
+            and grant.allows(
+                name,
+                user_id=self.user_id,
+                tenant_id=self.tenant_id,
+                thread_id=self.thread_id,
+                run_id=self.run_id,
+            )
+        )
+
+    def record_guardrail_result(
+        self,
+        audit_key: str,
+        result: ToolGuardrailResult,
+    ) -> None:
+        if not isinstance(result, ToolGuardrailResult):
+            raise TypeError("result must be ToolGuardrailResult")
+        with self._security_lock:
+            self._guardrail_results[audit_key] = result
+
+    def guardrail_result(self, audit_key: str) -> ToolGuardrailResult | None:
+        with self._security_lock:
+            return self._guardrail_results.get(audit_key)
 
     def prepare_user_text(self, user_text: str) -> str:
         if self.skill_session is None:

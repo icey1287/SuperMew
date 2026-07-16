@@ -124,6 +124,13 @@ class Run(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), default="default", nullable=False, index=True
+    )
+    channel: Mapped[str] = mapped_column(String(32), default="chat", nullable=False)
+    approved_tools_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     status: Mapped[str] = mapped_column(
         String(32), default="pending", nullable=False, index=True
     )
@@ -812,6 +819,9 @@ class ToolAudit(Base):
     tool_version: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     skill_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
     success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

@@ -87,6 +87,7 @@ class ToolDescriptor:
     requires_approval: bool
     network_policy: str
     result_size_limit: int
+    resource_scope: str = "none"
     observability_metadata_keys: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
@@ -94,7 +95,13 @@ class ToolDescriptor:
             self.name
         ):
             raise ValueError("name must be a valid tool identifier")
-        for field_name in ("description", "group", "version", "network_policy"):
+        for field_name in (
+            "description",
+            "group",
+            "version",
+            "network_policy",
+            "resource_scope",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
@@ -109,6 +116,8 @@ class ToolDescriptor:
             raise ValueError("version must be semantic version text")
         if _POLICY_PATTERN.fullmatch(self.network_policy) is None:
             raise ValueError("network_policy must be a stable policy identifier")
+        if _POLICY_PATTERN.fullmatch(self.resource_scope) is None:
+            raise ValueError("resource_scope must be a stable policy identifier")
         if isinstance(self.timeout, bool) or self.timeout <= 0:
             raise ValueError("timeout must be greater than zero")
         if self.timeout > 3_600:
@@ -186,10 +195,9 @@ class ToolDescriptor:
             "required_secrets": sorted(self.required_secrets),
             "requires_approval": self.requires_approval,
             "network_policy": self.network_policy,
+            "resource_scope": self.resource_scope,
             "result_size_limit": self.result_size_limit,
-            "observability_metadata_keys": sorted(
-                self.observability_metadata_keys
-            ),
+            "observability_metadata_keys": sorted(self.observability_metadata_keys),
             "exposure": exposure.value,
         }
 
@@ -651,9 +659,7 @@ class ToolRegistry:
                     max_workers=internal_descriptor.max_concurrency,
                     thread_name_prefix=f"tool-{internal_descriptor.name}",
                 ),
-                gate=threading.BoundedSemaphore(
-                    internal_descriptor.max_concurrency
-                ),
+                gate=threading.BoundedSemaphore(internal_descriptor.max_concurrency),
             )
 
     @property
@@ -760,9 +766,7 @@ class ToolRegistry:
     def catalog_hash(self) -> str:
         with self._lock:
             records = [
-                registration.descriptor.catalog_record(
-                    exposure=registration.exposure
-                )
+                registration.descriptor.catalog_record(exposure=registration.exposure)
                 for registration in sorted(
                     self._registrations.values(),
                     key=lambda item: item.descriptor.name,
