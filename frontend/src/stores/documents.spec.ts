@@ -23,11 +23,41 @@ const createUploadJob = (overrides: Partial<UploadJob> = {}): UploadJob => ({
   status: 'running',
   message: '正在写入候选向量：450 / 770',
   steps: [
-    { key: 'upload', label: '文档上传', percent: 100, status: 'completed', message: '文档上传完成' },
-    { key: 'reserve', label: '候选版本准备', percent: 100, status: 'completed', message: '候选版本已保留' },
-    { key: 'parse', label: '解析与版本化分块', percent: 100, status: 'completed', message: '解析完成' },
-    { key: 'parent_store', label: '候选父级分块写入', percent: 100, status: 'completed', message: '候选父级分块写入完成' },
-    { key: 'vector_store', label: '候选向量写入', percent: 58, status: 'running', message: '450 / 770' },
+    {
+      key: 'upload',
+      label: '文档上传',
+      percent: 100,
+      status: 'completed',
+      message: '文档上传完成',
+    },
+    {
+      key: 'reserve',
+      label: '候选版本准备',
+      percent: 100,
+      status: 'completed',
+      message: '候选版本已保留',
+    },
+    {
+      key: 'parse',
+      label: '解析与版本化分块',
+      percent: 100,
+      status: 'completed',
+      message: '解析完成',
+    },
+    {
+      key: 'parent_store',
+      label: '候选父级分块写入',
+      percent: 100,
+      status: 'completed',
+      message: '候选父级分块写入完成',
+    },
+    {
+      key: 'vector_store',
+      label: '候选向量写入',
+      percent: 58,
+      status: 'running',
+      message: '450 / 770',
+    },
     { key: 'verify', label: '索引一致性核验', percent: 0, status: 'pending', message: '' },
     { key: 'publish', label: '原子发布新版本', percent: 0, status: 'pending', message: '' },
   ],
@@ -46,7 +76,13 @@ const createDeleteJob = (overrides: Partial<DeleteJob> = {}): DeleteJob => ({
   steps: [
     { key: 'prepare', label: '原子撤销检索范围', percent: 100, status: 'completed', message: '' },
     { key: 'milvus', label: '清理向量索引', percent: 20, status: 'running', message: '正在清理' },
-    { key: 'parent_store', label: '清理父级分块与缓存', percent: 0, status: 'pending', message: '' },
+    {
+      key: 'parent_store',
+      label: '清理父级分块与缓存',
+      percent: 0,
+      status: 'pending',
+      message: '',
+    },
     { key: 'object_store', label: '清理版本对象', percent: 0, status: 'pending', message: '' },
     { key: 'finalize', label: '确认清理状态', percent: 0, status: 'pending', message: '' },
   ],
@@ -212,11 +248,13 @@ describe('document upload polling', () => {
       documentId: 'doc-1',
       status: 'running',
     });
-    expect(store.documents).toContainEqual(expect.objectContaining({
-      filename: 'guide.pdf',
-      document_id: 'doc-1',
-      status: 'deleted',
-    }));
+    expect(store.documents).toContainEqual(
+      expect.objectContaining({
+        filename: 'guide.pdf',
+        document_id: 'doc-1',
+        status: 'deleted',
+      })
+    );
     expect(store.deletePollTimers['guide.pdf']).toBeDefined();
     expect(api.get).toHaveBeenCalledWith('/documents/delete/jobs/delete-job-1');
   });
@@ -243,12 +281,14 @@ describe('document upload polling', () => {
 
   it('does not restore an old retirement over a newer reupload', async () => {
     const store = useDocumentStore();
-    store.documents = [{
-      filename: 'guide.pdf',
-      file_type: 'PDF',
-      chunk_count: 1,
-      uploaded_at: '2026-07-16T02:00:00Z',
-    }];
+    store.documents = [
+      {
+        filename: 'guide.pdf',
+        file_type: 'PDF',
+        chunk_count: 1,
+        uploaded_at: '2026-07-16T02:00:00Z',
+      },
+    ];
     vi.mocked(api.get).mockResolvedValue({
       data: [createDeleteJob({ created_at: '2026-07-16T01:00:00Z' })],
     });
@@ -262,12 +302,14 @@ describe('document upload polling', () => {
 
   it('does not let a completed old retirement remove a newer reupload', async () => {
     const store = useDocumentStore();
-    store.documents = [{
-      filename: 'guide.pdf',
-      file_type: 'PDF',
-      chunk_count: 1,
-      uploaded_at: '2026-07-16T02:00:00Z',
-    }];
+    store.documents = [
+      {
+        filename: 'guide.pdf',
+        file_type: 'PDF',
+        chunk_count: 1,
+        uploaded_at: '2026-07-16T02:00:00Z',
+      },
+    ];
     store.setDeleteJob('guide.pdf', {
       jobId: 'delete-job-1',
       status: 'running',
@@ -276,11 +318,13 @@ describe('document upload polling', () => {
       steps: store.createDeleteSteps(),
     });
     vi.mocked(api.get).mockResolvedValue({
-      data: [createDeleteJob({
-        status: 'completed',
-        created_at: '2026-07-16T01:00:00Z',
-        updated_at: '2026-07-16T03:00:00Z',
-      })],
+      data: [
+        createDeleteJob({
+          status: 'completed',
+          created_at: '2026-07-16T01:00:00Z',
+          updated_at: '2026-07-16T03:00:00Z',
+        }),
+      ],
     });
 
     await store.restoreDurableDeleteJobs();
@@ -299,9 +343,27 @@ describe('document upload polling', () => {
       message: '文档处理完成',
       steps: [
         ...runningJob.steps.slice(0, 4),
-        { key: 'vector_store', label: '候选向量写入', percent: 100, status: 'completed', message: '770 / 770' },
-        { key: 'verify', label: '索引一致性核验', percent: 100, status: 'completed', message: '存储内容一致' },
-        { key: 'publish', label: '原子发布新版本', percent: 100, status: 'completed', message: '新版本已发布' },
+        {
+          key: 'vector_store',
+          label: '候选向量写入',
+          percent: 100,
+          status: 'completed',
+          message: '770 / 770',
+        },
+        {
+          key: 'verify',
+          label: '索引一致性核验',
+          percent: 100,
+          status: 'completed',
+          message: '存储内容一致',
+        },
+        {
+          key: 'publish',
+          label: '原子发布新版本',
+          percent: 100,
+          status: 'completed',
+          message: '新版本已发布',
+        },
       ],
     });
     const jobResponses = [runningJob, completedJob];

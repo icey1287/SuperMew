@@ -26,11 +26,15 @@
           </button>
           <div class="source-content">
             <div class="source-title-line">
-              <span class="source-file"><i class="fa-regular fa-file-lines"></i>{{ chunk.filename }}</span>
-              <span v-if="chunk.page_number" class="source-page">第 {{ chunk.page_number }} 页</span>
+              <span class="source-file"
+                ><i class="fa-regular fa-file-lines"></i>{{ chunk.filename }}</span
+              >
+              <span v-if="chunk.page_number" class="source-page"
+                >第 {{ chunk.page_number }} 页</span
+              >
             </div>
             <div class="source-meta-line">
-              <span>RRF #{{ chunk.rrf_rank || (cIdx + 1) }}</span>
+              <span>RRF #{{ chunk.rrf_rank || cIdx + 1 }}</span>
               <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined">
                 Rerank {{ Number(chunk.rerank_score).toFixed(4) }}
               </span>

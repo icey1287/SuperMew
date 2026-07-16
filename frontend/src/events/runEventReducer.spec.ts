@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  applyRunEvent,
-  initialRunEventState,
-  type RuntimeRunEvent,
-} from './runEventReducer';
+import { applyRunEvent, initialRunEventState, type RuntimeRunEvent } from './runEventReducer';
 
 function event(
   sequence: number,
@@ -36,10 +32,7 @@ describe('run event reducer', () => {
       })
     );
     state = applyRunEvent(state, event(2, 'message.delta', { content: 'hel' }));
-    const duplicate = applyRunEvent(
-      state,
-      event(2, 'message.delta', { content: 'duplicate' })
-    );
+    const duplicate = applyRunEvent(state, event(2, 'message.delta', { content: 'duplicate' }));
     expect(duplicate).toBe(state);
 
     state = applyRunEvent(
@@ -62,10 +55,7 @@ describe('run event reducer', () => {
   });
 
   it('marks a sequence gap without advancing the cursor or applying the event', () => {
-    let state = applyRunEvent(
-      initialRunEventState('run_1', 'thread-1'),
-      event(1, 'run.started')
-    );
+    let state = applyRunEvent(initialRunEventState('run_1', 'thread-1'), event(1, 'run.started'));
     state = applyRunEvent(state, event(3, 'message.delta', { content: 'must-not-apply' }));
 
     expect(state.hasGap).toBe(true);
@@ -80,12 +70,10 @@ describe('run event reducer', () => {
   it('rejects events belonging to another Run or Thread', () => {
     const initial = initialRunEventState('run_1', 'thread-1');
 
-    expect(
-      applyRunEvent(initial, event(1, 'run.started', {}, { run_id: 'run_2' }))
-    ).toBe(initial);
-    expect(
-      applyRunEvent(initial, event(1, 'run.started', {}, { thread_id: 'thread-2' }))
-    ).toBe(initial);
+    expect(applyRunEvent(initial, event(1, 'run.started', {}, { run_id: 'run_2' }))).toBe(initial);
+    expect(applyRunEvent(initial, event(1, 'run.started', {}, { thread_id: 'thread-2' }))).toBe(
+      initial
+    );
   });
 
   it('keeps the first terminal event sticky', () => {

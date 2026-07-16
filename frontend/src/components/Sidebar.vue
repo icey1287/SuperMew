@@ -95,7 +95,12 @@
           <small>{{ roleLabel }}</small>
         </span>
         <span class="user-actions">
-          <button type="button" title="清空当前对话" aria-label="清空当前对话" @click="chatStore.handleClearChat">
+          <button
+            type="button"
+            title="清空当前对话"
+            aria-label="清空当前对话"
+            @click="chatStore.handleClearChat"
+          >
             <i class="fa-regular fa-trash-can"></i>
           </button>
           <button type="button" title="退出登录" aria-label="退出登录" @click="onLogout">
@@ -134,7 +139,7 @@ const workspaceMeta = computed(() => {
   return (sessionStore.sessions.length || 0) + ' 个会话 · 私有';
 });
 
-const roleLabel = computed(() => authStore.currentUser?.role === 'admin' ? '管理员' : '普通用户');
+const roleLabel = computed(() => (authStore.currentUser?.role === 'admin' ? '管理员' : '普通用户'));
 
 const userInitials = computed(() => {
   const name = authStore.currentUser?.username || 'ME';

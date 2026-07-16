@@ -62,16 +62,13 @@ export function getRunEvents(
   options: { after?: number; limit?: number } = {}
 ): Promise<RunEventsResponse> {
   return publicRequest(
-    api.get<RunEventsResponse>(
-      `/v1/runs/${encodeURIComponent(runId)}/events`,
-      {
-        ...authorization(token),
-        params: {
-          after: Math.max(options.after || 0, 0),
-          limit: Math.min(Math.max(options.limit || 500, 1), 1000),
-        },
-      }
-    )
+    api.get<RunEventsResponse>(`/v1/runs/${encodeURIComponent(runId)}/events`, {
+      ...authorization(token),
+      params: {
+        after: Math.max(options.after || 0, 0),
+        limit: Math.min(Math.max(options.limit || 500, 1), 1000),
+      },
+    })
   );
 }
 

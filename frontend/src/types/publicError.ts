@@ -123,9 +123,7 @@ export function normalizePublicErrorInfo(
   const stage = safeString(source.stage ?? defaults.stage, 64);
   const provider = safeString(source.provider ?? defaults.provider, 80);
   const sourceRetryAfterSeconds = optionalNumber(
-    source.retry_after ??
-      source.retry_after_seconds ??
-      source.retryAfterSeconds
+    source.retry_after ?? source.retry_after_seconds ?? source.retryAfterSeconds
   );
   const defaultRetryAfterSeconds = optionalNumber(defaults.retryAfterSeconds);
   const retryAfterSeconds =
@@ -134,10 +132,7 @@ export function normalizePublicErrorInfo(
       : defaultRetryAfterSeconds === undefined
         ? sourceRetryAfterSeconds
         : Math.max(sourceRetryAfterSeconds, defaultRetryAfterSeconds);
-  const requestId = safeString(
-    source.request_id ?? source.requestId ?? defaults.requestId,
-    120
-  );
+  const requestId = safeString(source.request_id ?? source.requestId ?? defaults.requestId, 120);
 
   return {
     code,

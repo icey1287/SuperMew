@@ -1,9 +1,5 @@
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
-import {
-  getPublicError,
-  getPublicErrorFromResponse,
-  type PublicRequestError,
-} from '@/utils/api';
+import { getPublicError, getPublicErrorFromResponse, type PublicRequestError } from '@/utils/api';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -50,9 +46,7 @@ export class SseFrameDecoder {
   private buffer = '';
 
   push(chunk: string): RuntimeRunEvent[] {
-    this.buffer = (this.buffer + chunk)
-      .replace(/\r\n/g, '\n')
-      .replace(/\r(?!$)/g, '\n');
+    this.buffer = (this.buffer + chunk).replace(/\r\n/g, '\n').replace(/\r(?!$)/g, '\n');
     const events: RuntimeRunEvent[] = [];
     let end = this.buffer.indexOf('\n\n');
     while (end !== -1) {
@@ -89,11 +83,7 @@ export interface RunEventStreamOptions {
   signal?: AbortSignal;
   onEvent: (event: RuntimeRunEvent) => void;
   onOpen?: (lastSequence: number) => void;
-  onReconnect?: (
-    attempt: number,
-    lastSequence: number,
-    error: PublicRequestError
-  ) => void;
+  onReconnect?: (attempt: number, lastSequence: number, error: PublicRequestError) => void;
   onCursor?: (lastSequence: number) => void;
   pauseWhen?: (event: RuntimeRunEvent) => boolean;
 }
@@ -126,9 +116,7 @@ async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
   }
 }
 
-export async function connectRunEventStream(
-  options: RunEventStreamOptions
-): Promise<number> {
+export async function connectRunEventStream(options: RunEventStreamOptions): Promise<number> {
   let lastSequence = Math.max(options.after || 0, 0);
   let reconnectAttempt = 0;
 
@@ -200,10 +188,7 @@ export async function connectRunEventStream(
     }
 
     options.onReconnect?.(reconnectAttempt, lastSequence, reconnectError);
-    await waitForReconnect(
-      reconnectDelayMs(reconnectAttempt, reconnectError),
-      options.signal
-    );
+    await waitForReconnect(reconnectDelayMs(reconnectAttempt, reconnectError), options.signal);
   }
   return lastSequence;
 }

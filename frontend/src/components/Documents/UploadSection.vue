@@ -24,11 +24,15 @@
       @drop.prevent="onFileDrop"
     >
       <span class="dropzone-icon"><i class="fa-solid fa-arrow-up-from-bracket"></i></span>
-      <strong>{{ documentStore.selectedFile ? documentStore.selectedFile.name : '拖放文件到这里' }}</strong>
+      <strong>{{
+        documentStore.selectedFile ? documentStore.selectedFile.name : '拖放文件到这里'
+      }}</strong>
       <span>
-        {{ documentStore.selectedFile
-          ? formatFileSize(documentStore.selectedFile.size)
-          : '或点击选择 PDF、Word、Excel、HTML 文件' }}
+        {{
+          documentStore.selectedFile
+            ? formatFileSize(documentStore.selectedFile.size)
+            : '或点击选择 PDF、Word、Excel、HTML 文件'
+        }}
       </span>
     </button>
 
@@ -44,7 +48,11 @@
         :disabled="documentStore.isUploading"
         @click="onUpload"
       >
-        <i :class="documentStore.isUploading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-arrow-up'"></i>
+        <i
+          :class="
+            documentStore.isUploading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-arrow-up'
+          "
+        ></i>
         {{ documentStore.isUploading ? '处理中' : '开始上传' }}
       </button>
     </div>
@@ -60,7 +68,13 @@
         </span>
         <span class="upload-toggle">
           {{ documentStore.uploadProgressCollapsed ? '展开' : '收起' }}
-          <i :class="documentStore.uploadProgressCollapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up'"></i>
+          <i
+            :class="
+              documentStore.uploadProgressCollapsed
+                ? 'fa-solid fa-chevron-down'
+                : 'fa-solid fa-chevron-up'
+            "
+          ></i>
         </span>
       </button>
 
@@ -86,9 +100,18 @@
     </div>
 
     <div class="upload-pipeline-note">
-      <div><span>01</span><p><strong>结构解析</strong><small>识别章节、表格与页面</small></p></div>
-      <div><span>02</span><p><strong>三级分块</strong><small>保留父子上下文关系</small></p></div>
-      <div><span>03</span><p><strong>混合索引</strong><small>Dense + BM25 同步写入</small></p></div>
+      <div>
+        <span>01</span>
+        <p><strong>结构解析</strong><small>识别章节、表格与页面</small></p>
+      </div>
+      <div>
+        <span>02</span>
+        <p><strong>三级分块</strong><small>保留父子上下文关系</small></p>
+      </div>
+      <div>
+        <span>03</span>
+        <p><strong>混合索引</strong><small>Dense + BM25 同步写入</small></p>
+      </div>
     </div>
   </section>
 </template>
@@ -101,8 +124,8 @@ import type { UploadStep } from '@/types/document';
 const documentStore = useDocumentStore();
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
-const completedSteps = computed(() =>
-  documentStore.uploadSteps.filter((step) => step.status === 'completed').length
+const completedSteps = computed(
+  () => documentStore.uploadSteps.filter((step) => step.status === 'completed').length
 );
 
 const triggerFileSelect = () => {

@@ -2,13 +2,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
 import { connectRunEventStream } from '@/events/runEventStream';
-import {
-  cancelRun,
-  createRun,
-  getRun,
-  getRunEvents,
-  resumeRun,
-} from '@/runs/runClient';
+import { cancelRun, createRun, getRun, getRunEvents, resumeRun } from '@/runs/runClient';
 import api from '@/utils/api';
 import { useAuthStore } from './auth';
 import { useChatStore } from './chat';
@@ -70,11 +64,7 @@ function event(
   };
 }
 
-function runRecord(
-  runId = 'run_1',
-  threadId = 'thread-1',
-  status = 'pending'
-) {
+function runRecord(runId = 'run_1', threadId = 'thread-1', status = 'pending') {
   return {
     id: runId,
     thread_id: threadId,
@@ -157,7 +147,10 @@ describe('durable chat projection', () => {
     vi.clearAllMocks();
     vi.stubGlobal('localStorage', createLocalStorageMock());
     vi.stubGlobal('alert', vi.fn());
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
     vi.mocked(api.get).mockResolvedValue({
       data: { messages: [], next_cursor: null },
     });
@@ -214,20 +207,29 @@ describe('durable chat projection', () => {
       'test-token'
     );
 
-    streams.emit('run_1', event('run_1', 'thread-1', 1, 'run.created', {
-      status: 'pending',
-      user_message_id: 11,
-      assistant_message_id: 12,
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        status: 'pending',
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
     streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
-    streams.emit('run_1', event('run_1', 'thread-1', 3, 'message.delta', {
-      content: '临时片段',
-    }));
-    streams.emit('run_1', event('run_1', 'thread-1', 4, 'message.completed', {
-      content: '最终回答',
-      status: 'completed',
-      rag_trace: { retrieval_outcome: 'ANSWERABLE' },
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'message.delta', {
+        content: '临时片段',
+      })
+    );
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'message.completed', {
+        content: '最终回答',
+        status: 'completed',
+        rag_trace: { retrieval_outcome: 'ANSWERABLE' },
+      })
+    );
     streams.emit('run_1', event('run_1', 'thread-1', 5, 'run.completed'));
     streams.finish('run_1', 5);
     await sending;
@@ -257,18 +259,27 @@ describe('durable chat projection', () => {
     });
     await chatStore.loadSession('thread-2');
 
-    streams.emit('run_1', event('run_1', 'thread-1', 1, 'run.created', {
-      user_message_id: 11,
-      assistant_message_id: 12,
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
     streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
-    streams.emit('run_1', event('run_1', 'thread-1', 3, 'tool.progress', {
-      tool_name: 'search_knowledge_base',
-      step: { label: '检索中', group: 'retrieval' },
-    }));
-    streams.emit('run_1', event('run_1', 'thread-1', 4, 'message.completed', {
-      content: '原会话回答',
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'tool.progress', {
+        tool_name: 'search_knowledge_base',
+        step: { label: '检索中', group: 'retrieval' },
+      })
+    );
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'message.completed', {
+        content: '原会话回答',
+      })
+    );
     streams.emit('run_1', event('run_1', 'thread-1', 5, 'run.completed'));
     streams.finish('run_1', 5);
     await sending;
@@ -294,20 +305,26 @@ describe('durable chat projection', () => {
     const firstTurn = chatStore.handleSend();
     await flushPromises();
 
-    streams.emit('run_1', event('run_1', 'thread-1', 1, 'run.created', {
-      user_message_id: 11,
-      assistant_message_id: 12,
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
     streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
     streams.emit('run_1', event('run_1', 'thread-1', 3, 'run.waiting_input'));
-    streams.emit('run_1', event('run_1', 'thread-1', 4, 'hitl.required', {
-      hitl_token: 'hitl_1',
-      checkpoint_id: 'checkpoint_1',
-      prompt: '请补充角色名',
-      options: ['丹瑾', '丹恒'],
-      route: 'clarify',
-      retrieval_status: 'needs_clarification',
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'hitl.required', {
+        hitl_token: 'hitl_1',
+        checkpoint_id: 'checkpoint_1',
+        prompt: '请补充角色名',
+        options: ['丹瑾', '丹恒'],
+        route: 'clarify',
+        retrieval_status: 'needs_clarification',
+      })
+    );
     streams.finish('run_1', 4);
     await firstTurn;
 
@@ -366,10 +383,13 @@ describe('durable chat projection', () => {
     const sending = chatStore.handleSend();
     await flushPromises();
 
-    streams.emit('run_1', event('run_1', 'thread-1', 1, 'run.created', {
-      user_message_id: 11,
-      assistant_message_id: 12,
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
     streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
     chatStore.handleStop();
     await flushPromises();
@@ -378,13 +398,19 @@ describe('durable chat projection', () => {
     expect(streams.connections.get('run_1')?.options.signal?.aborted).toBe(false);
     expect(chatStore.currentRunStatus).toBe('cancelling');
 
-    streams.emit('run_1', event('run_1', 'thread-1', 3, 'message.completed', {
-      content: '已保存部分回答',
-      status: 'incomplete',
-    }));
-    streams.emit('run_1', event('run_1', 'thread-1', 4, 'run.cancelled', {
-      error: { code: 'RUN_CANCELLED', message: '运行已取消', retryable: false },
-    }));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'message.completed', {
+        content: '已保存部分回答',
+        status: 'incomplete',
+      })
+    );
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'run.cancelled', {
+        error: { code: 'RUN_CANCELLED', message: '运行已取消', retryable: false },
+      })
+    );
     streams.finish('run_1', 4);
     await sending;
 
@@ -480,10 +506,13 @@ describe('durable chat projection', () => {
       ['run_1', 'thread-1', '回答一'],
       ['run_2', 'thread-2', '回答二'],
     ] as const) {
-      streams.emit(runId, event(runId, threadId, 1, 'run.created', {
-        user_message_id: runId === 'run_1' ? 11 : 21,
-        assistant_message_id: runId === 'run_1' ? 12 : 22,
-      }));
+      streams.emit(
+        runId,
+        event(runId, threadId, 1, 'run.created', {
+          user_message_id: runId === 'run_1' ? 11 : 21,
+          assistant_message_id: runId === 'run_1' ? 12 : 22,
+        })
+      );
       streams.emit(runId, event(runId, threadId, 2, 'run.started'));
       streams.emit(runId, event(runId, threadId, 3, 'message.completed', { content: answer }));
       streams.emit(runId, event(runId, threadId, 4, 'run.completed'));

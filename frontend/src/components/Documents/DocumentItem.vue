@@ -58,7 +58,9 @@
         </span>
         <span class="upload-toggle">
           {{ deleteJob.collapsed ? '展开' : '收起' }}
-          <i :class="deleteJob.collapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up'"></i>
+          <i
+            :class="deleteJob.collapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up'"
+          ></i>
         </span>
       </button>
 
@@ -133,7 +135,11 @@ const statusIcon = computed(() => {
   if (deleteJob.value?.status === 'running') return 'fa-solid fa-spinner fa-spin';
   if (deleteJob.value?.status === 'failed') return 'fa-solid fa-triangle-exclamation';
   if (deleteJob.value?.status === 'cleanup_pending') return 'fa-solid fa-triangle-exclamation';
-  if (props.doc.status === 'updating' || props.doc.status === 'indexing' || props.doc.status === 'pending') {
+  if (
+    props.doc.status === 'updating' ||
+    props.doc.status === 'indexing' ||
+    props.doc.status === 'pending'
+  ) {
     return 'fa-solid fa-spinner fa-spin';
   }
   if (props.doc.status === 'failed') return 'fa-solid fa-triangle-exclamation';

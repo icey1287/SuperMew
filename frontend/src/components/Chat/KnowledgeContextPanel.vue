@@ -30,7 +30,13 @@
         <div class="run-timeline">
           <div v-for="(step, index) in runSteps" :key="step.key + index" class="run-step">
             <span :class="['run-step-dot', { active: isRunning && index === runSteps.length - 1 }]">
-              <i :class="isRunning && index === runSteps.length - 1 ? 'fa-solid fa-ellipsis' : 'fa-solid fa-check'"></i>
+              <i
+                :class="
+                  isRunning && index === runSteps.length - 1
+                    ? 'fa-solid fa-ellipsis'
+                    : 'fa-solid fa-check'
+                "
+              ></i>
             </span>
             <span class="run-step-copy">
               <strong>{{ step.label }}</strong>
@@ -42,10 +48,7 @@
       </section>
 
       <section class="context-card confidence-card">
-        <div
-          class="confidence-ring"
-          :style="{ '--confidence': (confidence ?? 0) + '%' }"
-        >
+        <div class="confidence-ring" :style="{ '--confidence': (confidence ?? 0) + '%' }">
           <strong>{{ confidence === null ? '—' : confidence + '%' }}</strong>
         </div>
         <div>
@@ -78,7 +81,9 @@
 
       <div v-else class="context-no-sources">
         <i class="fa-solid fa-route"></i>
-        <span>{{ trace?.tool_used === false ? '本次为直接回答，未调用知识库。' : '正在等待可引用证据。' }}</span>
+        <span>{{
+          trace?.tool_used === false ? '本次为直接回答，未调用知识库。' : '正在等待可引用证据。'
+        }}</span>
       </div>
     </template>
   </aside>
@@ -117,7 +122,9 @@ const latestMessage = computed(() => {
 
 const trace = computed(() => latestMessage.value?.ragTrace || null);
 const sources = computed(() => trace.value?.retrieved_chunks || []);
-const isRunning = computed(() => Boolean(latestMessage.value?.isThinking || chatStore.isViewingStreamingSession));
+const isRunning = computed(() =>
+  Boolean(latestMessage.value?.isThinking || chatStore.isViewingStreamingSession)
+);
 const shortSessionId = computed(() => chatStore.sessionId.replace('session_', '').slice(-8));
 
 const statusLabel = computed(() => {
@@ -139,11 +146,13 @@ const runSteps = computed<RunStepView[]>(() => {
 
   const currentTrace = trace.value;
   if (!currentTrace) {
-    return [{
-      key: 'answer',
-      label: isRunning.value ? '正在连接喵喵 Agent' : '直接回答已完成',
-      detail: isRunning.value ? '准备理解问题与选择工具' : '本次未产生检索轨迹',
-    }];
+    return [
+      {
+        key: 'answer',
+        label: isRunning.value ? '正在连接喵喵 Agent' : '直接回答已完成',
+        detail: isRunning.value ? '准备理解问题与选择工具' : '本次未产生检索轨迹',
+      },
+    ];
   }
 
   const result: RunStepView[] = [];

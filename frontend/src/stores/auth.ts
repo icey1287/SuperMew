@@ -60,7 +60,7 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.access_token;
         this.currentUser = { username: data.username, role: data.role };
         localStorage.setItem('accessToken', this.token);
-        
+
         // Reset password fields
         this.authForm.password = '';
         this.authForm.admin_code = '';

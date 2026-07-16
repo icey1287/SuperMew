@@ -64,9 +64,7 @@ describe('durable runs store', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
-    vi.mocked(createIdempotencyKey).mockImplementation(
-      (scope) => `${scope}_generated_key`
-    );
+    vi.mocked(createIdempotencyKey).mockImplementation((scope) => `${scope}_generated_key`);
   });
 
   it('reuses the same create idempotency key after an uncertain transport failure', async () => {
@@ -340,10 +338,7 @@ describe('durable runs store', () => {
     const store = useRunsStore();
     vi.mocked(getRun).mockResolvedValue(runRecord('running'));
     vi.mocked(getRunEvents).mockResolvedValue({
-      events: [
-        event(1, 'run.created', { status: 'pending' }),
-        event(2, 'run.started'),
-      ] as any,
+      events: [event(1, 'run.created', { status: 'pending' }), event(2, 'run.started')] as any,
       next_after: 2,
     });
 

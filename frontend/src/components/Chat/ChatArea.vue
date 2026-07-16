@@ -15,7 +15,12 @@
           <button type="button" title="历史会话" aria-label="打开历史会话" @click="openHistory">
             <i class="fa-solid fa-clock-rotate-left"></i>
           </button>
-          <button type="button" title="清空当前对话" aria-label="清空当前对话" @click="chatStore.handleClearChat">
+          <button
+            type="button"
+            title="清空当前对话"
+            aria-label="清空当前对话"
+            @click="chatStore.handleClearChat"
+          >
             <i class="fa-regular fa-trash-can"></i>
           </button>
         </div>
@@ -29,7 +34,11 @@
           :key="messageKey(msg, index)"
           :msg="msg"
           :msg-index="index"
-          :ref="(el) => { if (el) messageItemRefs[index] = el; }"
+          :ref="
+            (el) => {
+              if (el) messageItemRefs[index] = el;
+            }
+          "
           @cite-click="scrollToChunk"
         />
       </div>
@@ -59,7 +68,9 @@ const messageItemRefs = ref<any[]>([]);
 const sessionTitle = computed(() => {
   const session = sessionStore.sessions.find((item) => item.session_id === chatStore.sessionId);
   if (session?.title) return session.title;
-  const firstUserMessage = chatStore.messages.find((message) => message.isUser && message.text.trim());
+  const firstUserMessage = chatStore.messages.find(
+    (message) => message.isUser && message.text.trim()
+  );
   if (!firstUserMessage) return '新对话';
   const text = firstUserMessage.text.trim();
   return text.length > 28 ? text.slice(0, 28) + '…' : text;

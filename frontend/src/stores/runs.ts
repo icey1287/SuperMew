@@ -80,9 +80,7 @@ function lifecycleStatus(value: unknown): RunLifecycleStatus | null {
 
 function authToken(explicit?: string): string {
   if (explicit !== undefined) return explicit;
-  return typeof localStorage === 'undefined'
-    ? ''
-    : localStorage.getItem('accessToken') || '';
+  return typeof localStorage === 'undefined' ? '' : localStorage.getItem('accessToken') || '';
 }
 
 export const useRunsStore = defineStore('runs', {
@@ -136,12 +134,7 @@ export const useRunsStore = defineStore('runs', {
       return next;
     },
 
-    setTransport(
-      runId: string,
-      status: RunTransportStatus,
-      attempt = 0,
-      error: unknown = null
-    ) {
+    setTransport(runId: string, status: RunTransportStatus, attempt = 0, error: unknown = null) {
       const current = this.byId[runId];
       if (!current) return;
       current.transportStatus = status;
@@ -164,10 +157,7 @@ export const useRunsStore = defineStore('runs', {
 
       const status = lifecycleStatus(data.status) || current.status;
       const incomingTerminal = ['completed', 'failed', 'cancelled'].includes(status);
-      if (
-        current.terminalSequence !== null &&
-        (!incomingTerminal || status !== current.status)
-      ) {
+      if (current.terminalSequence !== null && (!incomingTerminal || status !== current.status)) {
         return current;
       }
       current.status = status;
@@ -178,12 +168,7 @@ export const useRunsStore = defineStore('runs', {
 
       if (status === 'completed') {
         current.error = null;
-      } else if (
-        data.error ||
-        data.error_code ||
-        status === 'failed' ||
-        status === 'cancelled'
-      ) {
+      } else if (data.error || data.error_code || status === 'failed' || status === 'cancelled') {
         current.error = normalizePublicErrorInfo(data, {
           code: status === 'cancelled' ? 'RUN_CANCELLED' : 'RUN_EXECUTION_FAILED',
           retryable: status === 'cancelled' ? false : undefined,
@@ -374,9 +359,7 @@ export const useRunsStore = defineStore('runs', {
         });
       }
       const idempotencyKey =
-        existing?.idempotencyKey ||
-        command.idempotencyKey ||
-        createIdempotencyKey('resume');
+        existing?.idempotencyKey || command.idempotencyKey || createIdempotencyKey('resume');
       this.pendingResumes[runId] = {
         hitlToken: command.hitlToken,
         answer: command.answer,

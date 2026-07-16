@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  connectRunEventStream,
-  SseFrameDecoder,
-} from './runEventStream';
+import { connectRunEventStream, SseFrameDecoder } from './runEventStream';
 import type { RuntimeRunEvent } from './runEventReducer';
 
 function event(
@@ -40,9 +37,7 @@ function streamResponse(
         cancel,
         read: vi.fn(async () => {
           readCount += 1;
-          return readCount === 1
-            ? { done: false, value: bytes }
-            : { done: true, value: undefined };
+          return readCount === 1 ? { done: false, value: bytes } : { done: true, value: undefined };
         }),
       }),
     },
@@ -76,18 +71,18 @@ describe('SseFrameDecoder', () => {
     const decoder = new SseFrameDecoder();
     expect(decoder.push(': heartbeat\r\n\r\n')).toEqual([]);
     const payload = JSON.stringify(event(1));
-    expect(
-      decoder.push(`id: 1\r\nevent: run.completed\r\ndata: ${payload.slice(0, 20)}`)
-    ).toEqual([]);
+    expect(decoder.push(`id: 1\r\nevent: run.completed\r\ndata: ${payload.slice(0, 20)}`)).toEqual(
+      []
+    );
     expect(decoder.push(`${payload.slice(20)}\r\n\r`)).toEqual([]);
     expect(decoder.push('\n')).toEqual([event(1)]);
   });
 
   it('rejects malformed envelopes before they cross the reducer seam', () => {
     const decoder = new SseFrameDecoder();
-    expect(() =>
-      decoder.push('data: {"schema_version":1,"sequence":0}\n\n')
-    ).toThrowError(expect.objectContaining({ code: 'STREAM_PROTOCOL_ERROR' }));
+    expect(() => decoder.push('data: {"schema_version":1,"sequence":0}\n\n')).toThrowError(
+      expect.objectContaining({ code: 'STREAM_PROTOCOL_ERROR' })
+    );
   });
 });
 
@@ -133,9 +128,7 @@ describe('connectRunEventStream', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(malformedResponse)
-      .mockResolvedValueOnce(
-        streamResponse([event(1, 'run.completed', { run_id: 'run_other' })])
-      );
+      .mockResolvedValueOnce(streamResponse([event(1, 'run.completed', { run_id: 'run_other' })]));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(

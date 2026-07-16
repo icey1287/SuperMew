@@ -1,8 +1,5 @@
 import type { RunEventType, RunEventV1 } from '@/types/generated/run-event-v1';
-import {
-  normalizePublicErrorInfo,
-  type PublicErrorInfo,
-} from '@/types/publicError';
+import { normalizePublicErrorInfo, type PublicErrorInfo } from '@/types/publicError';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -18,12 +15,7 @@ export type RunLifecycleStatus =
   | 'failed'
   | 'completed';
 
-export type RunTransportStatus =
-  | 'idle'
-  | 'connecting'
-  | 'open'
-  | 'reconnecting'
-  | 'closed';
+export type RunTransportStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 export interface RunHitlState {
   hitlToken: string | null;
@@ -109,10 +101,7 @@ function lifecycleStatus(value: unknown): RunLifecycleStatus {
   return 'pending';
 }
 
-function eventError(
-  data: UnknownRecord,
-  defaults: Partial<PublicErrorInfo>
-): PublicErrorInfo {
+function eventError(data: UnknownRecord, defaults: Partial<PublicErrorInfo>): PublicErrorInfo {
   return normalizePublicErrorInfo(data, defaults);
 }
 
@@ -160,10 +149,7 @@ export function initialRunEventState(runId: string, threadId: string): RunEventS
   };
 }
 
-export function applyRunEvent(
-  state: RunEventState,
-  event: RuntimeRunEvent
-): RunEventState {
+export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): RunEventState {
   if (
     event.run_id !== state.runId ||
     event.thread_id !== state.threadId ||
@@ -275,10 +261,7 @@ export function applyRunEvent(
         {
           toolName: safeString(data.tool_name),
           error: eventError(data, {
-            code:
-              event.type === 'tool.denied'
-                ? 'POLICY_DENIED'
-                : 'TOOL_EXECUTION_FAILED',
+            code: event.type === 'tool.denied' ? 'POLICY_DENIED' : 'TOOL_EXECUTION_FAILED',
             retryable: false,
             stage: 'tool',
           }),

@@ -80,19 +80,13 @@ describe('run client', () => {
     await getRun('run/1', 'token');
     await getRunEvents('run/1', 'token', { after: 7, limit: 5000 });
 
-    expect(api.get).toHaveBeenNthCalledWith(
-      1,
-      '/v1/runs/run%2F1',
-      { headers: { Authorization: 'Bearer token' } }
-    );
-    expect(api.get).toHaveBeenNthCalledWith(
-      2,
-      '/v1/runs/run%2F1/events',
-      {
-        headers: { Authorization: 'Bearer token' },
-        params: { after: 7, limit: 1000 },
-      }
-    );
+    expect(api.get).toHaveBeenNthCalledWith(1, '/v1/runs/run%2F1', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(api.get).toHaveBeenNthCalledWith(2, '/v1/runs/run%2F1/events', {
+      headers: { Authorization: 'Bearer token' },
+      params: { after: 7, limit: 1000 },
+    });
   });
 
   it('cancels and resumes the same Run without creating another one', async () => {
@@ -119,12 +113,9 @@ describe('run client', () => {
       'token'
     );
 
-    expect(api.post).toHaveBeenNthCalledWith(
-      1,
-      '/v1/runs/run_1/cancel',
-      undefined,
-      { headers: { Authorization: 'Bearer token' } }
-    );
+    expect(api.post).toHaveBeenNthCalledWith(1, '/v1/runs/run_1/cancel', undefined, {
+      headers: { Authorization: 'Bearer token' },
+    });
     expect(api.post).toHaveBeenNthCalledWith(
       2,
       '/v1/runs/run_1/resume',

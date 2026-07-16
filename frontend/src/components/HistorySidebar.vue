@@ -12,7 +12,9 @@
       </div>
 
       <div class="history-summary">
-        <span><strong>{{ sessionStore.sessions.length }}</strong> 个会话</span>
+        <span
+          ><strong>{{ sessionStore.sessions.length }}</strong> 个会话</span
+        >
         <button type="button" @click="refreshSessions">
           <i class="fa-solid fa-rotate" :class="{ 'fa-spin': refreshing }"></i>
           刷新
@@ -37,8 +39,12 @@
               <strong class="session-title">{{ session.title || '未命名会话' }}</strong>
               <span class="session-meta">
                 <span>{{ session.message_count }} 条消息</span>
-                <span v-if="session.status === 'waiting_input'" class="session-status">等待补充</span>
-                <span v-else-if="session.status === 'cancelling'" class="session-status">终止中</span>
+                <span v-if="session.status === 'waiting_input'" class="session-status"
+                  >等待补充</span
+                >
+                <span v-else-if="session.status === 'cancelling'" class="session-status"
+                  >终止中</span
+                >
                 <span v-else-if="session.isStreaming" class="session-status">生成中</span>
                 <span>{{ formatDate(session.updated_at) }}</span>
               </span>
@@ -103,7 +109,8 @@ const onDeleteSession = async (sessionId: string) => {
     return;
   }
 
-  const sessionLabel = sessionStore.sessions.find((session) => session.session_id === sessionId)?.title || sessionId;
+  const sessionLabel =
+    sessionStore.sessions.find((session) => session.session_id === sessionId)?.title || sessionId;
   if (!confirm('确定要删除会话“' + sessionLabel + '”吗？')) {
     return;
   }

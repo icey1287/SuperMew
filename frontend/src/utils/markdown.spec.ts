@@ -21,8 +21,8 @@ describe('parseMarkdown security', () => {
     '[bad](javascript:alert(1))',
     '[bad](data:text/html,<script>alert(1)</script>)',
     '[bad](//attacker.example/phish)',
-    '[bad](mailto:attacker@example.com)'
-  ])('removes unsafe link destinations: %s', markdown => {
+    '[bad](mailto:attacker@example.com)',
+  ])('removes unsafe link destinations: %s', (markdown) => {
     const html = parseMarkdown(markdown);
 
     expect(html).not.toMatch(/href=/i);
@@ -40,9 +40,7 @@ describe('parseMarkdown security', () => {
   });
 
   it('does not let an untrusted Markdown label create nested HTML', () => {
-    const html = parseMarkdown(
-      '[<img src=x onerror="alert(1)">](https://public.example/research)'
-    );
+    const html = parseMarkdown('[<img src=x onerror="alert(1)">](https://public.example/research)');
 
     expect(html).not.toContain('<img');
     expect(html).not.toContain('onerror');

@@ -12,14 +12,16 @@
     </div>
 
     <div v-if="waitingHint" class="thinking-hint">{{ waitingHint }}</div>
-    
+
     <div v-if="msg.ragSteps && msg.ragSteps.length" class="thinking-trace-lines">
       <template v-for="(grp, gIdx) in msg._groupedSteps" :key="grp.group || `main-${gIdx}`">
         <!-- 子 Agent 分组：带标题可折叠 -->
         <div v-if="grp.group" class="step-group">
           <div class="step-group-header" @click="toggleGroup(gIdx)">
             <span class="step-group-arrow" :class="{ collapsed: grp.collapsed }">▶</span>
-            <span class="step-group-label"><i class="fa-solid fa-code-branch"></i> 子问题：{{ grp.label }}</span>
+            <span class="step-group-label"
+              ><i class="fa-solid fa-code-branch"></i> 子问题：{{ grp.label }}</span
+            >
             <span class="step-group-count">{{ grp.steps.length }} 步</span>
           </div>
           <div v-show="!grp.collapsed" class="step-group-body">
@@ -27,18 +29,26 @@
               <span class="thinking-trace-icon">{{ step.icon || '▶' }}</span>
               <span class="thinking-trace-label">{{ step.label }}</span>
               <span v-if="step.detail" class="thinking-trace-detail">{{ step.detail }}</span>
-              <span v-if="step.elapsed_ms != null" class="thinking-trace-time">{{ formatElapsed(step.elapsed_ms) }}</span>
+              <span v-if="step.elapsed_ms != null" class="thinking-trace-time">{{
+                formatElapsed(step.elapsed_ms)
+              }}</span>
             </div>
           </div>
         </div>
-        
+
         <!-- 普通步骤：直接展示 -->
         <template v-else>
-          <div v-for="(step, sIdx) in grp.steps" :key="'s' + gIdx + '-' + sIdx" class="thinking-trace-line">
+          <div
+            v-for="(step, sIdx) in grp.steps"
+            :key="'s' + gIdx + '-' + sIdx"
+            class="thinking-trace-line"
+          >
             <span class="thinking-trace-icon">{{ step.icon || '▶' }}</span>
             <span class="thinking-trace-label">{{ step.label }}</span>
             <span v-if="step.detail" class="thinking-trace-detail">{{ step.detail }}</span>
-            <span v-if="step.elapsed_ms != null" class="thinking-trace-time">{{ formatElapsed(step.elapsed_ms) }}</span>
+            <span v-if="step.elapsed_ms != null" class="thinking-trace-time">{{
+              formatElapsed(step.elapsed_ms)
+            }}</span>
           </div>
         </template>
       </template>

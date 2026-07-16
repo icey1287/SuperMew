@@ -74,7 +74,13 @@ export const useDocumentStore = defineStore('documents', {
         { key: 'upload', label: '文档上传', percent: 0, status: 'pending', message: '' },
         { key: 'reserve', label: '候选版本准备', percent: 0, status: 'pending', message: '' },
         { key: 'parse', label: '解析与版本化分块', percent: 0, status: 'pending', message: '' },
-        { key: 'parent_store', label: '候选父级分块写入', percent: 0, status: 'pending', message: '' },
+        {
+          key: 'parent_store',
+          label: '候选父级分块写入',
+          percent: 0,
+          status: 'pending',
+          message: '',
+        },
         { key: 'vector_store', label: '候选向量写入', percent: 0, status: 'pending', message: '' },
         { key: 'verify', label: '索引一致性核验', percent: 0, status: 'pending', message: '' },
         { key: 'publish', label: '原子发布新版本', percent: 0, status: 'pending', message: '' },
@@ -85,13 +91,24 @@ export const useDocumentStore = defineStore('documents', {
       return [
         { key: 'prepare', label: '原子撤销检索范围', percent: 0, status: 'pending', message: '' },
         { key: 'milvus', label: '清理向量索引', percent: 0, status: 'pending', message: '' },
-        { key: 'parent_store', label: '清理父级分块与缓存', percent: 0, status: 'pending', message: '' },
+        {
+          key: 'parent_store',
+          label: '清理父级分块与缓存',
+          percent: 0,
+          status: 'pending',
+          message: '',
+        },
         { key: 'object_store', label: '清理版本对象', percent: 0, status: 'pending', message: '' },
         { key: 'finalize', label: '确认清理状态', percent: 0, status: 'pending', message: '' },
       ];
     },
 
-    updateUploadStep(key: string, percent: number, status: UploadStep['status'] = 'running', message = '') {
+    updateUploadStep(
+      key: string,
+      percent: number,
+      status: UploadStep['status'] = 'running',
+      message = ''
+    ) {
       if (!this.uploadSteps.length) {
         this.uploadSteps = this.createUploadSteps();
       }
@@ -141,9 +158,7 @@ export const useDocumentStore = defineStore('documents', {
       ]);
       // Retirement fencing compares the durable operation time with the current
       // catalog version, so restore it only after the latest document list settles.
-      const deleteResults = await Promise.allSettled([
-        this.restoreDurableDeleteJobs(),
-      ]);
+      const deleteResults = await Promise.allSettled([this.restoreDurableDeleteJobs()]);
       const results = [...initialResults, ...deleteResults];
       const rejected = results.find(
         (result): result is PromiseRejectedResult => result.status === 'rejected'
@@ -156,11 +171,8 @@ export const useDocumentStore = defineStore('documents', {
 
     async restoreDurableUploadJob() {
       const response = await api.get('/documents/upload/jobs');
-      const jobs = Array.isArray(response.data) ? response.data as UploadJob[] : [];
-      const latestPerDocument = latestJobsByKey(
-        jobs,
-        (job) => job.filename || job.job_id
-      );
+      const jobs = Array.isArray(response.data) ? (response.data as UploadJob[]) : [];
+      const latestPerDocument = latestJobsByKey(jobs, (job) => job.filename || job.job_id);
       const activeJob = latestPerDocument
         .filter((job) => ACTIVE_UPLOAD_JOB_STATUSES.has(job.status))
         .sort((left, right) => jobTimestamp(right) - jobTimestamp(left))[0];
@@ -176,7 +188,7 @@ export const useDocumentStore = defineStore('documents', {
 
     async restoreDurableDeleteJobs() {
       const response = await api.get('/documents/delete/jobs');
-      const jobs = Array.isArray(response.data) ? response.data as DeleteJob[] : [];
+      const jobs = Array.isArray(response.data) ? (response.data as DeleteJob[]) : [];
       const latestPerDocument = latestJobsByKey(
         jobs,
         (job) => job.filename || job.document_id || job.job_id
@@ -218,23 +230,26 @@ export const useDocumentStore = defineStore('documents', {
       if (!document?.uploaded_at || !job.created_at) return false;
       const documentTimestamp = Date.parse(document.uploaded_at);
       const retirementTimestamp = Date.parse(job.created_at);
-      return Number.isFinite(documentTimestamp)
-        && Number.isFinite(retirementTimestamp)
-        && documentTimestamp > retirementTimestamp;
+      return (
+        Number.isFinite(documentTimestamp) &&
+        Number.isFinite(retirementTimestamp) &&
+        documentTimestamp > retirementTimestamp
+      );
     },
 
     ensureRecoveredDeleteDocument(job: DeleteJob) {
       if (this.documents.some((document) => document.filename === job.filename)) return;
       const suffix = job.filename.split('.').pop()?.toLowerCase();
-      const fileType = suffix === 'pdf'
-        ? 'PDF'
-        : suffix === 'doc' || suffix === 'docx'
-          ? 'Word'
-          : suffix === 'xls' || suffix === 'xlsx'
-            ? 'Excel'
-            : suffix === 'html' || suffix === 'htm'
-              ? 'HTML'
-              : 'Document';
+      const fileType =
+        suffix === 'pdf'
+          ? 'PDF'
+          : suffix === 'doc' || suffix === 'docx'
+            ? 'Word'
+            : suffix === 'xls' || suffix === 'xlsx'
+              ? 'Excel'
+              : suffix === 'html' || suffix === 'htm'
+                ? 'HTML'
+                : 'Document';
       this.documents = [
         ...this.documents,
         {
@@ -365,10 +380,7 @@ export const useDocumentStore = defineStore('documents', {
 
     isDeleteActionLocked(filename: string): boolean {
       const job = this.deleteJobs[filename];
-      return !!(
-        job &&
-        (job.status === 'running' || job.status === 'completed')
-      );
+      return !!(job && (job.status === 'running' || job.status === 'completed'));
     },
 
     getDeleteButtonIcon(filename: string): string {
@@ -451,7 +463,9 @@ export const useDocumentStore = defineStore('documents', {
       });
 
       try {
-        const response = await api.delete(`/documents/delete/async/${encodeURIComponent(filename)}`);
+        const response = await api.delete(
+          `/documents/delete/async/${encodeURIComponent(filename)}`
+        );
         const data = response.data;
         this.setDeleteJob(filename, {
           jobId: data.job_id,

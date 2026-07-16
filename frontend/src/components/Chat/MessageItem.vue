@@ -25,11 +25,7 @@
           <span>已补充：{{ msg.hitlResumeText }}，正在继续原流程</span>
         </div>
 
-        <ThinkingTrace
-          v-if="msg.isThinking && !msg.text"
-          :msg="msg"
-          :msg-index="msgIndex"
-        />
+        <ThinkingTrace v-if="msg.isThinking && !msg.text" :msg="msg" :msg-index="msgIndex" />
 
         <template v-else>
           <MessageContent

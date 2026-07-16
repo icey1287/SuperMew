@@ -73,11 +73,7 @@
         </div>
 
         <div v-else class="documents-list">
-          <DocumentItem
-            v-for="doc in filteredDocuments"
-            :key="doc.filename"
-            :doc="doc"
-          />
+          <DocumentItem v-for="doc in filteredDocuments" :key="doc.filename" :doc="doc" />
         </div>
       </section>
 
@@ -95,17 +91,17 @@ import { useDocumentStore } from '@/stores/documents';
 const documentStore = useDocumentStore();
 const searchQuery = ref('');
 
-const totalChunks = computed(() => documentStore.documents.reduce(
-  (total, document) => total + Number(document.chunk_count || 0),
-  0
-));
+const totalChunks = computed(() =>
+  documentStore.documents.reduce((total, document) => total + Number(document.chunk_count || 0), 0)
+);
 
 const filteredDocuments = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();
   if (!query) return documentStore.documents;
-  return documentStore.documents.filter((document) =>
-    document.filename.toLowerCase().includes(query)
-    || document.file_type.toLowerCase().includes(query)
+  return documentStore.documents.filter(
+    (document) =>
+      document.filename.toLowerCase().includes(query) ||
+      document.file_type.toLowerCase().includes(query)
   );
 });
 

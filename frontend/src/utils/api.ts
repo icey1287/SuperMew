@@ -1,8 +1,5 @@
 import axios from 'axios';
-import {
-  normalizePublicErrorInfo,
-  type PublicErrorInfo,
-} from '@/types/publicError';
+import { normalizePublicErrorInfo, type PublicErrorInfo } from '@/types/publicError';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -78,11 +75,7 @@ export function getPublicError(error: unknown): PublicRequestError {
 
   const name = typeof source.name === 'string' ? source.name : '';
   const transportCode = typeof source.code === 'string' ? source.code : '';
-  if (
-    name === 'AbortError' ||
-    name === 'CanceledError' ||
-    transportCode === 'ERR_CANCELED'
-  ) {
+  if (name === 'AbortError' || name === 'CanceledError' || transportCode === 'ERR_CANCELED') {
     return new PublicRequestError(
       normalizePublicErrorInfo({ code: 'REQUEST_CANCELLED', retryable: false })
     );
@@ -125,9 +118,7 @@ export function getPublicError(error: unknown): PublicRequestError {
   );
 }
 
-export async function getPublicErrorFromResponse(
-  response: Response
-): Promise<PublicRequestError> {
+export async function getPublicErrorFromResponse(response: Response): Promise<PublicRequestError> {
   let data: unknown;
   try {
     data = await response.json();

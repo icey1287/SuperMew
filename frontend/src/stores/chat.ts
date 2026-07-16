@@ -200,8 +200,7 @@ export const useChatStore = defineStore('chat', {
           status: message.status,
           text: message.content,
           isUser,
-          isThinking:
-            !isUser && ['queued', 'streaming'].includes(String(message.status || '')),
+          isThinking: !isUser && ['queued', 'streaming'].includes(String(message.status || '')),
           isHitlRequest,
           isHitlAnswer,
           hitlPrompt: isHitlRequest ? ragTrace?.hitl_prompt || message.content : undefined,
@@ -233,8 +232,7 @@ export const useChatStore = defineStore('chat', {
         const creating = Boolean(runsStore.pendingCreates[sessionId]);
         const localTitle = this.getLocalSessionTitle(sessionId, messages);
         const existingTitle = existing?.title;
-        const title =
-          !existingTitle || existingTitle === sessionId ? localTitle : existingTitle;
+        const title = !existingTitle || existingTitle === sessionId ? localTitle : existingTitle;
         const localSession = {
           session_id: sessionId,
           title,
