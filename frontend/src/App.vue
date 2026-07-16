@@ -30,10 +30,12 @@ import DocumentSettings from '@/components/Documents/DocumentSettings.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
 import { useSessionStore } from '@/stores/sessions';
+import { useRunsStore } from '@/stores/runs';
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
 const sessionStore = useSessionStore();
+const runsStore = useRunsStore();
 
 type Theme = 'dark' | 'light';
 
@@ -80,5 +82,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('unauthorized', handleUnauthorized);
+  runsStore.disconnectAll();
 });
 </script>

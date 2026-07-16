@@ -55,6 +55,7 @@
         class="send-btn stop-btn"
         title="终止回答"
         aria-label="终止回答"
+        :disabled="chatStore.currentRunStatus === 'cancelling'"
         @click="chatStore.handleStop"
       >
         <i class="fa-solid fa-stop"></i>
@@ -64,8 +65,8 @@
         v-else
         type="button"
         class="send-btn"
-        :disabled="chatStore.isLoading"
-        :title="chatStore.isLoading ? '当前已有回答正在生成' : '发送'"
+        :disabled="chatStore.isInputLocked"
+        :title="chatStore.isInputLocked ? '当前会话已有回答正在生成' : '发送'"
         aria-label="发送消息"
         @click="onSend"
       >
@@ -126,7 +127,7 @@ const selectHitlOption = async (option: string) => {
 
 const onSend = async () => {
   const text = chatStore.userInput.trim();
-  if (!text || chatStore.isLoading || isComposing.value) return;
+  if (!text || chatStore.isInputLocked || isComposing.value) return;
   await chatStore.handleSend();
   await nextTick();
   resetTextareaHeight();

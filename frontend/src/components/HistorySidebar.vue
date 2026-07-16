@@ -37,7 +37,9 @@
               <strong class="session-title">{{ session.title || '未命名会话' }}</strong>
               <span class="session-meta">
                 <span>{{ session.message_count }} 条消息</span>
-                <span v-if="session.isStreaming" class="session-status">生成中</span>
+                <span v-if="session.status === 'waiting_input'" class="session-status">等待补充</span>
+                <span v-else-if="session.status === 'cancelling'" class="session-status">终止中</span>
+                <span v-else-if="session.isStreaming" class="session-status">生成中</span>
                 <span>{{ formatDate(session.updated_at) }}</span>
               </span>
             </span>
@@ -61,9 +63,11 @@
 import { ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
 import { useSessionStore } from '@/stores/sessions';
+import { useRunsStore } from '@/stores/runs';
 
 const chatStore = useChatStore();
 const sessionStore = useSessionStore();
+const runsStore = useRunsStore();
 const refreshing = ref(false);
 
 const closeHistory = () => {
@@ -94,8 +98,8 @@ const onLoadSession = async (sessionId: string) => {
 };
 
 const onDeleteSession = async (sessionId: string) => {
-  if (chatStore.streamingSessionId === sessionId) {
-    alert('该会话正在生成回答，请先终止或等待完成后再删除');
+  if (runsStore.activeForThread(sessionId)) {
+    alert('该会话仍有活跃运行，请先终止或等待完成后再删除');
     return;
   }
 
@@ -106,7 +110,7 @@ const onDeleteSession = async (sessionId: string) => {
 
   try {
     await sessionStore.deleteSession(sessionId);
-    delete chatStore.messagesBySession[sessionId];
+    chatStore.removeSessionState(sessionId);
     if (chatStore.sessionId === sessionId) {
       chatStore.handleNewChat();
     } else {

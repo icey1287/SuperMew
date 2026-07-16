@@ -16,6 +16,9 @@ export interface RunRecord {
   thread_id: string;
   status: DurableRunStatus | string;
   idempotency_key: string;
+  user_message_id: number;
+  assistant_message_id: number;
+  fencing_token?: number;
   on_disconnect: 'cancel' | 'continue' | string;
   error_code?: string | null;
   error?: PublicErrorInfo | null;

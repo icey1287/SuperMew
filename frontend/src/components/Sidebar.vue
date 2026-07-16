@@ -67,7 +67,7 @@
           <span class="recent-copy">
             <strong>{{ session.title || '未命名会话' }}</strong>
             <small>
-              {{ session.isStreaming ? '生成中' : session.message_count + ' 条消息' }}
+              {{ sessionStatusLabel(session) }}
               · {{ formatRelativeTime(session.updated_at) }}
             </small>
           </span>
@@ -113,6 +113,7 @@ import ThemeToggle from '@/components/ThemeToggle.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
 import { useSessionStore } from '@/stores/sessions';
+import type { ChatSession } from '@/types/chat';
 
 defineProps<{
   theme: 'dark' | 'light';
@@ -195,6 +196,13 @@ const onLoadSession = async (sessionId: string) => {
 const onLogout = () => {
   sessionStore.showHistorySidebar = false;
   authStore.handleLogout();
+};
+
+const sessionStatusLabel = (session: ChatSession) => {
+  if (session.status === 'waiting_input') return '等待补充';
+  if (session.status === 'cancelling') return '终止中';
+  if (session.isStreaming) return '生成中';
+  return `${session.message_count} 条消息`;
 };
 
 const formatRelativeTime = (value: string) => {

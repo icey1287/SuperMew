@@ -1,17 +1,80 @@
 import { defineStore } from 'pinia';
+import { watch, type WatchStopHandle } from 'vue';
 import { useAuthStore } from './auth';
 import { useSessionStore } from './sessions';
 import { useRunsStore } from './runs';
-import api, {
-  getPublicError,
-  getPublicErrorFromResponse,
-  type PublicRequestError,
-} from '@/utils/api';
+import type { RunEventState } from '@/events/runEventReducer';
+import api, { getPublicError, type PublicRequestError } from '@/utils/api';
 import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
+
+type ServerMessage = {
+  id?: number;
+  run_id?: string | null;
+  sequence?: number;
+  status?: string;
+  type: string;
+  content: string;
+  timestamp?: string;
+  rag_trace?: RagTrace | null;
+};
+
+const BUSY_RUN_STATUSES = new Set(['creating', 'queued', 'pending', 'running', 'cancelling']);
+const RECOVERABLE_MESSAGE_STATUSES = new Set(['queued', 'streaming', 'waiting_input']);
+const projectionStops = new WeakMap<object, Map<string, WatchStopHandle>>();
+
+function projectionMap(store: object): Map<string, WatchStopHandle> {
+  let stops = projectionStops.get(store);
+  if (!stops) {
+    stops = new Map();
+    projectionStops.set(store, stops);
+  }
+  return stops;
+}
+
+function stopAllProjections(store: object) {
+  const stops = projectionMap(store);
+  stops.forEach((stop) => stop());
+  stops.clear();
+}
 
 function appendPublicError(text: string, error: PublicRequestError): string {
   const rendered = `[${error.code}] ${error.message}`;
   return text.trim() ? `${text}\n\n${rendered}` : rendered;
+}
+
+function isHitlTrace(trace?: RagTrace | null): boolean {
+  if (!trace) return false;
+  return (
+    trace.retrieval_status === 'needs_clarification' ||
+    trace.retrieval_status === 'needs_scope_selection' ||
+    trace.route === 'clarify' ||
+    trace.route === 'scope_select'
+  );
+}
+
+function normalizeLegacyHitl(message: Message): HitlRequest | null {
+  if (message.isUser || !isHitlTrace(message.ragTrace)) return null;
+  return {
+    runId: message.runId,
+    prompt: message.hitlPrompt || message.ragTrace?.hitl_prompt || message.text,
+    options: message.hitlOptions || message.ragTrace?.hitl_options || [],
+    route: message.ragTrace?.route,
+    retrieval_status: message.ragTrace?.retrieval_status,
+  };
+}
+
+function formatHitlText(hitl: HitlRequest): string {
+  const options = hitl.options || [];
+  if (!options.length) return hitl.prompt;
+  return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
+}
+
+function createSessionId(messagesBySession: Record<string, Message[]>): string {
+  let nextId = `session_${Date.now()}`;
+  while (messagesBySession[nextId]) {
+    nextId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+  return nextId;
 }
 
 export const useChatStore = defineStore('chat', {
@@ -19,30 +82,55 @@ export const useChatStore = defineStore('chat', {
     messages: [] as Message[],
     messagesBySession: {} as Record<string, Message[]>,
     userInput: '',
-    isLoading: false,
     activeNav: 'newChat' as 'newChat' | 'history' | 'settings',
-    sessionId: 'session_' + Date.now(),
-    streamingSessionId: null as string | null,
-    abortController: null as AbortController | null,
-    pendingHitlBySession: {} as Record<string, HitlRequest | null>,
+    sessionId: `session_${Date.now()}`,
   }),
 
   getters: {
+    currentRunStatus(state): string | null {
+      return useRunsStore().activeForThread(state.sessionId)?.status || null;
+    },
+
+    currentTransportStatus(state): string | null {
+      return useRunsStore().activeForThread(state.sessionId)?.transportStatus || null;
+    },
+
+    isLoading(state): boolean {
+      const run = useRunsStore().activeForThread(state.sessionId);
+      return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
+    },
+
     isViewingStreamingSession(state): boolean {
-      return state.isLoading && state.streamingSessionId === state.sessionId;
+      const run = useRunsStore().activeForThread(state.sessionId);
+      return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
     },
 
     isInputLocked(state): boolean {
-      return state.isLoading && state.streamingSessionId !== state.sessionId;
+      const run = useRunsStore().activeForThread(state.sessionId);
+      return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
     },
 
     currentPendingHitl(state): HitlRequest | null {
-      return state.pendingHitlBySession[state.sessionId] || null;
+      const run = useRunsStore().activeForThread(state.sessionId);
+      if (run?.pendingHitl) {
+        return {
+          runId: run.runId,
+          hitlToken: run.pendingHitl.hitlToken || undefined,
+          checkpointId: run.pendingHitl.checkpointId || undefined,
+          prompt: run.pendingHitl.prompt,
+          options: run.pendingHitl.options,
+          route: run.pendingHitl.route || undefined,
+          retrieval_status: run.pendingHitl.retrievalStatus || undefined,
+          original_question: run.pendingHitl.originalQuestion || undefined,
+        };
+      }
+      const messages = state.messagesBySession[state.sessionId] || [];
+      const lastMessage = messages[messages.length - 1];
+      return lastMessage ? normalizeLegacyHitl(lastMessage) : null;
     },
 
-    inputPlaceholder(state): string {
-      const pendingHitl = state.pendingHitlBySession[state.sessionId];
-      if (pendingHitl) {
+    inputPlaceholder(): string {
+      if (this.currentPendingHitl) {
         return '输入自定义补充，或选择上方选项后发送...';
       }
       return '和喵喵说点什么吧... (Shift+Enter 换行)';
@@ -51,9 +139,10 @@ export const useChatStore = defineStore('chat', {
 
   actions: {
     resetWorkspace() {
-      if (this.abortController) {
-        this.abortController.abort();
-      }
+      stopAllProjections(this);
+      const runsStore = useRunsStore();
+      runsStore.disconnectAll();
+      runsStore.$reset();
       this.$reset();
     },
 
@@ -64,118 +153,58 @@ export const useChatStore = defineStore('chat', {
       return this.messagesBySession[sessionId];
     },
 
-    isHitlTrace(trace?: RagTrace | null): boolean {
-      if (!trace) return false;
-      return trace.retrieval_status === 'needs_clarification'
-        || trace.retrieval_status === 'needs_scope_selection'
-        || trace.route === 'clarify'
-        || trace.route === 'scope_select';
-    },
-
-    normalizeHitlRequest(hitl: any, trace?: RagTrace | null): HitlRequest {
-      const prompt = String(hitl?.prompt || trace?.hitl_prompt || '请补充一个关键信息后我继续查询。');
-      const rawOptions = hitl?.options || trace?.hitl_options || [];
-      const options = Array.isArray(rawOptions)
-        ? rawOptions.map((item) => String(item).trim()).filter(Boolean)
-        : [];
-      return {
-        id: hitl?.id,
-        prompt,
-        options,
-        route: hitl?.route || trace?.route,
-        retrieval_status: hitl?.retrieval_status || trace?.retrieval_status,
-        original_question: hitl?.original_question,
-      };
-    },
-
-    formatHitlText(hitl: HitlRequest): string {
-      const options = hitl.options || [];
-      if (!options.length) return hitl.prompt;
-      return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
-    },
-
-    derivePendingHitl(messages: Message[]): HitlRequest | null {
-      const lastMessage = messages[messages.length - 1];
-      if (!lastMessage || lastMessage.isUser || !this.isHitlTrace(lastMessage.ragTrace)) {
-        return null;
-      }
-      return this.normalizeHitlRequest(
-        {
-          prompt: lastMessage.hitlPrompt || lastMessage.ragTrace?.hitl_prompt || lastMessage.text,
-          options: lastMessage.hitlOptions || lastMessage.ragTrace?.hitl_options || [],
-        },
-        lastMessage.ragTrace
-      );
-    },
-
-    syncPendingHitlFromMessages(sessionId: string) {
-      const pendingHitl = this.derivePendingHitl(this.ensureSessionMessages(sessionId));
-      if (pendingHitl) {
-        this.pendingHitlBySession[sessionId] = pendingHitl;
-      } else {
-        delete this.pendingHitlBySession[sessionId];
-      }
-    },
-
     selectHitlOption(option: string) {
       this.userInput = option;
     },
 
     setViewedSession(sessionId: string, messages?: Message[]) {
-      if (messages) {
-        this.messagesBySession[sessionId] = messages;
-        this.syncPendingHitlFromMessages(sessionId);
-      }
+      if (messages) this.messagesBySession[sessionId] = messages;
       this.sessionId = sessionId;
       this.messages = this.ensureSessionMessages(sessionId);
-      if (!messages) {
-        this.syncPendingHitlFromMessages(sessionId);
-      }
       this.activeNav = 'newChat';
     },
 
-    createSessionId(): string {
-      let nextId = 'session_' + Date.now();
-      while (this.messagesBySession[nextId]) {
-        nextId = 'session_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      }
-      return nextId;
-    },
-
     getLocalSessionTitle(sessionId: string, messages: Message[]): string {
-      const firstUserMessage = messages.find((msg) => msg.isUser && msg.text.trim());
+      const firstUserMessage = messages.find((message) => message.isUser && message.text.trim());
       if (!firstUserMessage) return sessionId;
       const title = firstUserMessage.text.trim();
-      return title.length > 10 ? title.substring(0, 10) + '...' : title;
+      return title.length > 10 ? `${title.substring(0, 10)}...` : title;
     },
 
-    mapServerMessages(messages: any[]): Message[] {
-      let awaitingHitlAnswer = false;
-      let hitlResumeText: string | undefined;
+    mapServerMessages(messages: ServerMessage[]): Message[] {
+      let awaitingLegacyHitlAnswer = false;
+      let legacyResumeText: string | undefined;
 
-      return (messages || []).map((msg: any) => {
-        const ragTrace = msg.rag_trace || null;
-        const isUser = msg.type === 'human';
-        const isHitlRequest = !isUser && this.isHitlTrace(ragTrace);
-        const isHitlAnswer = isUser && awaitingHitlAnswer;
-        const resumeTextForMessage = !isUser && !isHitlRequest ? hitlResumeText : undefined;
+      return (messages || []).map((message) => {
+        const ragTrace = message.rag_trace || null;
+        const isUser = message.type === 'human';
+        const isHitlRequest = !message.run_id && !isUser && isHitlTrace(ragTrace);
+        const isHitlAnswer = !message.run_id && isUser && awaitingLegacyHitlAnswer;
+        const resumeTextForMessage =
+          !message.run_id && !isUser && !isHitlRequest ? legacyResumeText : undefined;
 
         if (isHitlRequest) {
-          awaitingHitlAnswer = true;
-          hitlResumeText = undefined;
+          awaitingLegacyHitlAnswer = true;
+          legacyResumeText = undefined;
         } else if (isHitlAnswer) {
-          awaitingHitlAnswer = false;
-          hitlResumeText = msg.content;
+          awaitingLegacyHitlAnswer = false;
+          legacyResumeText = message.content;
         } else if (!isUser) {
-          hitlResumeText = undefined;
+          legacyResumeText = undefined;
         }
 
         return {
-          text: msg.content,
+          id: message.id,
+          runId: message.run_id || undefined,
+          sequence: message.sequence,
+          status: message.status,
+          text: message.content,
           isUser,
+          isThinking:
+            !isUser && ['queued', 'streaming'].includes(String(message.status || '')),
           isHitlRequest,
           isHitlAnswer,
-          hitlPrompt: isHitlRequest ? ragTrace?.hitl_prompt || msg.content : undefined,
+          hitlPrompt: isHitlRequest ? ragTrace?.hitl_prompt || message.content : undefined,
           hitlOptions: isHitlRequest ? ragTrace?.hitl_options || [] : undefined,
           hitlResumeText: resumeTextForMessage,
           ragTrace,
@@ -185,29 +214,39 @@ export const useChatStore = defineStore('chat', {
 
     mergeCachedSessionsIntoHistory() {
       const sessionStore = useSessionStore();
-      const sessions = sessionStore.sessions.map((session) => ({
-        ...session,
-        isStreaming: this.isLoading && session.session_id === this.streamingSessionId,
-      }));
+      const runsStore = useRunsStore();
+      const sessions = sessionStore.sessions.map((session) => {
+        const run = runsStore.activeForThread(session.session_id);
+        const creating = Boolean(runsStore.pendingCreates[session.session_id]);
+        return {
+          ...session,
+          status: creating ? 'creating' : run?.status || session.status,
+          isStreaming: creating || Boolean(run && BUSY_RUN_STATUSES.has(run.status)),
+        };
+      });
 
       Object.entries(this.messagesBySession).forEach(([sessionId, messages]) => {
         if (!messages.length) return;
-
         const existingIndex = sessions.findIndex((session) => session.session_id === sessionId);
         const existing = existingIndex >= 0 ? sessions[existingIndex] : null;
+        const run = runsStore.activeForThread(sessionId);
+        const creating = Boolean(runsStore.pendingCreates[sessionId]);
+        const localTitle = this.getLocalSessionTitle(sessionId, messages);
+        const existingTitle = existing?.title;
+        const title =
+          !existingTitle || existingTitle === sessionId ? localTitle : existingTitle;
         const localSession = {
           session_id: sessionId,
-          title: existing?.title || this.getLocalSessionTitle(sessionId, messages),
+          title,
           message_count: Math.max(existing?.message_count || 0, messages.length),
           updated_at: existing?.updated_at || new Date().toISOString(),
-          isStreaming: this.isLoading && sessionId === this.streamingSessionId,
+          version: existing?.version,
+          status: creating ? 'creating' : run?.status || existing?.status,
+          isStreaming: creating || Boolean(run && BUSY_RUN_STATUSES.has(run.status)),
         };
 
-        if (existingIndex >= 0) {
-          sessions[existingIndex] = { ...existing, ...localSession };
-        } else {
-          sessions.unshift(localSession);
-        }
+        if (existingIndex >= 0) sessions[existingIndex] = { ...existing, ...localSession };
+        else sessions.unshift(localSession);
       });
 
       sessionStore.sessions = sessions;
@@ -215,115 +254,278 @@ export const useChatStore = defineStore('chat', {
 
     appendRagStepToGroups(prev: GroupedRagStep[], step: RagStep): GroupedRagStep[] {
       const groups = prev ? [...prev] : [];
-      const g = step.group || null;
-      const groupLabel = step.group_label || g;
-      
-      if (g) {
-        const idx = groups.findIndex((grp) => grp.group === g);
-        if (idx >= 0) {
-          const existing = groups[idx];
-          const updated: GroupedRagStep = {
+      const group = step.group || null;
+      const groupLabel = step.group_label || group;
+      if (group) {
+        const index = groups.findIndex((item) => item.group === group);
+        if (index >= 0) {
+          const existing = groups[index];
+          groups[index] = {
             group: existing.group,
             label: existing.label || groupLabel,
             steps: [...existing.steps, step],
             collapsed: existing.collapsed,
           };
-          groups[idx] = updated;
           return groups;
         }
-        return [...groups, { group: g, label: groupLabel, steps: [step], collapsed: true }];
+        return [...groups, { group, label: groupLabel, steps: [step], collapsed: true }];
       }
 
-      const last = groups.length > 0 ? groups[groups.length - 1] : null;
-      if (last && last.group === null) {
-        const updated = { ...last, steps: [...last.steps, step] };
-        groups[groups.length - 1] = updated;
+      const last = groups[groups.length - 1];
+      if (last?.group === null) {
+        groups[groups.length - 1] = { ...last, steps: [...last.steps, step] };
         return groups;
       }
       return [...groups, { group: null, label: null, steps: [step], collapsed: false }];
     },
 
     groupRagSteps(steps: RagStep[]): GroupedRagStep[] {
-      if (!steps || !steps.length) return [];
-      return steps.reduce((groups: GroupedRagStep[], step) => this.appendRagStepToGroups(groups, step), []);
+      return (steps || []).reduce(
+        (groups, step) => this.appendRagStepToGroups(groups, step),
+        [] as GroupedRagStep[]
+      );
     },
 
-    toggleStepGroup(msgIndex: number, groupIndex: number) {
-      const msg = this.messages[msgIndex];
-      if (!msg || !msg._groupedSteps || !msg._groupedSteps[groupIndex]) return;
-      msg._groupedSteps[groupIndex].collapsed = !msg._groupedSteps[groupIndex].collapsed;
+    toggleStepGroup(messageIndex: number, groupIndex: number) {
+      const message = this.messages[messageIndex];
+      const group = message?._groupedSteps?.[groupIndex];
+      if (group) group.collapsed = !group.collapsed;
     },
 
-    handleNewChat() {
-      const sessionId = this.createSessionId();
-      this.messagesBySession[sessionId] = [];
-      delete this.pendingHitlBySession[sessionId];
-      this.setViewedSession(sessionId);
-      const sessionStore = useSessionStore();
-      sessionStore.showHistorySidebar = false;
-    },
-
-    handleClearChat() {
-      if (this.streamingSessionId === this.sessionId) {
-        alert('当前会话正在生成回答，请先终止或等待完成后再清空');
-        return;
+    projectRunState(run: RunEventState) {
+      const messages = this.ensureSessionMessages(run.threadId);
+      const assistant = messages.find(
+        (message) =>
+          !message.isUser &&
+          (message.runId === run.runId ||
+            (run.assistantMessageId !== null && message.id === run.assistantMessageId))
+      );
+      const user = messages.find(
+        (message) =>
+          message.isUser &&
+          (message.runId === run.runId ||
+            (run.userMessageId !== null && message.id === run.userMessageId))
+      );
+      if (user) {
+        user.runId = run.runId;
+        if (run.userMessageId !== null) user.id = run.userMessageId;
       }
-      if (confirm('确定要清空当前对话吗？喵？')) {
-        this.messagesBySession[this.sessionId] = [];
-        this.messages = this.messagesBySession[this.sessionId];
-        delete this.pendingHitlBySession[this.sessionId];
+      if (!assistant) return;
+
+      assistant.runId = run.runId;
+      if (run.assistantMessageId !== null) assistant.id = run.assistantMessageId;
+      assistant.status = run.messageStatus || run.status;
+      assistant.isThinking = BUSY_RUN_STATUSES.has(run.status) && !run.messageText;
+      assistant.isHitlRequest = Boolean(run.pendingHitl);
+      assistant.hitlResumeText = run.lastResumeAnswer || assistant.hitlResumeText;
+
+      if (run.pendingHitl) {
+        const hitl: HitlRequest = {
+          runId: run.runId,
+          hitlToken: run.pendingHitl.hitlToken || undefined,
+          checkpointId: run.pendingHitl.checkpointId || undefined,
+          prompt: run.pendingHitl.prompt,
+          options: run.pendingHitl.options,
+          route: run.pendingHitl.route || undefined,
+          retrieval_status: run.pendingHitl.retrievalStatus || undefined,
+          original_question: run.pendingHitl.originalQuestion || undefined,
+        };
+        assistant.text = formatHitlText(hitl);
+        assistant.isThinking = false;
+        assistant.hitlPrompt = hitl.prompt;
+        assistant.hitlOptions = hitl.options || [];
+      } else {
+        assistant.hitlPrompt = undefined;
+        assistant.hitlOptions = undefined;
+        if (run.messageText || run.messageStatus) assistant.text = run.messageText;
+      }
+
+      if (run.ragTrace) assistant.ragTrace = run.ragTrace as RagTrace;
+      const steps = run.toolProgress.map((item) => item.step as unknown as RagStep);
+      assistant.ragSteps = steps;
+      assistant._groupedSteps = this.groupRagSteps(steps);
+
+      if (run.terminal) {
+        assistant.isThinking = false;
+        if (!assistant.text && run.error) {
+          assistant.text = appendPublicError('', getPublicError(run.error));
+        }
+      }
+      if (this.sessionId === run.threadId) this.messages = messages;
+      this.mergeCachedSessionsIntoHistory();
+    },
+
+    attachRunProjection(runId: string, threadId: string) {
+      const stops = projectionMap(this);
+      if (stops.has(runId)) return;
+      const runsStore = useRunsStore();
+      const stop = watch(
+        () => runsStore.byId[runId],
+        (run) => {
+          if (run?.threadId === threadId) this.projectRunState(run);
+        },
+        { deep: true, immediate: true, flush: 'sync' }
+      );
+      stops.set(runId, stop);
+    },
+
+    appendRunConnectionError(runId: string, error: unknown) {
+      const publicError = getPublicError(error);
+      const run = useRunsStore().byId[runId];
+      if (!run || run.terminal || run.status === 'waiting_input') return;
+      const assistant = this.ensureSessionMessages(run.threadId).find(
+        (message) => !message.isUser && message.runId === runId
+      );
+      if (!assistant) return;
+      assistant.isThinking = false;
+      assistant.status = 'failed';
+      assistant.text = appendPublicError(assistant.text, publicError);
+      if (publicError.code === 'AUTHENTICATION_REQUIRED') useAuthStore().handleLogout();
+    },
+
+    async connectRun(runId: string, token: string) {
+      try {
+        await useRunsStore().connect(runId, token);
+      } catch (error) {
+        this.appendRunConnectionError(runId, error);
+      } finally {
+        const run = useRunsStore().byId[runId];
+        if (run) this.projectRunState(run);
+      }
+    },
+
+    async restoreRunsForSession(sessionId: string) {
+      const authStore = useAuthStore();
+      const runsStore = useRunsStore();
+      const runIds = Array.from(
+        new Set(
+          this.ensureSessionMessages(sessionId)
+            .filter(
+              (message) =>
+                !message.isUser &&
+                message.runId &&
+                RECOVERABLE_MESSAGE_STATUSES.has(String(message.status || ''))
+            )
+            .map((message) => message.runId as string)
+        )
+      );
+
+      for (const runId of runIds) {
+        this.attachRunProjection(runId, sessionId);
+        try {
+          const run = await runsStore.replay(runId, authStore.token);
+          this.projectRunState(run);
+          if (!run.terminal && run.status !== 'waiting_input') {
+            void this.connectRun(runId, authStore.token);
+          }
+        } catch (error) {
+          this.appendRunConnectionError(runId, error);
+        }
       }
     },
 
     async loadSession(sessionId: string) {
       const sessionStore = useSessionStore();
       const cachedMessages = this.messagesBySession[sessionId];
-
       this.setViewedSession(sessionId, cachedMessages || []);
       sessionStore.showHistorySidebar = false;
 
-      if (sessionId === this.streamingSessionId) {
+      try {
+        const records: ServerMessage[] = [];
+        let after = 0;
+        for (let page = 0; page < 1000; page += 1) {
+          const response = await api.get(`/sessions/${encodeURIComponent(sessionId)}`, {
+            params: { after, limit: 200 },
+          });
+          records.push(...(response.data.messages || []));
+          const nextCursor = response.data.next_cursor;
+          if (!Number.isInteger(nextCursor) || nextCursor <= after) break;
+          after = nextCursor;
+        }
+        const loadedMessages = this.mapServerMessages(records);
+        this.setViewedSession(sessionId, loadedMessages);
         this.mergeCachedSessionsIntoHistory();
+        await this.restoreRunsForSession(sessionId);
+      } catch (error) {
+        if (!cachedMessages && this.sessionId === sessionId) this.messages = [];
+        if (cachedMessages) await this.restoreRunsForSession(sessionId);
+        throw getPublicError(error);
+      }
+    },
+
+    handleNewChat() {
+      const sessionId = createSessionId(this.messagesBySession);
+      this.messagesBySession[sessionId] = [];
+      this.setViewedSession(sessionId);
+      useSessionStore().showHistorySidebar = false;
+    },
+
+    handleClearChat() {
+      if (useRunsStore().activeForThread(this.sessionId)) {
+        alert('当前会话仍有活跃运行，请先终止或等待完成后再清空');
         return;
       }
-
-      try {
-        const response = await api.get(`/sessions/${encodeURIComponent(sessionId)}`);
-        const data = response.data;
-        const loadedMessages = this.mapServerMessages(data.messages || []);
-        this.messagesBySession[sessionId] = loadedMessages;
-        this.syncPendingHitlFromMessages(sessionId);
-        if (this.sessionId === sessionId) {
-          this.messages = loadedMessages;
-        }
-        this.mergeCachedSessionsIntoHistory();
-      } catch (error: unknown) {
-        const publicError = getPublicError(error);
-        if (!cachedMessages && this.sessionId === sessionId) {
-          this.messages = [];
-        }
-        throw publicError;
+      if (confirm('确定要清空当前对话吗？喵？')) {
+        this.messagesBySession[this.sessionId] = [];
+        this.messages = this.messagesBySession[this.sessionId];
       }
     },
 
     handleStop() {
-      const controller = this.abortController;
       const runsStore = useRunsStore();
-      const activeRun = runsStore.activeForThread(this.streamingSessionId);
-      if (!activeRun) {
-        controller?.abort();
+      const activeRun = runsStore.activeForThread(this.sessionId);
+      if (!activeRun || activeRun.status === 'cancelling') return;
+      void runsStore.cancel(activeRun.runId, useAuthStore().token).catch((error) => {
+        alert(getPublicError(error).message);
+      });
+    },
+
+    async resumeHitl(hitl: HitlRequest, answer: string) {
+      if (!hitl.runId || !hitl.hitlToken) {
+        alert('这条旧版人工介入记录无法原地恢复，请新建问题重试。');
         return;
       }
-      void runsStore
-        .cancel(activeRun.runId)
-        .catch(() => undefined)
-        .finally(() => controller?.abort());
+      const authStore = useAuthStore();
+      const runsStore = useRunsStore();
+      const run = runsStore.byId[hitl.runId];
+      if (!run) {
+        alert('运行状态尚未恢复，请刷新会话后重试。');
+        return;
+      }
+
+      this.userInput = '';
+      this.attachRunProjection(hitl.runId, run.threadId);
+      const assistant = this.ensureSessionMessages(run.threadId).find(
+        (message) => !message.isUser && message.runId === hitl.runId
+      );
+      if (assistant) {
+        assistant.hitlResumeText = answer;
+        assistant.isHitlRequest = false;
+        assistant.isThinking = true;
+        assistant.text = run.messageText;
+      }
+
+      try {
+        await runsStore.resume(hitl.runId, {
+          token: authStore.token,
+          hitlToken: hitl.hitlToken,
+          answer,
+        });
+      } catch (error) {
+        this.userInput = answer;
+        this.projectRunState(run);
+        const publicError = getPublicError(error);
+        if (publicError.code === 'AUTHENTICATION_REQUIRED') authStore.handleLogout();
+        alert(publicError.message);
+      } finally {
+        this.projectRunState(runsStore.byId[hitl.runId] || run);
+      }
     },
 
     async handleSend() {
       const authStore = useAuthStore();
       const sessionStore = useSessionStore();
-
+      const runsStore = useRunsStore();
       if (!authStore.isAuthenticated) {
         alert('请先登录');
         return;
@@ -331,236 +533,82 @@ export const useChatStore = defineStore('chat', {
 
       const text = this.userInput.trim();
       if (!text) return;
+      const pendingHitl = this.currentPendingHitl;
+      if (pendingHitl) {
+        await this.resumeHitl(pendingHitl, text);
+        return;
+      }
       if (this.isLoading) {
-        alert('当前已有回答正在生成，请先等待完成或回到该会话终止回答');
+        alert('当前会话已有回答正在生成，请先等待或终止该运行');
         return;
       }
 
-      const requestSessionId = this.sessionId;
-      const requestMessages = this.ensureSessionMessages(requestSessionId);
-      const pendingHitlAtSend = this.pendingHitlBySession[requestSessionId] || null;
-      if (this.sessionId === requestSessionId) {
-        this.messages = requestMessages;
-      }
-
-      requestMessages.push({
-        text: text,
+      const threadId = this.sessionId;
+      const messages = this.ensureSessionMessages(threadId);
+      const userMessage: Message = {
+        text,
         isUser: true,
-        isHitlAnswer: !!pendingHitlAtSend,
-      });
-      if (pendingHitlAtSend) {
-        delete this.pendingHitlBySession[requestSessionId];
-      }
-
-      if (requestMessages.length === 1) {
-        const tempTitle = this.getLocalSessionTitle(requestSessionId, requestMessages);
-        const existingSession = sessionStore.sessions.find((s) => s.session_id === requestSessionId);
-        if (existingSession) {
-          existingSession.title = existingSession.title || tempTitle;
-          existingSession.message_count = requestMessages.length;
-          existingSession.updated_at = new Date().toISOString();
-          existingSession.isStreaming = true;
-        } else {
-          sessionStore.sessions.unshift({
-            session_id: requestSessionId,
-            title: tempTitle,
-            message_count: requestMessages.length,
-            updated_at: new Date().toISOString(),
-            isStreaming: true,
-          });
-        }
-      }
-
-      this.userInput = '';
-      this.isLoading = true;
-      this.streamingSessionId = requestSessionId;
-
-      requestMessages.push({
+        status: 'completed',
+      };
+      const assistantMessage: Message = {
         text: '',
         isUser: false,
         isThinking: true,
         thinkingStartedAt: Date.now(),
-        hitlResumeText: pendingHitlAtSend ? text : undefined,
+        status: 'creating',
         ragTrace: null,
         ragSteps: [],
         _groupedSteps: [],
-      });
-      const botMsgIdx = requestMessages.length - 1;
+      };
+      messages.push(userMessage, assistantMessage);
+      if (this.sessionId === threadId) this.messages = messages;
+      this.userInput = '';
       this.mergeCachedSessionsIntoHistory();
 
-      this.abortController = new AbortController();
-      const streamSignal = this.abortController.signal;
-      let receivedHitlRequest = false;
-      let streamHadError = false;
-      let receivedTerminalMarker = false;
-
       try {
-        const response = await fetch('/chat/stream', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authStore.token}`,
-          },
-          body: JSON.stringify({
-            message: text,
-            session_id: requestSessionId,
-          }),
-          signal: streamSignal,
+        const session = sessionStore.sessions.find((item) => item.session_id === threadId);
+        const createPromise = runsStore.create({
+          threadId,
+          message: text,
+          token: authStore.token,
+          expectedThreadVersion: session?.version,
+          multitaskStrategy: 'reject',
+          onDisconnect: 'continue',
+          approvedTools: [],
         });
-
-        if (!response.ok) {
-          throw await getPublicErrorFromResponse(response);
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) throw getPublicError(new TypeError('chat stream response has no body'));
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let stopReading = false;
-
-        readLoop: while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-
-          let eventEndIndex;
-          while ((eventEndIndex = buffer.indexOf('\n\n')) !== -1) {
-            const eventStr = buffer.slice(0, eventEndIndex);
-            buffer = buffer.slice(eventEndIndex + 2);
-
-            if (eventStr.startsWith('data: ')) {
-              const dataStr = eventStr.slice(6);
-              if (dataStr === '[DONE]') {
-                receivedTerminalMarker = true;
-                stopReading = true;
-                const botMsg = requestMessages[botMsgIdx];
-                if (botMsg) botMsg.isThinking = false;
-                break;
-              }
-              try {
-                const data = JSON.parse(dataStr);
-                if (data.type === 'content') {
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) continue;
-                  if (botMsg.isThinking) {
-                    botMsg.isThinking = false;
-                  }
-                  if (botMsg.isHitlRequest) {
-                    continue;
-                  }
-                  botMsg.text += data.content;
-                } else if (data.type === 'trace') {
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (botMsg) {
-                    botMsg.ragTrace = data.rag_trace;
-                  }
-                } else if (data.type === 'hitl_request') {
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) continue;
-                  const hitl = this.normalizeHitlRequest(data.hitl, botMsg.ragTrace);
-                  receivedHitlRequest = true;
-                  this.pendingHitlBySession[requestSessionId] = hitl;
-                  botMsg.isThinking = false;
-                  botMsg.isHitlRequest = true;
-                  botMsg.hitlPrompt = hitl.prompt;
-                  botMsg.hitlOptions = hitl.options || [];
-                  botMsg.text = this.formatHitlText(hitl);
-                } else if (data.type === 'rag_step') {
-                  const msg = requestMessages[botMsgIdx];
-                  if (!msg) continue;
-                  if (!msg.ragSteps) msg.ragSteps = [];
-                  msg.ragSteps.push(data.step);
-                  msg._groupedSteps = this.appendRagStepToGroups(msg._groupedSteps || [], data.step);
-                } else if (data.type === 'session_title') {
-                  const s = sessionStore.sessions.find(
-                    (item) => item.session_id === data.session_id
-                  );
-                  if (s) {
-                    s.title = data.title;
-                    s.updated_at = new Date().toISOString();
-                    s.message_count = requestMessages.length;
-                    s.isStreaming = data.session_id === this.streamingSessionId;
-                  } else {
-                    sessionStore.sessions.unshift({
-                      session_id: data.session_id,
-                      title: data.title,
-                      message_count: requestMessages.length,
-                      updated_at: new Date().toISOString(),
-                      isStreaming: data.session_id === this.streamingSessionId,
-                    });
-                  }
-                } else if (data.type === 'error') {
-                  streamHadError = true;
-                  receivedTerminalMarker = true;
-                  stopReading = true;
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) break;
-                  const publicError = getPublicError(
-                    data.error || {
-                      code: data.error_code || 'INTERNAL_ERROR',
-                      retryable: false,
-                      category: 'stream',
-                    }
-                  );
-                  botMsg.isThinking = false;
-                  botMsg.text = appendPublicError(botMsg.text, publicError);
-                  break;
-                }
-              } catch {
-                throw getPublicError({
-                  code: 'STREAM_PROTOCOL_ERROR',
-                  retryable: false,
-                  category: 'stream',
-                });
-              }
-            }
-          }
-          if (stopReading) {
-            if (typeof reader.cancel === 'function') {
-              await reader.cancel().catch(() => undefined);
-            }
-            break readLoop;
-          }
-        }
-        if (!receivedTerminalMarker) {
-          if (streamSignal.aborted) {
-            throw getPublicError({ code: 'REQUEST_CANCELLED', retryable: false });
-          }
-          throw getPublicError({
-            code: 'NETWORK_UNAVAILABLE',
-            retryable: true,
-          });
-        }
-      } catch (error: unknown) {
-        streamHadError = true;
-        const botMsg = requestMessages[botMsgIdx];
-        if (!botMsg) return;
+        this.mergeCachedSessionsIntoHistory();
+        const created = await createPromise;
+        const runId = created.response.run.id;
+        userMessage.id = created.response.run.user_message_id;
+        userMessage.runId = runId;
+        assistantMessage.id = created.response.run.assistant_message_id;
+        assistantMessage.runId = runId;
+        assistantMessage.status = created.response.run.status;
+        if (session) session.version = created.response.thread_version;
+        this.attachRunProjection(runId, threadId);
+        this.projectRunState(created.state);
+        await this.connectRun(runId, authStore.token);
+      } catch (error) {
         const publicError = getPublicError(error);
-        if (publicError.code === 'AUTHENTICATION_REQUIRED') {
-          authStore.handleLogout();
-        }
-        if (publicError.code === 'REQUEST_CANCELLED') {
-          botMsg.isThinking = false;
-          if (!botMsg.text) {
-            botMsg.text = '(已终止回答)';
-          } else {
-            botMsg.text += '\n\n_(回答已被终止)_';
-          }
-        } else {
-          botMsg.isThinking = false;
-          botMsg.text = appendPublicError(botMsg.text, publicError);
-        }
+        assistantMessage.isThinking = false;
+        assistantMessage.status = 'failed';
+        assistantMessage.text = appendPublicError(assistantMessage.text, publicError);
+        if (publicError.code === 'AUTHENTICATION_REQUIRED') authStore.handleLogout();
       } finally {
-        if (streamHadError && pendingHitlAtSend && !receivedHitlRequest) {
-          this.pendingHitlBySession[requestSessionId] = pendingHitlAtSend;
-        }
-        this.isLoading = false;
-        this.streamingSessionId = null;
-        this.abortController = null;
         this.mergeCachedSessionsIntoHistory();
       }
+    },
+
+    removeSessionState(sessionId: string) {
+      const runsStore = useRunsStore();
+      Object.values(runsStore.byId)
+        .filter((run) => run.threadId === sessionId)
+        .forEach((run) => {
+          projectionMap(this).get(run.runId)?.();
+          projectionMap(this).delete(run.runId);
+          runsStore.remove(run.runId);
+        });
+      delete this.messagesBySession[sessionId];
     },
   },
 });

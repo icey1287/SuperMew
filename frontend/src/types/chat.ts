@@ -143,6 +143,9 @@ export interface GroupedRagStep {
 
 export interface HitlRequest {
   id?: string;
+  runId?: string;
+  hitlToken?: string;
+  checkpointId?: string;
   prompt: string;
   options?: string[];
   route?: 'clarify' | 'scope_select' | string;
@@ -151,6 +154,10 @@ export interface HitlRequest {
 }
 
 export interface Message {
+  id?: number;
+  runId?: string;
+  sequence?: number;
+  status?: string;
   text: string;
   isUser: boolean;
   isThinking?: boolean;
@@ -170,5 +177,7 @@ export interface ChatSession {
   title?: string;
   message_count: number;
   updated_at: string;
+  version?: number;
+  status?: string;
   isStreaming?: boolean;
 }

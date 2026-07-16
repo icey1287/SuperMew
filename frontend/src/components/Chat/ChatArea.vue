@@ -26,7 +26,7 @@
 
         <MessageItem
           v-for="(msg, index) in chatStore.messages"
-          :key="index"
+          :key="messageKey(msg, index)"
           :msg="msg"
           :msg-index="index"
           :ref="(el) => { if (el) messageItemRefs[index] = el; }"
@@ -49,6 +49,7 @@ import ChatInput from './ChatInput.vue';
 import KnowledgeContextPanel from './KnowledgeContextPanel.vue';
 import { useChatStore } from '@/stores/chat';
 import { useSessionStore } from '@/stores/sessions';
+import type { Message } from '@/types/chat';
 
 const chatStore = useChatStore();
 const sessionStore = useSessionStore();
@@ -65,10 +66,20 @@ const sessionTitle = computed(() => {
 });
 
 const generationStatus = computed(() => {
-  if (chatStore.isViewingStreamingSession) return '喵喵正在生成';
+  if (chatStore.currentTransportStatus === 'reconnecting') return '连接恢复中';
+  if (chatStore.currentRunStatus === 'creating') return '正在创建运行';
+  if (['queued', 'pending'].includes(chatStore.currentRunStatus || '')) return '运行已排队';
+  if (chatStore.currentRunStatus === 'cancelling') return '正在终止运行';
+  if (chatStore.currentRunStatus === 'running') return '喵喵正在生成';
   if (chatStore.currentPendingHitl) return '等待你的补充';
   return '喵喵在线';
 });
+
+const messageKey = (message: Message, index: number) => {
+  if (message.id) return `message-${message.id}`;
+  if (message.runId) return `run-${message.runId}-${message.isUser ? 'user' : 'assistant'}`;
+  return `local-${message.sequence || index}-${message.isUser ? 'user' : 'assistant'}`;
+};
 
 onBeforeUpdate(() => {
   messageItemRefs.value = [];
