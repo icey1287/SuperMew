@@ -225,6 +225,33 @@ class MessageRepositoryTests(unittest.TestCase):
         self.assertEqual(3, sessions[0]["message_count"])
         self.assertEqual(4, sessions[0]["version"])
 
+    def test_thread_delete_rejects_nonterminal_run_and_allows_terminal_history(self):
+        storage = ConversationStorage(self.repository)
+        run_repository = RunRepository(self.Session)
+        reservation = run_repository.reserve(
+            username="alice",
+            thread_id="thread-1",
+            message="durable question",
+            idempotency_key="request-1",
+        )
+
+        with self.assertRaises(AppError) as raised:
+            storage.delete_session("alice", "thread-1")
+        self.assertEqual(ErrorCode.RUN_ACTIVE, raised.exception.code)
+
+        claimed = run_repository.claim(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+        )
+        run_repository.finalize(
+            run_id=reservation.run.id,
+            target_status=RunStatus.SUCCEEDED,
+            content="durable answer",
+            fencing_token=claimed.fencing_token,
+        )
+
+        self.assertTrue(storage.delete_session("alice", "thread-1"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import ChatMessage, ChatSession, User, utcnow
+from backend.db.models import ChatMessage, ChatSession, Run, User, utcnow
+from backend.runs.state import ACTIVE_RUN_STATUSES, RunStatus
 from backend.infra.database import SessionLocal
 from backend.schemas.chat import normalize_rag_trace
 
@@ -433,9 +434,29 @@ class ConversationRepository:
                 user = self._user(db, username)
                 if not user:
                     return False
-                thread = self._thread_query(db, user.id, thread_id).first()
+                thread = (
+                    self._thread_query(db, user.id, thread_id).with_for_update().first()
+                )
                 if not thread:
                     return False
+                nonterminal_statuses = {
+                    *ACTIVE_RUN_STATUSES,
+                    RunStatus.QUEUED.value,
+                }
+                active_run = (
+                    db.query(Run.id)
+                    .filter(
+                        Run.thread_ref_id == thread.id,
+                        Run.status.in_(nonterminal_statuses),
+                    )
+                    .first()
+                )
+                if active_run:
+                    raise AppError(
+                        ErrorCode.RUN_ACTIVE,
+                        "Thread 仍有活跃 Run，请先取消或等待运行结束",
+                        status_code=409,
+                    )
                 db.delete(thread)
                 return True
         finally:
