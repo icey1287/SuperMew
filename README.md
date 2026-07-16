@@ -107,6 +107,16 @@ API 与 worker 必须共享同一个 `UPLOAD_DIR`。`GET /health/ready` 会检�
 
 当前 `docker-compose.yml` 与 `docker-compose.prod.yml` 只管理 PostgreSQL、Redis、Milvus 等依赖，不会启动 API 或 indexing worker。生产部署必须由 systemd、Kubernetes 或等价 supervisor 分别管理两个进程，并为它们挂载同一持久上传目录、配置自动重启和 termination grace。
 
+启动或发布前可验证 Skill/Tool Registry。Skill 正文只在显式 slash、可信路由或 `describe_skill` 后向 Agent 披露；`tool_search` 只返回当前 Run 已授权的 deferred schema：
+
+```bash
+uv run --frozen python -m backend.tools.registry_cli validate
+uv run --frozen python -m backend.tools.registry_cli list-skills --role user
+uv run --frozen python -m backend.tools.registry_cli list-tools --role user
+```
+
+新增或升级 Skill 的目录、manifest、hash pin、回滚和 Secret 规则见 `docs/runbooks/skill-tool-registry.md`。
+
 浏览器访问：
 - 前端页面：`http://127.0.0.1:8000/` （后端静态托管编译后的 `frontend/dist` 资源）
 - API 文档：`http://127.0.0.1:8000/docs`

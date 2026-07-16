@@ -61,6 +61,10 @@ class RunResponse(RunSchema):
     started_at: str | None = None
     finished_at: str | None = None
     error_code: str | None = None
+    skill_name: str | None = None
+    skill_version: str | None = None
+    skill_content_hash: str | None = None
+    skill_activation_source: str | None = None
     input_tokens: int
     output_tokens: int
     cost: str

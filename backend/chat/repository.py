@@ -42,6 +42,13 @@ class MessageRecord:
     rag_trace: dict | None
 
 
+@dataclass(frozen=True)
+class UserAccessSnapshot:
+    user_db_id: int
+    username: str
+    role: str
+
+
 class ConversationRepository:
     """Thread 与消息 journal 的唯一持久化 interface。"""
 
@@ -51,6 +58,26 @@ class ConversationRepository:
     @staticmethod
     def _user(db: Session, username: str) -> User | None:
         return db.query(User).filter(User.username == username).first()
+
+    def current_user_access(self, username: str) -> UserAccessSnapshot:
+        """Read the current database role without trusting request-token claims."""
+
+        db = self._session_factory()
+        try:
+            user = self._user(db, username)
+            if user is None:
+                raise AppError(
+                    ErrorCode.AUTHENTICATION_REQUIRED,
+                    "用户不存在或已失效",
+                    status_code=401,
+                )
+            return UserAccessSnapshot(
+                user_db_id=user.id,
+                username=user.username,
+                role=user.role,
+            )
+        finally:
+            db.close()
 
     @staticmethod
     def _thread_query(db: Session, user_id: int, thread_id: str):

@@ -206,6 +206,17 @@ class HitlResumeState(StrictSchema):
     interrupt_id: Optional[str] = None
 
 
+class PendingSkillPin(StrictSchema):
+    name: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    )
+    version: str = Field(min_length=1, max_length=64)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source: str = Field(min_length=1, max_length=32)
+
+
 class PendingHitlState(StrictSchema):
     id: str = Field(min_length=1)
     original_question: str = Field(min_length=1)
@@ -215,6 +226,7 @@ class PendingHitlState(StrictSchema):
     retrieval_status: Literal["needs_clarification", "needs_scope_selection"]
     answers: List[str] = Field(default_factory=list)
     resume_state: HitlResumeState
+    skill_pin: Optional[PendingSkillPin] = None
     created_at: str
 
 

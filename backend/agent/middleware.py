@@ -24,7 +24,7 @@ from langchain_core.messages import (
 from langchain_core.messages.utils import count_tokens_approximately
 
 from backend.agent.context import AgentRuntimeContext, RuntimeBudget
-from backend.core.errors import public_error_from_exception
+from backend.core.errors import AppError, ErrorCode, public_error_from_exception
 from backend.providers import (
     ProviderCallContext,
     ProviderExecutor,
@@ -32,6 +32,7 @@ from backend.providers import (
     ProviderPolicy,
     provider_executor,
 )
+from backend.tools.contracts import ToolResultV1, new_tool_failure
 
 
 DEFAULT_MIDDLEWARE_ORDER = (
@@ -46,6 +47,9 @@ DEFAULT_MIDDLEWARE_ORDER = (
     "TerminalResponseMiddleware",
     "ClarificationHITLMiddleware",
 )
+
+_DYNAMIC_CONTEXT_MARKER = "supermew_dynamic_context"
+_ACTIVE_SKILL_MARKER = "supermew_active_skill"
 
 
 def _runtime_context(runtime) -> AgentRuntimeContext:
@@ -66,6 +70,41 @@ def _message_text(message: BaseMessage) -> str:
             if isinstance(item, (str, dict))
         )
     return str(content or "")
+
+
+def _typed_tool_result(response) -> ToolResultV1 | None:
+    content = getattr(response, "content", None)
+    if not isinstance(content, str) or not content.startswith("{"):
+        return None
+    try:
+        result = ToolResultV1.model_validate_json(content)
+    except ValueError:
+        return None
+    return result
+
+
+def _typed_result_size(result: ToolResultV1 | None) -> int:
+    if result is None:
+        return 0
+    value = result.observability_metadata.get("result_size")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
+
+
+def _tool_audit_key(tool_call: dict) -> str:
+    payload = json.dumps(
+        {
+            "id": str(tool_call.get("id") or ""),
+            "name": str(tool_call.get("name") or ""),
+            "args": tool_call.get("args") or {},
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def estimate_request_tokens(
@@ -131,6 +170,13 @@ def _truncate_message(message: BaseMessage, target_chars: int) -> BaseMessage:
     return message.model_copy(update={"content": text[:prefix_size] + marker})
 
 
+def _is_atomic_dynamic_context(message: BaseMessage) -> bool:
+    return bool(
+        isinstance(message, SystemMessage)
+        and message.additional_kwargs.get(_DYNAMIC_CONTEXT_MARKER)
+    )
+
+
 def _compact_to_budget(
     messages: list[BaseMessage],
     *,
@@ -147,7 +193,11 @@ def _compact_to_budget(
     )
     while estimated > token_budget:
         candidates = sorted(
-            range(len(compacted)),
+            (
+                index
+                for index in range(len(compacted))
+                if not _is_atomic_dynamic_context(compacted[index])
+            ),
             key=lambda index: (
                 0 if isinstance(compacted[index], ToolMessage) else 1,
                 0 if isinstance(compacted[index], AIMessage) else 1,
@@ -369,6 +419,8 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         context.check_deadline()
         started = time.monotonic()
         tool_name = str(request.tool_call.get("name") or "unknown")
+        tool_call_id = str(request.tool_call.get("id") or "")
+        tool_audit_key = _tool_audit_key(dict(request.tool_call))
         try:
             response = handler(request)
         except Exception as exc:
@@ -376,16 +428,37 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             context.record_trace(
                 "tool.failed",
                 tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_audit_key=tool_audit_key,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error_code=str(public.code),
                 retryable=public.retryable,
                 fallback_applied=False,
             )
             raise
+        typed_result = _typed_tool_result(response)
+        if typed_result is not None and not typed_result.success:
+            if typed_result.error_code == "TOOL_POLICY_DENIED":
+                return response
+            context.record_trace(
+                "tool.failed",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_audit_key=tool_audit_key,
+                duration_ms=typed_result.duration_ms,
+                error_code=typed_result.error_code,
+                retryable=typed_result.retryable,
+                fallback_applied=False,
+                result_size=_typed_result_size(typed_result),
+            )
+            return response
         context.record_trace(
             "tool.completed",
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_audit_key=tool_audit_key,
             duration_ms=int((time.monotonic() - started) * 1000),
+            result_size=_typed_result_size(typed_result),
         )
         return response
 
@@ -394,6 +467,8 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         context.check_deadline()
         started = time.monotonic()
         tool_name = str(request.tool_call.get("name") or "unknown")
+        tool_call_id = str(request.tool_call.get("id") or "")
+        tool_audit_key = _tool_audit_key(dict(request.tool_call))
         try:
             response = await handler(request)
         except Exception as exc:
@@ -401,16 +476,37 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             context.record_trace(
                 "tool.failed",
                 tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_audit_key=tool_audit_key,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error_code=str(public.code),
                 retryable=public.retryable,
                 fallback_applied=False,
             )
             raise
+        typed_result = _typed_tool_result(response)
+        if typed_result is not None and not typed_result.success:
+            if typed_result.error_code == "TOOL_POLICY_DENIED":
+                return response
+            context.record_trace(
+                "tool.failed",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_audit_key=tool_audit_key,
+                duration_ms=typed_result.duration_ms,
+                error_code=typed_result.error_code,
+                retryable=typed_result.retryable,
+                fallback_applied=False,
+                result_size=_typed_result_size(typed_result),
+            )
+            return response
         context.record_trace(
             "tool.completed",
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_audit_key=tool_audit_key,
             duration_ms=int((time.monotonic() - started) * 1000),
+            result_size=_typed_result_size(typed_result),
         )
         return response
 
@@ -419,7 +515,85 @@ class DynamicContextMiddleware(AgentMiddleware):
     @staticmethod
     def _override(request: ModelRequest) -> ModelRequest:
         context = _runtime_context(request.runtime)
-        dynamic_message = SystemMessage(content=context.dynamic_context_message())
+        visible_tools = (
+            None
+            if request.tools is None
+            else [
+                tool
+                for tool in request.tools
+                if context.is_tool_allowed(_tool_name(tool))
+            ]
+        )
+        active_skill = context.has_active_skill()
+
+        def project(
+            *,
+            memory_char_limit: int | None,
+            include_skill_catalog: bool,
+        ) -> tuple[SystemMessage, int]:
+            message = SystemMessage(
+                content=context.dynamic_context_message(
+                    memory_char_limit=memory_char_limit,
+                    include_skill_catalog=include_skill_catalog,
+                ),
+                additional_kwargs={
+                    _DYNAMIC_CONTEXT_MARKER: True,
+                    _ACTIVE_SKILL_MARKER: active_skill,
+                },
+            )
+            estimated = estimate_request_tokens(
+                [message, *request.messages],
+                system_message=request.system_message,
+                tools=visible_tools,
+            )
+            return message, estimated
+
+        note_length = len(context.persistent_note.strip())
+        dynamic_message, estimated = project(
+            memory_char_limit=None,
+            include_skill_catalog=True,
+        )
+        memory_truncated = False
+        catalog_omitted = False
+        if estimated > context.budget.input_token_budget:
+            without_memory, without_memory_estimated = project(
+                memory_char_limit=0,
+                include_skill_catalog=True,
+            )
+            memory_truncated = note_length > 0
+            if without_memory_estimated <= context.budget.input_token_budget:
+                low = 0
+                high = note_length
+                while low < high:
+                    candidate = (low + high + 1) // 2
+                    candidate_message, candidate_estimated = project(
+                        memory_char_limit=candidate,
+                        include_skill_catalog=True,
+                    )
+                    if candidate_estimated <= context.budget.input_token_budget:
+                        low = candidate
+                        dynamic_message = candidate_message
+                        estimated = candidate_estimated
+                    else:
+                        high = candidate - 1
+                if low == 0:
+                    dynamic_message = without_memory
+                    estimated = without_memory_estimated
+                memory_truncated = low < note_length
+            else:
+                dynamic_message, estimated = project(
+                    memory_char_limit=0,
+                    include_skill_catalog=False,
+                )
+                catalog_omitted = True
+        if memory_truncated or catalog_omitted:
+            context.record_trace(
+                "context.dynamic_trimmed",
+                memory_truncated=memory_truncated,
+                catalog_omitted=catalog_omitted,
+                active_skill_preserved=active_skill,
+                estimated_tokens=estimated,
+            )
         return request.override(messages=[dynamic_message, *request.messages])
 
     def wrap_model_call(self, request, handler):
@@ -433,12 +607,41 @@ class ContextBudgetMiddleware(AgentMiddleware):
     @staticmethod
     def _override(request: ModelRequest) -> ModelRequest:
         context = _runtime_context(request.runtime)
-        packed = trim_messages_to_budget(
-            request.messages,
-            context.budget.input_token_budget,
-            system_message=request.system_message,
-            tools=request.tools,
+        visible_tools = (
+            None
+            if request.tools is None
+            else [
+                tool
+                for tool in request.tools
+                if context.is_tool_allowed(_tool_name(tool))
+            ]
         )
+        try:
+            packed = trim_messages_to_budget(
+                request.messages,
+                context.budget.input_token_budget,
+                system_message=request.system_message,
+                tools=visible_tools,
+            )
+        except RuntimeError as exc:
+            active_skill_required = any(
+                bool(message.additional_kwargs.get(_ACTIVE_SKILL_MARKER))
+                for message in request.messages
+                if _is_atomic_dynamic_context(message)
+            )
+            if active_skill_required:
+                context.record_trace(
+                    "skill.context_rejected",
+                    error_code="ACTIVE_SKILL_CONTEXT_BUDGET_EXCEEDED",
+                )
+                raise AppError(
+                    ErrorCode.POLICY_DENIED,
+                    "Active Skill 指令无法完整放入当前上下文预算。",
+                    status_code=403,
+                    category="skill",
+                    stage="context_budget",
+                ) from exc
+            raise
         changed = packed.removed_count + packed.truncated_count
         if changed:
             context.trimmed_message_count += changed
@@ -470,10 +673,10 @@ class ToolPolicyMiddleware(AgentMiddleware):
     @staticmethod
     def _override(request: ModelRequest) -> ModelRequest:
         context = _runtime_context(request.runtime)
-        if context.allowed_tools is None or request.tools is None:
+        if request.tools is None:
             return request
         tools = [
-            tool for tool in request.tools if _tool_name(tool) in context.allowed_tools
+            tool for tool in request.tools if context.is_tool_allowed(_tool_name(tool))
         ]
         return request.override(tools=tools)
 
@@ -487,11 +690,21 @@ class ToolPolicyMiddleware(AgentMiddleware):
     def _deny(request: ToolCallRequest) -> ToolMessage | None:
         context = _runtime_context(request.runtime)
         tool_name = str(request.tool_call.get("name") or "")
-        if context.allowed_tools is None or tool_name in context.allowed_tools:
+        if context.is_tool_allowed(tool_name):
             return None
-        context.record_trace("tool.denied", tool_name=tool_name)
+        context.record_trace(
+            "tool.denied",
+            tool_name=tool_name,
+            tool_call_id=str(request.tool_call.get("id") or ""),
+            tool_audit_key=_tool_audit_key(dict(request.tool_call)),
+        )
         return ToolMessage(
-            content="TOOL_POLICY_DENIED: 当前 Run 无权执行该工具。",
+            content=new_tool_failure(
+                error_code="TOOL_POLICY_DENIED",
+                retryable=False,
+                data={"message": "当前 Run 无权执行该工具。"},
+                observability_metadata={"tool_name": tool_name},
+            ).model_dump_json(),
             tool_call_id=str(request.tool_call.get("id") or "unknown"),
             status="error",
         )
@@ -533,14 +746,26 @@ class LoopDetectionMiddleware(AgentMiddleware):
         context.record_trace(
             "tool.loop_blocked",
             tool_name=tool_name,
+            tool_call_id=str(request.tool_call.get("id") or ""),
+            tool_audit_key=_tool_audit_key(dict(request.tool_call)),
             repeat_count=count,
             alternating=alternating,
         )
         return ToolMessage(
-            content=(
-                "TOOL_LOOP_BLOCKED: 相同工具与参数已重复调用，"
-                "请基于现有结果总结并结束本轮。"
-            ),
+            content=new_tool_failure(
+                error_code="TOOL_LOOP_BLOCKED",
+                retryable=False,
+                data={
+                    "message": (
+                        "相同工具与参数已重复调用，请基于现有结果总结并结束本轮。"
+                    )
+                },
+                observability_metadata={
+                    "tool_name": tool_name,
+                    "repeat_count": count,
+                    "alternating": alternating,
+                },
+            ).model_dump_json(),
             tool_call_id=str(request.tool_call.get("id") or "unknown"),
             status="error",
         )

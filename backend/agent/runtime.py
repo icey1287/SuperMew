@@ -8,6 +8,7 @@ from typing import Literal
 from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
 
 from backend.agent.context import AgentRuntimeContext
+from backend.core.errors import AppError, ErrorCode
 from backend.providers import (
     ProviderCallContext,
     ProviderError,
@@ -15,6 +16,7 @@ from backend.providers import (
     classify_provider_exception,
 )
 from backend.schemas.chat import normalize_rag_trace
+from backend.skills import SkillRegistryError
 
 
 def extract_message_content(message) -> str:
@@ -90,6 +92,37 @@ class AgentRuntime:
     def _config(self) -> dict:
         return {"recursion_limit": self.context.budget.recursion_limit}
 
+    def _prepare(self, request: AgentRuntimeInput) -> AgentRuntimeInput:
+        try:
+            user_text = self.context.prepare_user_text(request.user_text)
+        except SkillRegistryError as exc:
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "该 Skill 不可用或当前 Run 已激活其他 Skill。",
+                status_code=403,
+                category="skill",
+                stage="activation",
+            ) from exc
+        return AgentRuntimeInput(history=request.history, user_text=user_text)
+
+    async def _aprepare(self, request: AgentRuntimeInput) -> AgentRuntimeInput:
+        if self.context.skill_session is None:
+            return request
+        try:
+            user_text = await asyncio.to_thread(
+                self.context.prepare_user_text,
+                request.user_text,
+            )
+        except SkillRegistryError as exc:
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "该 Skill 不可用或当前 Run 已激活其他 Skill。",
+                status_code=403,
+                category="skill",
+                stage="activation",
+            ) from exc
+        return AgentRuntimeInput(history=request.history, user_text=user_text)
+
     def _timeout_error(self, exc: TimeoutError) -> ProviderError:
         request_deadline, cancellation = self.context.request_context.provider_runtime()
         deadlines = [
@@ -121,6 +154,7 @@ class AgentRuntime:
 
     def invoke(self, request: AgentRuntimeInput) -> AgentRuntimeResult:
         try:
+            request = self._prepare(request)
             self.context.check_deadline()
             result = self.agent.invoke(
                 {"messages": request.messages},
@@ -134,6 +168,7 @@ class AgentRuntime:
 
     async def ainvoke(self, request: AgentRuntimeInput) -> AgentRuntimeResult:
         try:
+            request = await self._aprepare(request)
             self.context.check_deadline()
             async with asyncio.timeout(self.context.remaining_seconds()):
                 result = await self.agent.ainvoke(
@@ -149,6 +184,7 @@ class AgentRuntime:
         full_response = ""
         final_state = None
         try:
+            request = await self._aprepare(request)
             self.context.check_deadline()
             async with asyncio.timeout(self.context.remaining_seconds()):
                 async for item in self.agent.astream(

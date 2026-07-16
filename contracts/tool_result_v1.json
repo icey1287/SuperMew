@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://supermew.local/contracts/tool_result_v1.json",
+  "title": "SuperMew Tool Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "success",
+    "data",
+    "error_code",
+    "retryable",
+    "duration_ms",
+    "artifacts",
+    "observability_metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "data": {},
+    "error_code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+      "maxLength": 64
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/toolArtifact"
+      }
+    },
+    "observability_metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "toolArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "name",
+        "media_type"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "pattern": "^art_[A-Za-z0-9_-]+$",
+          "maxLength": 80
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "media_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*$",
+          "maxLength": 120
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(artifact://art_[A-Za-z0-9_-]+|/api/artifacts/art_[A-Za-z0-9_-]+)$",
+          "maxLength": 200
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "success": {
+            "const": true
+          }
+        },
+        "required": [
+          "success"
+        ]
+      },
+      "then": {
+        "properties": {
+          "error_code": {
+            "const": null
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error_code": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

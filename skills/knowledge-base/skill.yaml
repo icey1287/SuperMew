@@ -1,0 +1,9 @@
+schema_version: 1
+name: knowledge-base
+version: 1.0.0
+description: Search the configured knowledge base and answer only from cited evidence.
+allowed_tools:
+  - search_knowledge_base
+required_roles: []
+required_secrets: []
+entrypoint: SKILL.md

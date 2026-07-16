@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import socket
@@ -19,6 +20,7 @@ from backend.events.bus import PersistentEventBus, event_bus
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
+    ResumeAccessState,
     checkpointed_rag_runner,
 )
 from backend.rag.outcomes import (
@@ -34,6 +36,7 @@ from backend.runs.cancellation import (
 from backend.runs.repository import RunExecutionSnapshot, RunRecord, RunRepository
 from backend.runs.service import RunService, service
 from backend.runs.state import RunStatus
+from backend.skills import ActivatedSkill, SkillPin
 from backend.tools.knowledge import make_checkpointed_search_knowledge_base
 
 
@@ -73,6 +76,37 @@ def _remaining_deadline(deadline_at: str | None) -> float | None:
         deadline = deadline.astimezone(UTC).replace(tzinfo=None)
     now = datetime.now(UTC).replace(tzinfo=None)
     return max((deadline - now).total_seconds(), 0.0)
+
+
+def _pinned_skill(run: RunRecord) -> SkillPin | None:
+    values = (
+        run.skill_name,
+        run.skill_version,
+        run.skill_content_hash,
+        run.skill_activation_source,
+    )
+    if not any(values):
+        return None
+    if not all(values):
+        raise RuntimeError("Run contains an incomplete Skill snapshot")
+    return SkillPin(
+        name=str(run.skill_name),
+        version=str(run.skill_version),
+        content_hash=str(run.skill_content_hash),
+    )
+
+
+def _resume_access_state(snapshot: RunExecutionSnapshot) -> ResumeAccessState:
+    run = snapshot.run
+    return ResumeAccessState(
+        user_db_id=snapshot.user_db_id,
+        username=snapshot.username,
+        role=snapshot.role,
+        skill_name=run.skill_name,
+        skill_version=run.skill_version,
+        skill_content_hash=run.skill_content_hash,
+        skill_activation_source=run.skill_activation_source,
+    )
 
 
 def _resume_answer_prompt(result: dict, answer: str) -> str | None:
@@ -135,6 +169,12 @@ class RunAgentExecutor:
         self._closing = False
         self._dispatcher_stop = asyncio.Event()
         self._dispatcher_task: asyncio.Task | None = None
+
+    def _runtime_tool_ceiling(self) -> frozenset[str]:
+        ceiling = getattr(self.runtime_builder, "tool_ceiling", frozenset())
+        if isinstance(ceiling, (set, frozenset, tuple, list)):
+            return frozenset(str(name) for name in ceiling)
+        return frozenset()
 
     async def spawn_once(
         self,
@@ -268,6 +308,7 @@ class RunAgentExecutor:
             answer=answer,
             idempotency_key=idempotency_key,
             worker_id=self.worker_id,
+            preflight=self.runtime_builder.validate_resume_access,
         )
         if not consumed.should_resume:
             return
@@ -284,6 +325,7 @@ class RunAgentExecutor:
                 worker_id=self.worker_id,
                 fencing_token=consumed.fencing_token,
             )
+            self.runtime_builder.validate_resume_access(_resume_access_state(snapshot))
             rag_outcome = await self._resume_checkpoint(
                 snapshot=snapshot,
                 consumed=consumed,
@@ -448,13 +490,36 @@ class RunAgentExecutor:
                 fencing_token=snapshot.run.fencing_token,
                 runner=self.checkpoint_runner,
             )
+
+        def pin_skill(activated: ActivatedSkill) -> None:
+            self.repository.pin_skill_activation(
+                run_id=snapshot.run.id,
+                worker_id=self.worker_id,
+                fencing_token=snapshot.run.fencing_token,
+                name=activated.name,
+                version=activated.version,
+                content_hash=activated.pin.content_hash,
+                source=activated.source,
+            )
+
         runtime = self.runtime_builder.create(
             request_context,
             persistent_note=snapshot.persistent_note,
+            user_db_id=snapshot.user_db_id,
+            roles=frozenset({snapshot.role}),
             run_id=snapshot.run.id,
-            allowed_tools=frozenset() if disable_tools else None,
+            allowed_tools=(
+                frozenset() if disable_tools else self._runtime_tool_ceiling()
+            ),
             deadline_seconds=remaining_deadline,
-            knowledge_tool=knowledge_tool,
+            tool_overrides=(
+                {"search_knowledge_base": knowledge_tool}
+                if knowledge_tool is not None
+                else None
+            ),
+            pinned_skill=_pinned_skill(snapshot.run),
+            pinned_skill_source=snapshot.run.skill_activation_source,
+            on_skill_activate=pin_skill,
             trace_queue=trace_queue,
         )
         result: AgentRuntimeResult | None = None
@@ -578,6 +643,12 @@ class RunAgentExecutor:
             stage = str(item.get("stage") or "")
             event_type = _TRACE_EVENT_TYPES.get(stage)
             try:
+                if stage in {"tool.completed", "tool.failed", "tool.denied"}:
+                    if not (
+                        stage == "tool.failed"
+                        and item.get("error_code") == "TOOL_POLICY_DENIED"
+                    ):
+                        await self._record_tool_audit(run, stage, item)
                 if event_type is not None:
                     await self._publish_owned(
                         run,
@@ -601,6 +672,55 @@ class RunAgentExecutor:
                 raise
             finally:
                 trace_queue.task_done()
+
+    async def _record_tool_audit(
+        self,
+        run: RunRecord,
+        stage: str,
+        item: dict,
+    ) -> None:
+        tool_name = str(item.get("tool_name") or "unknown")
+        registry = getattr(self.runtime_builder, "tools", None)
+        descriptor = (
+            registry.descriptor(tool_name)
+            if registry is not None and hasattr(registry, "descriptor")
+            else None
+        )
+        metadata = {
+            "tool_version": getattr(descriptor, "version", ""),
+            "tool_group": getattr(descriptor, "group", ""),
+            "skill_name": run.skill_name or "",
+            "skill_version": run.skill_version or "",
+            "tool_catalog_hash": getattr(registry, "catalog_hash", ""),
+        }
+        audit_key = str(item.get("tool_audit_key") or "")
+        if len(audit_key) != 64:
+            audit_key = hashlib.sha256(
+                (
+                    f"{run.id}\x00{run.fencing_token}\x00{stage}\x00"
+                    f"{tool_name}\x00{item.get('tool_call_id') or ''}"
+                ).encode("utf-8")
+            ).hexdigest()
+        await asyncio.to_thread(
+            self.repository.record_tool_audit,
+            run_id=run.id,
+            worker_id=self.worker_id,
+            fencing_token=run.fencing_token,
+            audit_key=audit_key,
+            tool_call_id=str(item.get("tool_call_id") or "") or None,
+            tool_name=tool_name,
+            tool_version=str(getattr(descriptor, "version", "")),
+            decision="denied" if stage == "tool.denied" else "allowed",
+            success=stage == "tool.completed",
+            error_code=(
+                str(item.get("error_code") or "TOOL_POLICY_DENIED")
+                if stage != "tool.completed"
+                else None
+            ),
+            duration_ms=int(item.get("duration_ms") or 0),
+            result_size=int(item.get("result_size") or 0),
+            metadata=metadata,
+        )
 
     @staticmethod
     async def _flush_event_queues(

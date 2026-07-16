@@ -13,7 +13,8 @@ from backend.agent.runtime import (
     AgentRuntimeEvent,
     AgentRuntimeResult,
 )
-from backend.db.models import Base, ChatMessage, Run, User
+from backend.core.errors import AppError, ErrorCode
+from backend.db.models import Base, ChatMessage, Run, ToolAudit, User
 from backend.events.bus import PersistentEventBus
 from backend.events.journal import RunEventJournal
 from backend.providers import ProviderCode, ProviderError, ProviderOperation
@@ -27,6 +28,7 @@ from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy
+from backend.skills import ActivatedSkill, SkillPin
 from test_native_checkpoint_hitl import NativeCheckpointGraphTests
 
 
@@ -38,6 +40,10 @@ class FakeRuntime:
 
     async def astream(self, request):
         self.factory.requests.append(request)
+        if self.factory.skill_to_activate is not None:
+            self.factory.create_kwargs[-1]["on_skill_activate"](
+                self.factory.skill_to_activate
+            )
         self.factory.active += 1
         self.factory.max_active = max(self.factory.max_active, self.factory.active)
         try:
@@ -93,6 +99,29 @@ class FakeRuntimeFactory:
         self.emit_tool_trace = False
         self.emit_rag_warning = False
         self.failure: Exception | None = None
+        self.skill_to_activate: ActivatedSkill | None = None
+        self.tool_ceiling = frozenset({"search_knowledge_base"})
+        self.validation_requests = []
+        self.validation_error: Exception | None = None
+        self.denied_roles: set[str] = set()
+
+    def validate_access(self, **kwargs):
+        self.validation_requests.append(kwargs)
+        if self.validation_error is not None:
+            raise self.validation_error
+        return kwargs["allowed_tools"]
+
+    def validate_resume_access(self, state):
+        self.validation_requests.append(state)
+        if self.validation_error is not None:
+            raise self.validation_error
+        if state.role in self.denied_roles:
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "恢复权限已撤销",
+                status_code=403,
+            )
+        return self.tool_ceiling
 
     def create(self, request_context, **kwargs):
         self.create_kwargs.append({"request_context": request_context, **kwargs})
@@ -145,14 +174,45 @@ class CheckpointRuntime:
 class CheckpointRuntimeFactory:
     def __init__(self):
         self.requests = []
+        self.create_kwargs = []
         self.pause_recorded = asyncio.Event()
         self.release_initial: asyncio.Event | None = None
+        self.tool_ceiling = frozenset({"search_knowledge_base"})
+        self.validation_requests = []
+        self.validation_error: Exception | None = None
+        self.denied_roles: set[str] = set()
+
+    def validate_access(self, **kwargs):
+        self.validation_requests.append(kwargs)
+        if self.validation_error is not None:
+            raise self.validation_error
+        if not kwargs["required_tools"].issubset(kwargs["allowed_tools"]):
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "恢复所需工具当前不可用。",
+                status_code=403,
+            )
+        return kwargs["allowed_tools"]
+
+    def validate_resume_access(self, state):
+        self.validation_requests.append(state)
+        if self.validation_error is not None:
+            raise self.validation_error
+        if state.role in self.denied_roles:
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "恢复权限已撤销",
+                status_code=403,
+            )
+        return self.tool_ceiling
 
     def create(self, request_context, **kwargs):
+        self.create_kwargs.append(kwargs)
+        overrides = kwargs.get("tool_overrides") or {}
         return CheckpointRuntime(
             self,
             request_context,
-            kwargs.get("knowledge_tool"),
+            overrides.get("search_knowledge_base"),
         )
 
 
@@ -277,6 +337,45 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 )
             ),
         )
+
+    async def test_runtime_role_and_skill_pin_are_persisted_with_owner_fence(self):
+        activated = ActivatedSkill(
+            name="knowledge-base",
+            version="1.0.0",
+            description="Knowledge base",
+            allowed_tools=frozenset({"search_knowledge_base"}),
+            content="# Knowledge Base",
+            pin=SkillPin(
+                name="knowledge-base",
+                version="1.0.0",
+                content_hash="a" * 64,
+            ),
+            source="explicit_slash",
+        )
+        self.runtime_factory.skill_to_activate = activated
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-skill-pin",
+            message="/knowledge-base 查询发布流程",
+            idempotency_key="skill-pin-request",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        create_kwargs = self.runtime_factory.create_kwargs[-1]
+        self.assertIsInstance(create_kwargs["user_db_id"], int)
+        self.assertEqual(frozenset({"user"}), create_kwargs["roles"])
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == reservation.run.id).one()
+            self.assertEqual("knowledge-base", run.skill_name)
+            self.assertEqual("1.0.0", run.skill_version)
+            self.assertEqual("a" * 64, run.skill_content_hash)
+            self.assertEqual("explicit_slash", run.skill_activation_source)
 
     async def test_provider_failure_keeps_typed_code_and_redacted_terminal_payload(
         self,
@@ -535,6 +634,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             event_types.index("tool.completed"),
             event_types.index("message.delta"),
         )
+        with self.Session() as db:
+            audit = (
+                db.query(ToolAudit).filter(ToolAudit.run_id == reservation.run.id).one()
+            )
+            self.assertEqual("fake_tool", audit.tool_name)
+            self.assertEqual("allowed", audit.decision)
+            self.assertTrue(audit.success)
+            self.assertNotIn("先调用工具", str(audit.metadata_json))
 
     async def test_owned_event_append_rejects_stale_writer_after_terminal(self):
         self.runtime_factory.release_after_first = asyncio.Event()
@@ -624,6 +731,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.service,
+            access_validator=runtime_factory.validate_resume_access,
         )
         reservation = self.service.create_run(
             username="alice",
@@ -660,6 +768,8 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 idempotency_key="hitl-resume-1",
             )
             self.assertEqual("pending", accepted.run.status)
+            with self.Session.begin() as db:
+                db.query(User).filter(User.username == "alice").one().role = "admin"
             await self.executor.close()
             await self.executor.start()
             resume_task = await self.executor.resume_once(
@@ -696,6 +806,170 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, calls["complexity"])
         self.assertEqual(2, len(calls["retrieve"]))
         self.assertEqual(2, len(runtime_factory.requests))
+        self.assertEqual(3, len(runtime_factory.validation_requests))
+        self.assertEqual("user", runtime_factory.validation_requests[0].role)
+        self.assertEqual("admin", runtime_factory.validation_requests[1].role)
+        self.assertEqual("admin", runtime_factory.validation_requests[2].role)
+        self.assertEqual(
+            frozenset({"admin"}),
+            runtime_factory.create_kwargs[-1]["roles"],
+        )
+
+    async def test_worker_resume_revalidates_before_claim_or_rag_side_effects(self):
+        pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
+        runtime_factory = CheckpointRuntimeFactory()
+        self.executor.runtime_builder = runtime_factory
+        coordinator = RunResumeCoordinator(
+            checkpoints=self.checkpoints,
+            run_service=self.service,
+            access_validator=runtime_factory.validate_resume_access,
+        )
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-hitl-revoked",
+            message=NativeCheckpointGraphTests.QUESTION,
+            idempotency_key="hitl-revoked-1",
+        )
+
+        with patch.dict(sys.modules, {"backend.rag.pipeline": pipeline}):
+            task = await self.executor.spawn_once(
+                username="alice",
+                run_id=reservation.run.id,
+            )
+            self.assertIsNotNone(task)
+            await task
+            hitl_token = next(
+                item.data["hitl_token"]
+                for item in self.journal.read_after(
+                    username="alice",
+                    run_id=reservation.run.id,
+                )
+                if item.type.value == "hitl.required"
+            )
+            accepted = coordinator.accept(
+                username="alice",
+                run_id=reservation.run.id,
+                hitl_token=hitl_token,
+                answer="丹瑾",
+                idempotency_key="hitl-revoked-resume",
+            )
+            event_count = len(
+                self.journal.read_after(
+                    username="alice",
+                    run_id=reservation.run.id,
+                )
+            )
+            runtime_factory.validation_error = AppError(
+                ErrorCode.POLICY_DENIED,
+                "恢复权限已撤销",
+                status_code=403,
+            )
+
+            with self.assertRaises(AppError) as denied:
+                await self.executor.resume(
+                    username="alice",
+                    run_id=reservation.run.id,
+                    hitl_token=hitl_token,
+                    answer="丹瑾",
+                    idempotency_key="hitl-revoked-resume",
+                )
+
+        self.assertEqual(ErrorCode.POLICY_DENIED, denied.exception.code)
+        current = self.repository.get(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertEqual("pending", current.status)
+        self.assertIsNone(current.owner_worker_id)
+        self.assertIsNone(current.lease_expires_at)
+        self.assertEqual(accepted.run.fencing_token, current.fencing_token)
+        self.assertEqual(1, calls["complexity"])
+        self.assertEqual(1, len(calls["retrieve"]))
+        self.assertEqual(
+            event_count,
+            len(
+                self.journal.read_after(
+                    username="alice",
+                    run_id=reservation.run.id,
+                )
+            ),
+        )
+        self.assertEqual(2, len(runtime_factory.validation_requests))
+
+    async def test_worker_revalidates_snapshot_after_role_revoked_post_claim(self):
+        pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
+        runtime_factory = CheckpointRuntimeFactory()
+        self.executor.runtime_builder = runtime_factory
+        coordinator = RunResumeCoordinator(
+            checkpoints=self.checkpoints,
+            run_service=self.service,
+            access_validator=runtime_factory.validate_resume_access,
+        )
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-hitl-post-claim-revoke",
+            message=NativeCheckpointGraphTests.QUESTION,
+            idempotency_key="hitl-post-claim-revoke-1",
+        )
+
+        with patch.dict(sys.modules, {"backend.rag.pipeline": pipeline}):
+            task = await self.executor.spawn_once(
+                username="alice",
+                run_id=reservation.run.id,
+            )
+            self.assertIsNotNone(task)
+            await task
+            hitl_token = next(
+                item.data["hitl_token"]
+                for item in self.journal.read_after(
+                    username="alice",
+                    run_id=reservation.run.id,
+                )
+                if item.type.value == "hitl.required"
+            )
+            coordinator.accept(
+                username="alice",
+                run_id=reservation.run.id,
+                hitl_token=hitl_token,
+                answer="丹瑾",
+                idempotency_key="hitl-post-claim-revoke-resume",
+            )
+            runtime_factory.denied_roles.add("admin")
+            consume_resume = self.checkpoints.consume_resume
+
+            def consume_then_revoke(**kwargs):
+                consumed = consume_resume(**kwargs)
+                with self.Session.begin() as db:
+                    db.query(User).filter(User.username == "alice").one().role = "admin"
+                return consumed
+
+            with patch.object(
+                self.checkpoints,
+                "consume_resume",
+                side_effect=consume_then_revoke,
+            ):
+                await self.executor.resume(
+                    username="alice",
+                    run_id=reservation.run.id,
+                    hitl_token=hitl_token,
+                    answer="丹瑾",
+                    idempotency_key="hitl-post-claim-revoke-resume",
+                )
+
+        current = self.repository.get(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertEqual("failed", current.status)
+        self.assertEqual("POLICY_DENIED", current.error_code)
+        self.assertEqual(1, calls["complexity"])
+        self.assertEqual(1, len(calls["retrieve"]))
+        self.assertEqual(1, len(runtime_factory.requests))
+        self.assertEqual(3, len(runtime_factory.validation_requests))
+        self.assertEqual(
+            ["user", "user", "admin"],
+            [item.role for item in runtime_factory.validation_requests],
+        )
 
     async def test_fast_hitl_reply_is_queued_after_initial_task(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
@@ -705,6 +979,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.service,
+            access_validator=runtime_factory.validate_resume_access,
         )
         reservation = self.service.create_run(
             username="alice",

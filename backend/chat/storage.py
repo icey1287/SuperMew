@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from backend.chat.repository import ConversationRepository, MessageRecord, repository
+from backend.chat.repository import (
+    ConversationRepository,
+    MessageRecord,
+    UserAccessSnapshot,
+    repository,
+)
 from backend.infra.cache import cache
 
 
@@ -75,6 +80,9 @@ class ConversationStorage:
         return self.load(user_id, session_id), self.repository.thread_metadata(
             user_id, session_id
         )
+
+    def current_user_access(self, user_id: str) -> UserAccessSnapshot:
+        return self.repository.current_user_access(user_id)
 
     def list_sessions(self, user_id: str) -> list:
         return [item["session_id"] for item in self.list_session_infos(user_id)]

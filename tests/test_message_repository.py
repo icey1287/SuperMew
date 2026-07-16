@@ -58,7 +58,23 @@ class MessageRepositoryTests(unittest.TestCase):
             self.assertEqual(first_timestamp, rows[0].timestamp)
             self.assertEqual(2, thread.message_count)
             self.assertEqual(2, thread.last_sequence)
-        self.assertFalse(any(statement.startswith("delete") for statement in statements))
+        self.assertFalse(
+            any(statement.startswith("delete") for statement in statements)
+        )
+
+    def test_current_user_access_reloads_role_from_database(self):
+        first = self.repository.current_user_access("alice")
+        with self.Session.begin() as db:
+            db.query(User).filter(User.username == "alice").one().role = "admin"
+        second = self.repository.current_user_access("alice")
+
+        self.assertEqual("user", first.role)
+        self.assertEqual("admin", second.role)
+        self.assertEqual(first.user_db_id, second.user_db_id)
+
+        with self.assertRaises(AppError) as missing:
+            self.repository.current_user_access("missing")
+        self.assertEqual(ErrorCode.AUTHENTICATION_REQUIRED, missing.exception.code)
 
     def test_client_message_id_makes_append_idempotent(self):
         message = MessageAppend(

@@ -192,6 +192,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         self.coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.run_service,
+            access_validator=lambda _state: None,
         )
 
     def tearDown(self):
@@ -311,6 +312,62 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
                 .count(),
             )
 
+    def test_resume_preflight_rejects_before_checkpoint_run_or_event_writes(self):
+        claimed, pause = self._pause()
+        with self.Session.begin() as db:
+            user = db.query(User).filter(User.username == "alice").one()
+            user.role = "admin"
+            run = db.query(Run).filter(Run.id == claimed.id).one()
+            run.skill_name = "knowledge-base"
+            run.skill_version = "1.0.0"
+            run.skill_content_hash = "a" * 64
+            run.skill_activation_source = "explicit_slash"
+
+        observed = []
+
+        def deny(state):
+            observed.append(state)
+            raise AppError(
+                ErrorCode.POLICY_DENIED,
+                "恢复权限已撤销",
+                status_code=403,
+            )
+
+        coordinator = RunResumeCoordinator(
+            checkpoints=self.checkpoints,
+            run_service=self.run_service,
+            access_validator=deny,
+        )
+        with self.Session() as db:
+            event_count = db.query(RunEvent).count()
+            fence = db.query(Run).filter(Run.id == claimed.id).one().fencing_token
+
+        with self.assertRaises(AppError) as denied:
+            coordinator.accept(
+                username="alice",
+                run_id=claimed.id,
+                hitl_token=pause.hitl_token,
+                answer="丹瑾",
+                idempotency_key="resume-denied",
+            )
+
+        self.assertEqual(ErrorCode.POLICY_DENIED, denied.exception.code)
+        self.assertEqual(1, len(observed))
+        self.assertEqual("admin", observed[0].role)
+        self.assertEqual("knowledge-base", observed[0].skill_name)
+        self.assertEqual("a" * 64, observed[0].skill_content_hash)
+        with self.Session() as db:
+            checkpoint = db.query(RunCheckpoint).one()
+            run = db.query(Run).filter(Run.id == claimed.id).one()
+            self.assertIsNone(checkpoint.consumed_at)
+            self.assertIsNone(checkpoint.resume_idempotency_key)
+            self.assertIsNone(checkpoint.resume_payload_json)
+            self.assertEqual(RunStatus.WAITING_INPUT, run.status)
+            self.assertIsNone(run.owner_worker_id)
+            self.assertIsNone(run.lease_expires_at)
+            self.assertEqual(fence, run.fencing_token)
+            self.assertEqual(event_count, db.query(RunEvent).count())
+
     def test_resume_idempotency_key_is_scoped_to_each_run(self):
         first_run, first_pause = self._pause(
             thread_id="thread-1",
@@ -397,6 +454,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
                     idempotency_key="resume-runner",
                     context=context,
                     worker_id="worker-resume",
+                    preflight=lambda _state: None,
                 )
                 replayed = runner3.resume(
                     username="alice",
@@ -406,6 +464,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
                     idempotency_key="resume-runner",
                     context=context,
                     worker_id="worker-resume",
+                    preflight=lambda _state: None,
                 )
         finally:
             context.close()

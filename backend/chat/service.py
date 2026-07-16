@@ -43,6 +43,7 @@ from backend.schemas.chat import (
     build_chat_stream_error_event,
     normalize_rag_trace,
 )
+from backend.skills import SkillPin
 
 PENDING_HITL_KEY = "pending_hitl"
 HITL_STATUSES = {"needs_clarification", "needs_scope_selection"}
@@ -172,6 +173,7 @@ def _build_pending_hitl(
     original_question: str,
     previous_answers: list[str] | None = None,
     resume_state: dict | None = None,
+    skill_pin: dict | None = None,
 ) -> dict:
     prompt = _hitl_prompt_from_trace(rag_trace)
     options = _hitl_options_from_trace(rag_trace)
@@ -189,6 +191,7 @@ def _build_pending_hitl(
         ),
         answers=previous_answers or [],
         resume_state=resume_state,
+        skill_pin=skill_pin,
         created_at=datetime.now(timezone.utc).isoformat(),
     ).model_dump(exclude_none=True)
 
@@ -242,6 +245,55 @@ def _pending_resume_state(pending_hitl: dict | None) -> dict | None:
         return None
     resume_state = pending_hitl.get("resume_state")
     return dict(resume_state) if isinstance(resume_state, dict) else None
+
+
+def _pending_skill_pin(pending_hitl: dict | None) -> tuple[SkillPin | None, str | None]:
+    if not isinstance(pending_hitl, dict):
+        return None, None
+    value = pending_hitl.get("skill_pin")
+    if not isinstance(value, dict):
+        return None, None
+    return (
+        SkillPin(
+            name=str(value["name"]),
+            version=str(value["version"]),
+            content_hash=str(value["content_hash"]),
+        ),
+        str(value["source"]),
+    )
+
+
+def _active_skill_pin(runtime) -> dict | None:
+    context = getattr(runtime, "context", None)
+    skill_session = getattr(context, "skill_session", None)
+    active = getattr(skill_session, "active", None)
+    if active is None:
+        return None
+    return {
+        "name": active.name,
+        "version": active.version,
+        "content_hash": active.pin.content_hash,
+        "source": active.source,
+    }
+
+
+def _legacy_tool_ceiling() -> frozenset[str]:
+    ceiling = getattr(runtime_factory, "tool_ceiling", frozenset())
+    if isinstance(ceiling, (set, frozenset, tuple, list)):
+        return frozenset(str(name) for name in ceiling)
+    return frozenset()
+
+
+def _validate_legacy_hitl_resume(pending_hitl: dict, *, username: str) -> None:
+    pinned_skill, source = _pending_skill_pin(pending_hitl)
+    current_user = storage.current_user_access(username)
+    runtime_factory.validate_access(
+        roles=frozenset({current_user.role}),
+        allowed_tools=_legacy_tool_ceiling(),
+        pinned_skill=pinned_skill,
+        pinned_skill_source=source,
+        required_tools=frozenset({"search_knowledge_base"}),
+    )
 
 
 def _extract_ai_content(msg) -> str:
@@ -416,6 +468,7 @@ def chat_with_agent(
     user_text: str,
     user_id: str = "default_user",
     session_id: str = "default_session",
+    role: str = "user",
 ):
     messages, metadata = storage.load_with_meta(user_id, session_id)
     persistent_note = metadata.get("persistent_note", "")
@@ -442,6 +495,8 @@ def chat_with_agent(
     _configure_legacy_provider_runtime(ctx)
 
     try:
+        if is_hitl_resume:
+            _validate_legacy_hitl_resume(pending_hitl, username=user_id)
         messages.append(HumanMessage(content=user_text))
         storage.save(user_id, session_id, messages)
 
@@ -457,6 +512,7 @@ def chat_with_agent(
                     original_question or user_text,
                     previous_answers=hitl_answers,
                     resume_state=rag_result.get("hitl_resume_state"),
+                    skill_pin=pending_hitl.get("skill_pin"),
                 )
                 response_content = _format_hitl_message(
                     next_pending_hitl["prompt"],
@@ -473,6 +529,8 @@ def chat_with_agent(
             runtime = runtime_factory.create(
                 ctx,
                 persistent_note=persistent_note,
+                roles=frozenset({role}),
+                allowed_tools=_legacy_tool_ceiling(),
             )
             runtime_result = runtime.invoke(
                 AgentRuntimeInput(
@@ -489,6 +547,7 @@ def chat_with_agent(
                     original_question or user_text,
                     previous_answers=hitl_answers,
                     resume_state=runtime_result.hitl_resume_state,
+                    skill_pin=_active_skill_pin(runtime),
                 )
                 response_content = _format_hitl_message(
                     next_pending_hitl["prompt"],
@@ -537,6 +596,7 @@ async def chat_with_agent_stream(
     user_text: str,
     user_id: str = "default_user",
     session_id: str = "default_session",
+    role: str = "user",
 ):
     initial_step = {
         "type": "rag_step",
@@ -548,7 +608,6 @@ async def chat_with_agent_stream(
             "stage_elapsed_ms": 0,
         },
     }
-    yield f"data: {json.dumps(initial_step)}\n\n"
 
     messages, metadata = storage.load_with_meta(user_id, session_id)
     persistent_note = metadata.get("persistent_note", "")
@@ -584,6 +643,9 @@ async def chat_with_agent_stream(
     )
 
     try:
+        if is_hitl_resume:
+            _validate_legacy_hitl_resume(pending_hitl, username=user_id)
+        yield f"data: {json.dumps(initial_step)}\n\n"
         messages.append(HumanMessage(content=user_text))
         storage.save(user_id, session_id, messages)
 
@@ -629,6 +691,7 @@ async def chat_with_agent_stream(
                         original_question or user_text,
                         previous_answers=hitl_answers,
                         resume_state=rag_result.get("hitl_resume_state"),
+                        skill_pin=pending_hitl.get("skill_pin"),
                     )
                     full_response = _format_hitl_message(
                         next_pending_hitl["prompt"],
@@ -704,6 +767,8 @@ async def chat_with_agent_stream(
         runtime = runtime_factory.create(
             ctx,
             persistent_note=persistent_note,
+            roles=frozenset({role}),
+            allowed_tools=_legacy_tool_ceiling(),
         )
 
         session_title = None
@@ -777,6 +842,7 @@ async def chat_with_agent_stream(
                 original_question or user_text,
                 previous_answers=hitl_answers,
                 resume_state=resume_state_from_trace,
+                skill_pin=_active_skill_pin(runtime),
             )
             hitl_response_content = _format_hitl_message(
                 next_pending_hitl["prompt"],

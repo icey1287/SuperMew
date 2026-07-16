@@ -19,7 +19,15 @@ from backend.core.errors import (
     serialize_public_error,
 )
 from backend.core.settings import get_settings
-from backend.db.models import ChatMessage, ChatSession, Run, RunCheckpoint, User, utcnow
+from backend.db.models import (
+    ChatMessage,
+    ChatSession,
+    Run,
+    RunCheckpoint,
+    ToolAudit,
+    User,
+    utcnow,
+)
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
@@ -55,6 +63,10 @@ class RunRecord:
     started_at: str | None
     finished_at: str | None
     error_code: str | None
+    skill_name: str | None
+    skill_version: str | None
+    skill_content_hash: str | None
+    skill_activation_source: str | None
     input_tokens: int
     output_tokens: int
     cost: str
@@ -79,7 +91,9 @@ class ExecutionMessage:
 @dataclass(frozen=True)
 class RunExecutionSnapshot:
     run: RunRecord
+    user_db_id: int
     username: str
+    role: str
     user_text: str
     history: tuple[ExecutionMessage, ...]
     persistent_note: str
@@ -142,6 +156,10 @@ class RunRepository:
             started_at=run.started_at.isoformat() if run.started_at else None,
             finished_at=run.finished_at.isoformat() if run.finished_at else None,
             error_code=run.error_code,
+            skill_name=run.skill_name,
+            skill_version=run.skill_version,
+            skill_content_hash=run.skill_content_hash,
+            skill_activation_source=run.skill_activation_source,
             input_tokens=run.input_tokens,
             output_tokens=run.output_tokens,
             cost=str(run.cost),
@@ -611,7 +629,9 @@ class RunRepository:
             )
             return RunExecutionSnapshot(
                 run=self._record(run, thread.session_id),
+                user_db_id=user.id,
                 username=user.username,
+                role=user.role,
                 user_text=user_message.content,
                 history=tuple(
                     ExecutionMessage(role=item.message_type, content=item.content)
@@ -622,6 +642,203 @@ class RunRepository:
                     (thread.metadata_json or {}).get("persistent_note") or ""
                 ),
             )
+        finally:
+            db.close()
+
+    def pin_skill_activation(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        fencing_token: int,
+        name: str,
+        version: str,
+        content_hash: str,
+        source: str,
+    ) -> RunRecord:
+        """Persist the immutable Skill snapshot selected by the current owner."""
+
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(Run, ChatSession)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .filter(Run.id == run_id)
+                .with_for_update()
+                .first()
+            )
+            if not row:
+                raise AppError(
+                    ErrorCode.RUN_NOT_FOUND,
+                    "Run 不存在",
+                    status_code=404,
+                )
+            run, thread = row
+            self._assert_fencing(run, fencing_token)
+            if (
+                run.status != RunStatus.RUNNING.value
+                or run.owner_worker_id != worker_id
+            ):
+                raise AppError(
+                    ErrorCode.RUN_STATE_CONFLICT,
+                    "当前 worker 不再拥有该 Run",
+                    status_code=409,
+                )
+
+            existing = (
+                run.skill_name,
+                run.skill_version,
+                run.skill_content_hash,
+                run.skill_activation_source,
+            )
+            requested = (name, version, content_hash, source)
+            if any(existing):
+                if existing != requested:
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "Run 已固定为另一 Skill 快照",
+                        status_code=409,
+                    )
+            else:
+                run.skill_name = name
+                run.skill_version = version
+                run.skill_content_hash = content_hash
+                run.skill_activation_source = source
+                db.commit()
+                db.refresh(run)
+            return self._record(run, thread.session_id)
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def record_tool_audit(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        fencing_token: int,
+        audit_key: str,
+        tool_call_id: str | None,
+        tool_name: str,
+        tool_version: str,
+        decision: str,
+        success: bool,
+        error_code: str | None,
+        duration_ms: int,
+        result_size: int,
+        metadata: dict | None = None,
+    ) -> None:
+        """Persist a metadata-only tool decision under the current Run fence."""
+
+        db = self._session_factory()
+        try:
+            if len(audit_key) != 64 or any(
+                character not in "0123456789abcdef" for character in audit_key
+            ):
+                raise ValueError("audit_key must be a lowercase SHA-256 digest")
+            row = (
+                db.query(Run, ChatSession)
+                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .filter(Run.id == run_id)
+                .with_for_update()
+                .first()
+            )
+            if not row:
+                raise AppError(
+                    ErrorCode.RUN_NOT_FOUND,
+                    "Run 不存在",
+                    status_code=404,
+                )
+            run, thread = row
+            self._assert_fencing(run, fencing_token)
+            if (
+                run.status != RunStatus.RUNNING.value
+                or run.owner_worker_id != worker_id
+            ):
+                raise AppError(
+                    ErrorCode.RUN_STATE_CONFLICT,
+                    "当前 worker 不再拥有该 Run",
+                    status_code=409,
+                )
+            normalized_tool_call_id = tool_call_id[:128] if tool_call_id else None
+            normalized_tool_name = tool_name[:128]
+            normalized_tool_version = tool_version[:64]
+            normalized_decision = decision[:32]
+            normalized_success = bool(success)
+            normalized_error_code = error_code[:64] if error_code else None
+            normalized_duration_ms = max(int(duration_ms), 0)
+            normalized_result_size = max(int(result_size), 0)
+            safe_metadata = dict(metadata or {})
+            safe_metadata.update(
+                {
+                    "skill_name": run.skill_name or "",
+                    "skill_version": run.skill_version or "",
+                }
+            )
+            expected = (
+                normalized_tool_call_id,
+                normalized_tool_name,
+                normalized_tool_version,
+                run.skill_name or "",
+                normalized_decision,
+                normalized_success,
+                normalized_error_code,
+                normalized_duration_ms,
+                normalized_result_size,
+                safe_metadata,
+            )
+            existing = (
+                db.query(ToolAudit)
+                .filter(
+                    ToolAudit.run_id == run.id,
+                    ToolAudit.audit_key == audit_key,
+                )
+                .first()
+            )
+            if existing is not None:
+                actual = (
+                    existing.tool_call_id,
+                    existing.tool_name,
+                    existing.tool_version,
+                    existing.skill_name,
+                    existing.decision,
+                    existing.success,
+                    existing.error_code,
+                    existing.duration_ms,
+                    existing.result_size,
+                    existing.metadata_json,
+                )
+                if actual != expected:
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "重复工具审计键与既有结果不一致",
+                        status_code=409,
+                    )
+                return
+            db.add(
+                ToolAudit(
+                    user_id=run.user_id,
+                    thread_id=thread.session_id,
+                    run_id=run.id,
+                    audit_key=audit_key,
+                    tool_call_id=normalized_tool_call_id,
+                    tool_name=normalized_tool_name,
+                    tool_version=normalized_tool_version,
+                    skill_name=run.skill_name or "",
+                    decision=normalized_decision,
+                    success=normalized_success,
+                    error_code=normalized_error_code,
+                    duration_ms=normalized_duration_ms,
+                    result_size=normalized_result_size,
+                    metadata_json=safe_metadata,
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 

@@ -107,6 +107,14 @@ class Run(Base):
                 "status IN ('pending', 'running', 'waiting_input', 'cancelling')"
             ),
         ),
+        CheckConstraint(
+            "(skill_name IS NULL AND skill_version IS NULL "
+            "AND skill_content_hash IS NULL AND skill_activation_source IS NULL) "
+            "OR (skill_name IS NOT NULL AND skill_version IS NOT NULL "
+            "AND skill_content_hash IS NOT NULL "
+            "AND skill_activation_source IS NOT NULL)",
+            name="ck_runs_skill_snapshot_complete",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -140,6 +148,12 @@ class Run(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skill_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    skill_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    skill_content_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    skill_activation_source: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
     input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cost: Mapped[Decimal] = mapped_column(
@@ -778,6 +792,9 @@ class TransactionOutbox(Base):
 
 class ToolAudit(Base):
     __tablename__ = "tool_audits"
+    __table_args__ = (
+        UniqueConstraint("run_id", "audit_key", name="uq_tool_audit_run_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int | None] = mapped_column(
@@ -787,11 +804,18 @@ class ToolAudit(Base):
     run_id: Mapped[str | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    tool_call_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    audit_key: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    tool_version: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    skill_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    result_size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False

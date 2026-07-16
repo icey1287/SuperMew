@@ -24,6 +24,7 @@ async def chat_endpoint(
         request.message,
         current_user.username,
         session_id,
+        current_user.role,
     )
     if isinstance(resp, dict):
         return ChatResponse(**resp)
@@ -41,6 +42,7 @@ async def chat_stream_endpoint(
                 request.message,
                 current_user.username,
                 session_id,
+                current_user.role,
             ):
                 yield chunk
         except Exception as exc:

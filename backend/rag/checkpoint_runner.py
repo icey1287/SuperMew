@@ -54,6 +54,22 @@ class ConsumedResume:
 
 
 @dataclass(frozen=True)
+class ResumeAccessState:
+    """Transaction-locked current authorization state exposed to a preflight."""
+
+    user_db_id: int
+    username: str
+    role: str
+    skill_name: str | None
+    skill_version: str | None
+    skill_content_hash: str | None
+    skill_activation_source: str | None
+
+
+ResumeAccessValidator = Callable[[ResumeAccessState], None]
+
+
+@dataclass(frozen=True)
 class PendingResume:
     username: str
     run_id: str
@@ -220,6 +236,7 @@ class HitlCheckpointRepository:
         answer: str,
         idempotency_key: str,
         worker_id: str | None,
+        preflight: ResumeAccessValidator,
     ) -> ConsumedResume:
         clean_answer = answer.strip()
         if not clean_answer:
@@ -232,7 +249,7 @@ class HitlCheckpointRepository:
         try:
             with db.begin():
                 row = (
-                    db.query(RunCheckpoint, Run, ChatSession)
+                    db.query(RunCheckpoint, Run, ChatSession, User)
                     .join(Run, Run.id == RunCheckpoint.run_id)
                     .join(ChatSession, ChatSession.id == Run.thread_ref_id)
                     .join(User, User.id == Run.user_id)
@@ -250,7 +267,18 @@ class HitlCheckpointRepository:
                         "HITL checkpoint 不存在",
                         status_code=404,
                     )
-                checkpoint, run, thread = row
+                checkpoint, run, thread, user = row
+                preflight(
+                    ResumeAccessState(
+                        user_db_id=user.id,
+                        username=user.username,
+                        role=user.role,
+                        skill_name=run.skill_name,
+                        skill_version=run.skill_version,
+                        skill_content_hash=run.skill_content_hash,
+                        skill_activation_source=run.skill_activation_source,
+                    )
+                )
                 payload = {"answer": clean_answer}
                 conflicting_key = (
                     db.query(RunCheckpoint.id)
@@ -510,6 +538,7 @@ class CheckpointedRagRunner:
         idempotency_key: str,
         context: ChatRequestContext,
         worker_id: str,
+        preflight: ResumeAccessValidator,
     ) -> RagRunOutcome:
         consumed = self.checkpoints.consume_resume(
             username=username,
@@ -518,6 +547,7 @@ class CheckpointedRagRunner:
             answer=answer,
             idempotency_key=idempotency_key,
             worker_id=worker_id,
+            preflight=preflight,
         )
         return self.resume_consumed(
             run_id=run_id,

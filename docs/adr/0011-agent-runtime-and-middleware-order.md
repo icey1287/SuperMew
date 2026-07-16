@@ -34,7 +34,10 @@ Run、Event、Checkpoint 已经成为持久化事实来源后，需要一个深 
 ## 不变量
 
 - 基础 System Prompt 保持稳定；日期、用户、Thread、Run 和长期记忆通过独立动态消息注入。
-- 动态记忆是“不可信数据”，不能成为系统指令。
+- 动态记忆是“不可信数据”，不能成为系统指令；预算紧张时先裁记忆和 Skill
+  summary catalog，并保持 XML 包装完整。
+- active Skill instructions 是不可分割的可信块，必须完整计入输入硬预算；若连同
+  必需请求上下文都无法容纳，模型调用前 fail-closed，禁止通用字符截断。
 - 上下文按 token 预算裁剪，并保持 AI tool call 与对应 `ToolMessage` 成组。
 - 工具权限先过滤暴露给模型的 schema，执行前再次 fail-closed 检查。
 - deadline、模型调用、工具调用和循环预算都必须能稳定终止执行。
@@ -46,10 +49,12 @@ Run、Event、Checkpoint 已经成为持久化事实来源后，需要一个深 
 - shutdown、用户取消和 ownership 丢失是三种不同终止原因；部署关闭不得记录成用户取消。
 - 进程启动和周期 dispatcher 必须回收过期 owner，并唤醒持久化的 pending Run 与已接受的 checkpoint resume。
 - Runtime 执行受进程级并发上限约束；配置的 worker 前缀必须附加 host、pid 和 boot UUID，不能作为跨实例身份本身。
+- Skill 激活在进入 graph 前或 control tool round 中完成；动态上下文、上下文预算与 ToolPolicy 必须读取同一个 Run-local Registry snapshot。
+- Runtime Context 的工具权限必须是显式集合；缺失策略时 fail-closed，不得以 `None` 表示全部放行。
 - 旧 Chat Module 不得重新成为新 Run 路径的执行入口。
 
 ## 结果
 
 调用者只需跨越一个小的执行 Interface，即可获得模型选择、上下文、工具策略、预算、追踪、取消、事件和原子终结的 Leverage。相关变更集中在 Runtime 与 Executor 两个 Module，提高 Locality，并为后续 Provider、Tool Registry、Skill、Guardrail 和 Worker adapter 保留稳定 seam。
 
-代价是中间件顺序成为兼容性约束；新增中间件不能仅在列表中随意插入，必须验证它对上下文、工具执行和终态语义的影响。
+代价是中间件顺序成为兼容性约束；新增中间件不能仅在列表中随意插入，必须验证它对上下文、工具执行和终态语义的影响。Skill/Tool Registry 的详细不变量见 ADR-0017。

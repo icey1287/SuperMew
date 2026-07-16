@@ -1,11 +1,13 @@
 import importlib
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from backend.agent.runtime import AgentRuntimeEvent, AgentRuntimeResult
+from backend.core.errors import AppError, ErrorCode
 from backend.providers import (
     ProviderCode,
     ProviderError,
@@ -13,18 +15,36 @@ from backend.providers import (
     ProviderOperation,
 )
 from backend.schemas.chat import ChatRequest
+from backend.skills import ActivatedSkill, SkillPin
 
 service = importlib.import_module("backend.chat.service")
 
 
 class FakeStorage:
-    def __init__(self, messages=None, metadata=None):
+    def __init__(
+        self,
+        messages=None,
+        metadata=None,
+        *,
+        current_role="user",
+        role_after_load=None,
+    ):
         self.messages = list(messages or [])
         self.metadata = dict(metadata or {})
         self.saves = []
+        self.current_role = current_role
+        self.role_after_load = role_after_load
+        self.access_reads = []
 
     def load_with_meta(self, user_id, session_id):
-        return list(self.messages), dict(self.metadata)
+        result = list(self.messages), dict(self.metadata)
+        if self.role_after_load is not None:
+            self.current_role = self.role_after_load
+        return result
+
+    def current_user_access(self, user_id):
+        self.access_reads.append(user_id)
+        return SimpleNamespace(user_db_id=1, username=user_id, role=self.current_role)
 
     def save(
         self, user_id, session_id, messages, metadata=None, extra_message_data=None
@@ -43,9 +63,18 @@ class FakeStorage:
 
 class FakeRuntime:
     def __init__(
-        self, ctx, trace=None, chunks=None, captured_prompts=None, resume_state=None
+        self,
+        ctx,
+        trace=None,
+        chunks=None,
+        captured_prompts=None,
+        resume_state=None,
+        active_skill=None,
     ):
         self.ctx = ctx
+        self.context = SimpleNamespace(
+            skill_session=SimpleNamespace(active=active_skill)
+        )
         self.trace = trace
         self.chunks = chunks or []
         self.captured_prompts = captured_prompts
@@ -176,6 +205,22 @@ def _pending_hitl_state():
             "sub_questions": [],
         },
     }
+
+
+def _active_knowledge_skill():
+    return ActivatedSkill(
+        name="knowledge-base",
+        version="1.0.0",
+        description="Knowledge base",
+        allowed_tools=frozenset({"search_knowledge_base"}),
+        content="# Knowledge Base",
+        pin=SkillPin(
+            name="knowledge-base",
+            version="1.0.0",
+            content_hash="a" * 64,
+        ),
+        source="explicit_slash",
+    )
 
 
 def _answerable_rag_result():
@@ -372,13 +417,18 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         }
         fake_storage = FakeStorage()
         update_note = AsyncMock(return_value="updated note")
+        active_skill = _active_knowledge_skill()
 
         fake_factory = Mock()
+        fake_factory.tool_ceiling = frozenset(
+            {"search_knowledge_base", "describe_skill", "tool_search"}
+        )
         fake_factory.create.side_effect = lambda ctx, **kwargs: FakeRuntime(
             ctx,
             trace=trace,
             chunks=["请补充角色名"],
             resume_state=resume_state,
+            active_skill=active_skill,
         )
 
         with (
@@ -404,6 +454,19 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("请补充角色名", pending_hitl["prompt"])
         self.assertEqual(resume_state, pending_hitl["resume_state"])
         self.assertEqual(
+            {
+                "name": "knowledge-base",
+                "version": "1.0.0",
+                "content_hash": "a" * 64,
+                "source": "explicit_slash",
+            },
+            pending_hitl["skill_pin"],
+        )
+        self.assertEqual(
+            fake_factory.tool_ceiling,
+            fake_factory.create.call_args.kwargs["allowed_tools"],
+        )
+        self.assertEqual(
             "请补充角色名\n\n可选方向：\n- 丹瑾\n- 丹恒",
             fake_storage.messages[-1].content,
         )
@@ -419,6 +482,12 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
             "retrieval_status": "needs_clarification",
             "answers": [],
             "created_at": "2026-07-11T00:00:00+00:00",
+            "skill_pin": {
+                "name": "knowledge-base",
+                "version": "1.0.0",
+                "content_hash": "a" * 64,
+                "source": "explicit_slash",
+            },
             "resume_state": {
                 "question": "这个角色的属性是什么？",
                 "route": "clarify",
@@ -452,6 +521,9 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         fake_factory = Mock()
+        fake_factory.tool_ceiling = frozenset(
+            {"search_knowledge_base", "describe_skill", "tool_search"}
+        )
         fake_factory.create.side_effect = AssertionError(
             "runtime should not be created on HITL resume"
         )
@@ -482,6 +554,17 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("丹瑾是湮灭属性。[1]", fake_storage.messages[-1].content)
         resume_mock.assert_called_once()
         fake_factory.create.assert_not_called()
+        fake_factory.validate_access.assert_called_once_with(
+            roles=frozenset({"user"}),
+            allowed_tools=fake_factory.tool_ceiling,
+            pinned_skill=SkillPin(
+                name="knowledge-base",
+                version="1.0.0",
+                content_hash="a" * 64,
+            ),
+            pinned_skill_source="explicit_slash",
+            required_tools=frozenset({"search_knowledge_base"}),
+        )
         self.assertIn(
             "原始问题：\n这个角色的属性是什么？", fake_model.messages[-1][-1].content
         )
@@ -516,6 +599,76 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("VECTOR_STORE_UNAVAILABLE", content)
         self.assertNotIn("没有找到可靠", content)
         answer_model.assert_not_called()
+
+    def test_legacy_pending_ignores_stale_route_role_and_reloads_current_db_role(self):
+        pending_hitl = _pending_hitl_state()
+        fake_storage = FakeStorage(
+            messages=[HumanMessage(content="问题"), AIMessage(content="请补充")],
+            metadata={service.PENDING_HITL_KEY: pending_hitl},
+            current_role="admin",
+            role_after_load="user",
+        )
+        fake_factory = Mock()
+        fake_factory.tool_ceiling = frozenset({"search_knowledge_base"})
+        side_effect_state = []
+
+        def validate_before_message_write(**_kwargs):
+            side_effect_state.append(list(fake_storage.saves))
+
+        fake_factory.validate_access.side_effect = validate_before_message_write
+
+        with (
+            patch.object(service, "storage", fake_storage),
+            patch.object(service, "runtime_factory", fake_factory),
+            patch.object(
+                service,
+                "_resume_rag_from_hitl_sync",
+                Mock(return_value=_insufficient_rag_result()),
+            ),
+            patch.object(service, "_should_update_persistent_note", return_value=False),
+        ):
+            service.chat_with_agent("丹瑾", "u", "s", role="admin")
+
+        fake_factory.validate_access.assert_called_once_with(
+            roles=frozenset({"user"}),
+            allowed_tools=fake_factory.tool_ceiling,
+            pinned_skill=None,
+            pinned_skill_source=None,
+            required_tools=frozenset({"search_knowledge_base"}),
+        )
+        self.assertEqual(["u"], fake_storage.access_reads)
+        self.assertEqual([[]], side_effect_state)
+
+    async def test_resume_validation_failure_keeps_pending_state_and_skips_rag(self):
+        pending_hitl = _pending_hitl_state()
+        fake_storage = FakeStorage(
+            messages=[HumanMessage(content="问题"), AIMessage(content="请补充")],
+            metadata={service.PENDING_HITL_KEY: pending_hitl},
+        )
+        fake_factory = Mock()
+        fake_factory.tool_ceiling = frozenset({"search_knowledge_base"})
+        fake_factory.validate_access.side_effect = AppError(
+            ErrorCode.POLICY_DENIED,
+            "知识工具权限已撤销",
+            status_code=403,
+        )
+        resume_mock = Mock(return_value=_answerable_rag_result())
+
+        with (
+            patch.object(service, "storage", fake_storage),
+            patch.object(service, "runtime_factory", fake_factory),
+            patch.object(service, "_resume_rag_from_hitl_sync", resume_mock),
+        ):
+            with self.assertRaises(AppError) as denied:
+                await _collect_stream("丹瑾", "u", "s")
+
+        self.assertEqual(ErrorCode.POLICY_DENIED, denied.exception.code)
+        resume_mock.assert_not_called()
+        self.assertEqual([], fake_storage.saves)
+        self.assertEqual(
+            pending_hitl,
+            fake_storage.metadata[service.PENDING_HITL_KEY],
+        )
 
     async def test_stream_resume_buffers_failed_attempt_before_retrying_model(self):
         pending_hitl = _pending_hitl_state()

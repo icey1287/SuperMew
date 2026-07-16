@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, Run, RunEvent, User, utcnow
+from backend.db.models import Base, ChatMessage, Run, RunEvent, ToolAudit, User, utcnow
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
@@ -88,6 +88,84 @@ class RunServiceTests(unittest.TestCase):
                 fencing_token=reservation.run.fencing_token,
             )
         self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, raised.exception.code)
+
+    def test_tool_audit_replay_is_idempotent_and_result_conflicts_fail_closed(self):
+        reservation = self.create()
+        claimed = self.service.claim_run(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+        )
+        audit = {
+            "run_id": claimed.id,
+            "worker_id": "worker-1",
+            "fencing_token": claimed.fencing_token,
+            "audit_key": "a" * 64,
+            "tool_call_id": "call-1",
+            "tool_name": "search_knowledge_base",
+            "tool_version": "1.0.0",
+            "decision": "allowed",
+            "success": True,
+            "error_code": None,
+            "duration_ms": 12,
+            "result_size": 42,
+            "metadata": {"tool_group": "knowledge"},
+        }
+
+        self.repository.record_tool_audit(**audit)
+        self.repository.record_tool_audit(**audit)
+
+        with self.Session() as db:
+            rows = db.query(ToolAudit).filter(ToolAudit.run_id == claimed.id).all()
+            self.assertEqual(1, len(rows))
+            self.assertEqual("a" * 64, rows[0].audit_key)
+            self.assertEqual(42, rows[0].result_size)
+            self.assertEqual("", rows[0].metadata_json["skill_name"])
+
+        with self.assertRaises(AppError) as raised:
+            self.repository.record_tool_audit(
+                **{
+                    **audit,
+                    "success": False,
+                    "error_code": "TOOL_UNAVAILABLE",
+                }
+            )
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, raised.exception.code)
+
+        with self.Session() as db:
+            self.assertEqual(
+                1,
+                db.query(ToolAudit).filter(ToolAudit.run_id == claimed.id).count(),
+            )
+
+    def test_tool_audit_rejects_stale_owner_fence_before_writing(self):
+        reservation = self.create()
+        claimed = self.service.claim_run(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+        )
+
+        with self.assertRaises(AppError) as raised:
+            self.repository.record_tool_audit(
+                run_id=claimed.id,
+                worker_id="worker-1",
+                fencing_token=claimed.fencing_token - 1,
+                audit_key="b" * 64,
+                tool_call_id="call-stale",
+                tool_name="search_knowledge_base",
+                tool_version="1.0.0",
+                decision="allowed",
+                success=True,
+                error_code=None,
+                duration_ms=1,
+                result_size=1,
+            )
+
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, raised.exception.code)
+        with self.Session() as db:
+            self.assertEqual(
+                0,
+                db.query(ToolAudit).filter(ToolAudit.run_id == claimed.id).count(),
+            )
 
     def test_terminal_run_promotes_oldest_queued_run(self):
         first = self.create("request-1")

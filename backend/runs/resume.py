@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.agent.factory import runtime_factory
 from backend.rag.checkpoint_runner import (
     HitlCheckpointRepository,
+    ResumeAccessValidator,
     checkpoint_repository,
 )
 from backend.runs.repository import RunRecord
@@ -25,9 +27,11 @@ class RunResumeCoordinator:
         *,
         checkpoints: HitlCheckpointRepository = checkpoint_repository,
         run_service: RunService = service,
+        access_validator: ResumeAccessValidator = runtime_factory.validate_resume_access,
     ) -> None:
         self.checkpoints = checkpoints
         self.run_service = run_service
+        self.access_validator = access_validator
 
     def accept(
         self,
@@ -45,6 +49,7 @@ class RunResumeCoordinator:
             answer=answer,
             idempotency_key=idempotency_key,
             worker_id=None,
+            preflight=self.access_validator,
         )
         return RunResumeAcceptance(
             run=self.run_service.get_run(username=username, run_id=run_id),

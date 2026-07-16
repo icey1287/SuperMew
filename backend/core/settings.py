@@ -511,6 +511,17 @@ class SkillSettings(_EnvSettings):
         default=PROJECT_ROOT / "skills",
         validation_alias="SKILL_DIR",
     )
+    manifest_name: str = Field(
+        default="skill.yaml",
+        pattern=r"^[a-zA-Z0-9._-]{1,64}$",
+        validation_alias="SKILL_MANIFEST_NAME",
+    )
+    max_content_bytes: int = Field(
+        default=262_144,
+        ge=1_024,
+        le=4_194_304,
+        validation_alias="SKILL_MAX_CONTENT_BYTES",
+    )
     sandbox_enabled: bool = Field(default=False, validation_alias="SANDBOX_ENABLED")
 
 
