@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core.errors import AppError, ErrorCode
-from backend.documents.catalog import IndexJobRecord, IndexJobStatus
+from backend.documents.catalog import (
+    BuildProfile,
+    IndexJobExecution,
+    IndexJobRecord,
+    IndexJobStatus,
+)
 from backend.documents.publication import (
     DocumentPublication,
     DocumentPublicationConfig,
@@ -42,6 +47,12 @@ def _chunk(version_id: str, level: int, index: int) -> dict:
 
 
 def _build(*, status: str = IndexJobStatus.PENDING):
+    profile = BuildProfile(
+        parser_version="parser-v1",
+        chunker_version="chunker-v1",
+        embedding_model="embedding-v1",
+        index_version="catalog-v1",
+    )
     current = SimpleNamespace(id="version-v1")
     document = SimpleNamespace(
         id="doc-1",
@@ -54,6 +65,10 @@ def _build(*, status: str = IndexJobStatus.PENDING):
         id="version-v2",
         version_number=2,
         source_object_key="object.pdf",
+        build_fingerprint=profile.fingerprint,
+        parser_version=profile.parser_version,
+        chunker_version=profile.chunker_version,
+        embedding_model=profile.embedding_model,
         index_version="catalog-v1",
         vector_collection="embeddings_collection_catalog_v1",
         parent_chunk_count=0,
@@ -81,11 +96,19 @@ class FakeCatalog:
         self.manifests: list[dict] = []
         self.failed: list[dict] = []
         self.cleaned: list[dict] = []
+        self.lease_assertions: list[dict] = []
+        self.publish_calls: list[dict] = []
         self.publish_error: Exception | None = None
         self.fail_error: Exception | None = None
         self.stale_on_publish_error = False
+        self.load_calls: list[dict] = []
 
-    def load_build(self, **_kwargs):
+    def load_build(self, **kwargs):
+        self.load_calls.append(kwargs)
+        return self.build
+
+    def assert_index_lease(self, **kwargs):
+        self.lease_assertions.append(kwargs)
         return self.build
 
     def update_job(self, **kwargs):
@@ -98,7 +121,8 @@ class FakeCatalog:
         self.build.job.status = IndexJobStatus.STAGED
         return self.build
 
-    def publish(self, **_kwargs):
+    def publish(self, **kwargs):
+        self.publish_calls.append(kwargs)
         if self.publish_error:
             if self.stale_on_publish_error:
                 self.build.job.status = IndexJobStatus.CANCELLED
@@ -241,6 +265,30 @@ def test_publication_stages_exact_artifacts_then_atomically_publishes(tmp_path):
     assert catalog.failed == []
 
 
+def test_worker_execution_fence_is_applied_to_every_durable_publication_write(
+    tmp_path,
+):
+    catalog = FakeCatalog()
+    publication = _publication(tmp_path, catalog=catalog)
+    execution = IndexJobExecution(
+        worker_id="index-worker-a",
+        execution_fence=7,
+    )
+
+    outcome = publication.run("job-1", execution=execution)
+
+    assert outcome.published is True
+    assert catalog.lease_assertions
+    assert all(
+        assertion["execution"] == execution for assertion in catalog.lease_assertions
+    )
+    assert catalog.updates
+    assert all(update["execution"] == execution for update in catalog.updates)
+    assert catalog.manifests[0]["execution"] == execution
+    assert catalog.publish_calls[0]["execution"] == execution
+    assert catalog.failed == []
+
+
 @pytest.mark.parametrize(
     ("loader_error", "writer_error", "writer_exact", "expected_code"),
     [
@@ -358,6 +406,26 @@ def test_transient_publish_failure_preserves_exact_verified_candidate(tmp_path):
     assert catalog.build.job.status == IndexJobStatus.STAGED
     assert writer.deleted == []
     assert catalog.failed == []
+
+
+def test_worker_reconciliation_uses_the_claimed_document_tenant(tmp_path):
+    build = _build()
+    build.document.tenant_id = "tenant-b"
+    catalog = FakeCatalog(build)
+    catalog.publish_error = RuntimeError("database connection dropped")
+    publication = _publication(tmp_path, catalog=catalog)
+
+    with pytest.raises(AppError) as caught:
+        publication.run(
+            "job-1",
+            execution=IndexJobExecution(
+                worker_id="index-worker-a",
+                execution_fence=7,
+            ),
+        )
+
+    assert caught.value.retryable is True
+    assert catalog.load_calls[-1]["tenant_id"] == "tenant-b"
 
 
 def test_staged_job_resume_only_publishes_without_rebuilding(tmp_path):
@@ -538,6 +606,44 @@ def test_submit_removes_new_object_when_catalog_reuses_current(tmp_path):
     assert not path.exists()
 
 
+def test_retire_uses_publication_cleanup_grace_for_versioned_and_legacy_scopes(
+    tmp_path,
+):
+    versioned = SimpleNamespace(id="version-v1")
+    legacy = SimpleNamespace(id="version-legacy")
+    document = SimpleNamespace(
+        id="doc-1",
+        tenant_id="default",
+        knowledge_base_id="kb-1",
+        canonical_name="guide.pdf",
+        owner_id=7,
+    )
+
+    class RetirementCatalog:
+        def __init__(self) -> None:
+            self.retire_calls: list[dict] = []
+
+        def list_documents(self, **_kwargs):
+            return [document]
+
+        def retire_with_legacy_suppression(self, **kwargs):
+            self.retire_calls.append(kwargs)
+            return SimpleNamespace(
+                cleanup_versions=(versioned, legacy),
+            )
+
+    catalog = RetirementCatalog()
+    writer = FakeWriter()
+    writer.milvus_manager = SimpleNamespace(collection_name="embeddings_collection")
+    publication = _publication(tmp_path, catalog=catalog, writer=writer)
+
+    outcome = publication.retire("guide.pdf", owner_id=7)
+
+    assert outcome.cleanup_pending is True
+    assert catalog.retire_calls[0]["cleanup_grace"] == timedelta(hours=1)
+    assert catalog.retire_calls[0]["retirement_job_id"] == outcome.retirement_job_id
+
+
 def test_legacy_cleanup_uses_canonical_filename_not_composite_identity(tmp_path):
     class LegacyStore:
         collection_name = "embeddings_collection"
@@ -566,7 +672,7 @@ def test_legacy_cleanup_uses_canonical_filename_not_composite_identity(tmp_path)
             super().__init__()
             self.filename = ""
 
-        def delete_by_filename(self, filename):
+        def delete_legacy_by_filename(self, filename):
             self.filename = filename
             return 2
 
@@ -612,17 +718,10 @@ def test_unadopted_legacy_delete_persists_tombstone_before_physical_cleanup(
         def list_documents(self, **_kwargs):
             return [self.document] if self.suppressed else []
 
-        def retire(self, **_kwargs):
-            return SimpleNamespace(
-                found=False,
-                knowledge_base_id=None,
-                cleanup_versions=(),
-            )
-
         def find_knowledge_base(self, **_kwargs):
             return SimpleNamespace(id="kb-1")
 
-        def suppress_legacy_name(self, **_kwargs):
+        def retire_with_legacy_suppression(self, **_kwargs):
             self.suppressed = True
             return SimpleNamespace(
                 cleanup_versions=(
@@ -664,6 +763,6 @@ def test_unadopted_legacy_delete_persists_tombstone_before_physical_cleanup(
     outcome = publication.retire("legacy.pdf", owner_id=7)
 
     assert outcome.cleanup_pending is True
-    assert outcome.cleanup_step == "milvus"
+    assert outcome.cleanup_step == "pending"
     assert catalog.suppressed is True
-    assert catalog.cleanup_errors[0]["document_version_id"] == "legacy-tombstone"
+    assert catalog.cleanup_errors == []

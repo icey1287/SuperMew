@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile
 
 from backend.api.resources import (
     delete_document_transactionally,
@@ -14,9 +13,11 @@ from backend.api.resources import (
 )
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import User
-from backend.documents.catalog import DocumentRecord, IndexJobStatus
+from backend.documents.catalog import (
+    CleanupJobStatus,
+    DocumentRecord,
+)
 from backend.infra.auth import require_admin
-from backend.jobs import DELETE_STEPS, delete_job_manager
 from backend.schemas import (
     DocumentDeleteJobResponse,
     DocumentDeleteResponse,
@@ -24,13 +25,11 @@ from backend.schemas import (
     DocumentInfo,
     DocumentListResponse,
     DocumentUploadJobResponse,
-    DocumentUploadResponse,
     DocumentUploadStartResponse,
 )
-from backend.security.uploads import StoredUpload, store_upload
+from backend.security.uploads import store_upload
 
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documents"])
 
 
@@ -103,81 +102,152 @@ def _list_documents_sync() -> list[DocumentInfo]:
         offset += len(page)
 
 
-def _store_document_sync(stored: StoredUpload, owner_id: int):
-    reservation = document_publication.submit(stored, owner_id)
-    return document_publication.run(reservation)
+_DELETE_STEPS = (
+    ("prepare", "原子撤销检索范围"),
+    ("milvus", "清理向量索引"),
+    ("parent_store", "清理父级分块与缓存"),
+    ("object_store", "清理版本对象"),
+    ("finalize", "确认清理状态"),
+)
 
 
-def _process_upload_job(job_id: str) -> None:
-    for attempt in range(2):
-        try:
-            document_publication.run(job_id)
-            return
-        except Exception as exc:
-            public_error = getattr(exc, "public_error", None)
-            if attempt == 0:
-                try:
-                    job = document_catalog.get_job(
-                        job_id=job_id,
-                        tenant_id=document_publication.config.tenant_id,
-                    )
-                except Exception:
-                    job = None
-                if job is not None and job.status == IndexJobStatus.STAGED:
-                    continue
-            logger.warning(
-                "background document publication failed",
-                extra={
-                    "job_id": job_id,
-                    "error_code": getattr(
-                        public_error,
-                        "code",
-                        "INDEX_BUILD_FAILED",
-                    ),
-                },
-            )
-            return
+def _delete_job_view_sync(retirement_job_id: str) -> dict:
+    tenant_id = document_publication.config.tenant_id
+    operation = document_catalog.get_retirement_job(
+        job_id=retirement_job_id,
+        tenant_id=tenant_id,
+    )
+    jobs = document_catalog.list_cleanup_jobs_for_versions(
+        document_version_ids=operation.cleanup_version_ids,
+        tenant_id=tenant_id,
+    )
+    expected_version_ids = tuple(dict.fromkeys(operation.cleanup_version_ids))
+    actual_version_ids = {item.version.id for item in jobs}
+    missing_version_ids = tuple(
+        version_id
+        for version_id in expected_version_ids
+        if version_id not in actual_version_ids
+    )
+    operation_failed = bool(operation.error_code)
+    ledger_incomplete = bool(missing_version_ids)
+    view_failure_code = operation.error_code or (
+        "CLEANUP_JOB_MISSING" if ledger_incomplete else None
+    )
+    completed = not view_failure_code and all(
+        item.job.status == CleanupJobStatus.COMPLETED for item in jobs
+    )
+    dead_letter_jobs = [
+        item for item in jobs if item.job.status == CleanupJobStatus.DEAD_LETTER
+    ]
+    dead_letter = bool(dead_letter_jobs)
+    if operation_failed:
+        status = "failed"
+        message = "文档删除 scope 未能完整持久化，请重试"
+    elif ledger_incomplete:
+        status = "failed"
+        message = "文档清理账本不完整，不能确认物理数据已清理"
+    elif completed:
+        status = "completed"
+        message = "文档物理数据已完成清理"
+    elif dead_letter:
+        status = "cleanup_pending"
+        message = "文档已不可检索，物理清理进入 dead-letter"
+    else:
+        status = "running"
+        message = "文档已不可检索，持久化 worker 正在清理物理数据"
+
+    diagnostic = next(
+        iter(dead_letter_jobs),
+        next(
+            (item for item in jobs if item.job.status != CleanupJobStatus.COMPLETED),
+            jobs[-1] if jobs else None,
+        ),
+    )
+    if operation_failed:
+        current_step = "prepare"
+    elif ledger_incomplete:
+        current_step = "finalize"
+    elif completed:
+        current_step = "finalize"
+    elif diagnostic is None:
+        current_step = "milvus"
+    else:
+        raw_step = (
+            diagnostic.job.step_state.get("failed_step")
+            if diagnostic.job.status == CleanupJobStatus.DEAD_LETTER
+            else diagnostic.job.current_step
+        )
+        current_step = (
+            raw_step if raw_step in {key for key, _label in _DELETE_STEPS} else "milvus"
+        )
+    current_index = next(
+        index
+        for index, (key, _label) in enumerate(_DELETE_STEPS)
+        if key == current_step
+    )
+    steps = []
+    for index, (key, label) in enumerate(_DELETE_STEPS):
+        if completed:
+            step_status, percent = "completed", 100
+        elif operation_failed:
+            step_status = "failed" if key == "prepare" else "pending"
+            percent = 100 if key == "prepare" else 0
+        elif ledger_incomplete:
+            step_status = "failed" if key == "finalize" else "pending"
+            percent = 100 if key in {"prepare", "finalize"} else 0
+        elif index < current_index:
+            step_status, percent = "completed", 100
+        elif index == current_index:
+            step_status = "failed" if dead_letter else "running"
+            percent = 100 if dead_letter else 20
+        else:
+            step_status, percent = "pending", 0
+        steps.append(
+            {
+                "key": key,
+                "label": label,
+                "percent": percent,
+                "status": step_status,
+                "message": message if index == current_index else "",
+            }
+        )
+    updated_at = max([operation.updated_at, *(item.job.updated_at for item in jobs)])
+    return {
+        "job_id": operation.id,
+        "cleanup_job_id": diagnostic.job.id if diagnostic else None,
+        "dead_letter_job_ids": [item.job.id for item in dead_letter_jobs],
+        "document_id": operation.document_id,
+        "document_version_id": diagnostic.version.id if diagnostic else None,
+        "filename": operation.canonical_name,
+        "status": status,
+        "current_step": current_step,
+        "message": message,
+        "total_chunks": len(operation.cleanup_version_ids),
+        "processed_chunks": sum(
+            item.job.status == CleanupJobStatus.COMPLETED for item in jobs
+        ),
+        "error": view_failure_code
+        or (diagnostic.job.error_code if diagnostic else None),
+        "attempts": diagnostic.job.attempts if diagnostic else 0,
+        "max_attempts": diagnostic.job.max_attempts if diagnostic else 0,
+        "execution_fence": diagnostic.job.execution_fence if diagnostic else 0,
+        "next_retry_at": (
+            diagnostic.job.next_retry_at.isoformat()
+            if diagnostic and diagnostic.job.next_retry_at
+            else None
+        ),
+        "created_at": operation.created_at.isoformat(),
+        "updated_at": updated_at.isoformat(),
+        "steps": steps,
+    }
 
 
-def _process_delete_job(job_id: str, filename: str, owner_id: int) -> None:
-    try:
-        outcome = delete_document_transactionally(
-            filename,
-            delete_job_manager,
-            job_id,
-            owner_id,
-        )
-        if outcome.cleanup_pending:
-            delete_job_manager.mark_cleanup_pending(
-                job_id,
-                outcome.cleanup_step or "finalize",
-                "文档已不可检索，物理数据清理待重试",
-            )
-            return
-        delete_job_manager.complete_job(
-            job_id,
-            f"已从目录撤销 {filename}，清理向量数据 {outcome.chunks_deleted} 条",
-        )
-    except AppError as exc:
-        job = delete_job_manager.get_job(job_id)
-        current_step = job.get("current_step", "prepare") if job else "prepare"
-        delete_job_manager.fail_job(
-            job_id,
-            current_step,
-            (
-                "legacy 删除封印未完成，请重试删除"
-                if exc.stage == "catalog_tombstone"
-                else "文档目录撤销失败，请稍后重试"
-            ),
-        )
-    except Exception:
-        job = delete_job_manager.get_job(job_id)
-        current_step = job.get("current_step", "prepare") if job else "prepare"
-        delete_job_manager.fail_job(
-            job_id,
-            current_step,
-            "文档已撤销或清理失败，请稍后重试",
-        )
+def _list_delete_job_views_sync() -> list[dict]:
+    operations = document_catalog.list_retirement_jobs(
+        tenant_id=document_publication.config.tenant_id,
+        limit=100,
+    )
+    return [_delete_job_view_sync(operation.id) for operation in operations]
 
 
 @router.get("/documents", response_model=DocumentListResponse)
@@ -197,9 +267,12 @@ async def list_documents(_: User = Depends(require_admin)):
         ) from exc
 
 
-@router.post("/documents/upload/async", response_model=DocumentUploadStartResponse)
+@router.post(
+    "/documents/upload/async",
+    response_model=DocumentUploadStartResponse,
+    status_code=202,
+)
 async def upload_document_async(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: User = Depends(require_admin),
 ):
@@ -221,16 +294,10 @@ async def upload_document_async(
             retryable=True,
         ) from exc
 
-    if reservation.job.status in {
-        IndexJobStatus.PENDING,
-        IndexJobStatus.RETRY_WAIT,
-        IndexJobStatus.STAGED,
-    }:
-        background_tasks.add_task(_process_upload_job, reservation.job.id)
     message = (
         "相同内容与构建版本已发布，无需重复入库"
         if reservation.already_current
-        else "文件已上传，候选版本正在后台构建；发布前旧版本保持可用"
+        else "文件已上传，候选版本已进入持久化 worker 队列；发布前旧版本保持可用"
     )
     return DocumentUploadStartResponse(
         job_id=reservation.job.id,
@@ -265,36 +332,32 @@ async def list_upload_jobs(_: User = Depends(require_admin)):
 @router.delete(
     "/documents/delete/async/{filename}",
     response_model=DocumentDeleteStartResponse,
+    status_code=202,
 )
 async def delete_document_async(
     filename: str,
-    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
 ):
-    job = delete_job_manager.create_job(
+    outcome = await asyncio.to_thread(
+        delete_document_transactionally,
         filename,
-        steps=DELETE_STEPS,
-        current_step="prepare",
-        message="等待从目录撤销",
-        completion_step="finalize",
+        owner_id=user.id,
     )
-    delete_job_manager.update_step(
-        job["job_id"],
-        "prepare",
-        1,
-        "running",
-        "删除任务已提交",
-    )
-    background_tasks.add_task(
-        _process_delete_job,
-        job["job_id"],
-        filename,
-        user.id,
-    )
+    if not outcome.retirement_job_id:
+        raise AppError(
+            ErrorCode.STORAGE_UNAVAILABLE,
+            "删除任务身份未能持久化",
+            status_code=503,
+            retryable=True,
+        )
     return DocumentDeleteStartResponse(
-        job_id=job["job_id"],
+        job_id=outcome.retirement_job_id,
         filename=filename,
-        message=f"正在从检索目录撤销 {filename}",
+        message=(
+            f"{filename} 已从检索目录撤销，物理清理已进入持久化队列"
+            if outcome.cleanup_pending
+            else f"{filename} 已从检索目录撤销，无待清理数据"
+        ),
     )
 
 
@@ -303,51 +366,39 @@ async def delete_document_async(
     response_model=DocumentDeleteJobResponse,
 )
 async def get_delete_job(job_id: str, _: User = Depends(require_admin)):
-    job = delete_job_manager.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="删除任务不存在或已过期")
-    return DocumentDeleteJobResponse(**job)
+    return DocumentDeleteJobResponse(
+        **await asyncio.to_thread(_delete_job_view_sync, job_id)
+    )
 
 
-@router.post("/documents/upload", response_model=DocumentUploadResponse)
+@router.get(
+    "/documents/delete/jobs",
+    response_model=list[DocumentDeleteJobResponse],
+)
+async def list_delete_jobs(_: User = Depends(require_admin)):
+    jobs = await asyncio.to_thread(_list_delete_job_views_sync)
+    return [DocumentDeleteJobResponse(**job) for job in jobs]
+
+
+@router.post(
+    "/documents/upload",
+    response_model=DocumentUploadStartResponse,
+    status_code=202,
+    deprecated=True,
+)
 async def upload_document(
     file: UploadFile = File(...),
     user: User = Depends(require_admin),
 ):
-    try:
-        await asyncio.to_thread(ensure_upload_dir)
-        stored = await store_upload(file)
-        outcome = await asyncio.to_thread(_store_document_sync, stored, user.id)
-        return DocumentUploadResponse(
-            filename=outcome.document.canonical_name,
-            chunks_processed=outcome.vector_chunk_count,
-            document_id=outcome.document.id,
-            document_version_id=outcome.version.id,
-            version_number=outcome.version.version_number,
-            published=outcome.published,
-            reused_current=outcome.reused_current,
-            message=(
-                "相同内容与构建版本已存在，沿用当前版本"
-                if outcome.reused_current
-                else (
-                    f"版本 v{outcome.version.version_number} 已原子发布："
-                    f"叶子分块 {outcome.vector_chunk_count} 个，"
-                    f"父级分块 {outcome.parent_chunk_count} 个"
-                )
-            ),
-        )
-    except AppError:
-        raise
-    except Exception as exc:
-        raise AppError(
-            ErrorCode.STORAGE_UNAVAILABLE,
-            "文档上传失败，旧版本仍保持可用",
-            status_code=503,
-            retryable=True,
-        ) from exc
+    return await upload_document_async(file=file, user=user)
 
 
-@router.delete("/documents/{filename}", response_model=DocumentDeleteResponse)
+@router.delete(
+    "/documents/{filename}",
+    response_model=DocumentDeleteResponse,
+    status_code=202,
+    deprecated=True,
+)
 async def delete_document(filename: str, user: User = Depends(require_admin)):
     try:
         outcome = await asyncio.to_thread(
@@ -355,15 +406,23 @@ async def delete_document(filename: str, user: User = Depends(require_admin)):
             filename,
             owner_id=user.id,
         )
+        if not outcome.retirement_job_id:
+            raise AppError(
+                ErrorCode.STORAGE_UNAVAILABLE,
+                "删除任务身份未能持久化",
+                status_code=503,
+                retryable=True,
+            )
         return DocumentDeleteResponse(
             filename=filename,
+            job_id=outcome.retirement_job_id,
             document_id=outcome.document_id,
             chunks_deleted=outcome.chunks_deleted,
             status=("cleanup_pending" if outcome.cleanup_pending else "completed"),
             cleanup_pending=outcome.cleanup_pending,
             error_code=outcome.cleanup_error_code,
             message=(
-                "文档已不可检索，物理数据清理待重试"
+                "文档已不可检索，物理数据清理已进入持久化队列"
                 if outcome.cleanup_pending
                 else (
                     f"文档 {filename} 已从目录撤销，并清理 "

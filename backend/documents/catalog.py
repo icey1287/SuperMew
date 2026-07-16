@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Callable
 from uuid import uuid4
 
-from sqlalchemy import update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,10 +20,13 @@ from backend.core.errors import AppError, ErrorCode
 from backend.db.models import (
     Document,
     DocumentCatalogState,
+    DocumentCleanupJob,
+    DocumentRetirementJob,
     DocumentVersion,
     IndexJob,
     IndexManifest,
     KnowledgeBase,
+    WorkerHeartbeat,
     utcnow,
 )
 from backend.infra.database import SessionLocal
@@ -67,6 +71,21 @@ class IndexJobStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     DEAD_LETTER = "dead_letter"
+
+
+class CleanupJobStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    RETRY_WAIT = "retry_wait"
+    COMPLETED = "completed"
+    DEAD_LETTER = "dead_letter"
+
+
+class WorkerStatus(StrEnum):
+    STARTING = "starting"
+    RUNNING = "running"
+    DRAINING = "draining"
+    STOPPED = "stopped"
 
 
 _JOB_TRANSITIONS: dict[str, set[str]] = {
@@ -198,6 +217,8 @@ class IndexJobRecord:
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    execution_fence: int = 0
+    started_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +260,58 @@ class VersionBuild:
 
 
 @dataclass(frozen=True)
+class IndexJobExecution:
+    worker_id: str
+    execution_fence: int
+
+
+@dataclass(frozen=True)
+class CleanupJobExecution:
+    worker_id: str
+    execution_fence: int
+
+
+@dataclass(frozen=True)
+class CleanupJobRecord:
+    id: str
+    document_version_id: str
+    status: str
+    current_step: str
+    attempts: int
+    max_attempts: int
+    owner_worker_id: str | None
+    execution_fence: int
+    lease_expires_at: datetime | None
+    heartbeat_at: datetime | None
+    next_retry_at: datetime | None
+    error_code: str | None
+    step_state: dict
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class CleanupBuild:
+    job: CleanupJobRecord
+    document: DocumentRecord
+    version: DocumentVersionRecord
+
+
+@dataclass(frozen=True)
+class WorkerReadiness:
+    worker_kind: str
+    ready: bool
+    fresh_workers: int
+    latest_heartbeat_at: datetime | None
+    queue_counts: dict[str, int]
+    oldest_ready_at: datetime | None
+    incompatible_fresh_workers: int
+    expected_build_fingerprint: str | None
+
+
+@dataclass(frozen=True)
 class PublicationResult:
     document: DocumentRecord
     version: DocumentVersionRecord
@@ -255,6 +328,20 @@ class RetirementResult:
     found: bool
     already_deleted: bool
     cleanup_versions: tuple[DocumentVersionRecord, ...]
+    retirement_job_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RetirementJobRecord:
+    id: str
+    document_id: str
+    tenant_id: str
+    canonical_name: str
+    publication_fence: int
+    cleanup_version_ids: tuple[str, ...]
+    error_code: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -361,6 +448,23 @@ def _cleanup_at(now: datetime, grace: timedelta) -> datetime:
     return now + grace
 
 
+def _database_now(db: Session) -> datetime:
+    """Use the database clock for lease and readiness comparisons."""
+
+    value = db.execute(select(func.current_timestamp())).scalar_one()
+    return _utc_naive(value) if isinstance(value, datetime) else utcnow()
+
+
+def _utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _lease_clock(db: Session, override: datetime | None) -> datetime:
+    return _utc_naive(override) if override is not None else _database_now(db)
+
+
 class DocumentCatalog:
     """文档目录、候选构建与原子发布的唯一持久化 Interface。"""
 
@@ -427,6 +531,7 @@ class DocumentCatalog:
             attempts=row.attempts,
             max_attempts=row.max_attempts,
             publication_fence=row.publication_fence,
+            execution_fence=row.execution_fence,
             expected_current_version_id=row.expected_current_version_id,
             owner_worker_id=row.owner_worker_id,
             lease_expires_at=row.lease_expires_at,
@@ -434,7 +539,44 @@ class DocumentCatalog:
             next_retry_at=row.next_retry_at,
             error_code=row.error_code,
             step_state=dict(row.step_state_json or {}),
+            started_at=row.started_at,
             finished_at=row.finished_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    @staticmethod
+    def _cleanup_job_record(row: DocumentCleanupJob) -> CleanupJobRecord:
+        return CleanupJobRecord(
+            id=row.id,
+            document_version_id=row.document_version_id,
+            status=row.status,
+            current_step=row.current_step,
+            attempts=row.attempts,
+            max_attempts=row.max_attempts,
+            owner_worker_id=row.owner_worker_id,
+            execution_fence=row.execution_fence,
+            lease_expires_at=row.lease_expires_at,
+            heartbeat_at=row.heartbeat_at,
+            next_retry_at=row.next_retry_at,
+            error_code=row.error_code,
+            step_state=dict(row.step_state_json or {}),
+            started_at=row.started_at,
+            finished_at=row.finished_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    @staticmethod
+    def _retirement_job_record(row: DocumentRetirementJob) -> RetirementJobRecord:
+        return RetirementJobRecord(
+            id=row.id,
+            document_id=row.document_id,
+            tenant_id=row.tenant_id,
+            canonical_name=row.canonical_name,
+            publication_fence=row.publication_fence,
+            cleanup_version_ids=tuple(row.cleanup_version_ids_json or ()),
+            error_code=row.error_code,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
@@ -443,6 +585,146 @@ class DocumentCatalog:
     def _bump_revision(knowledge_base: KnowledgeBase, now: datetime) -> None:
         knowledge_base.catalog_revision += 1
         knowledge_base.updated_at = now
+
+    @staticmethod
+    def _assert_index_execution(
+        job: IndexJob,
+        execution: IndexJobExecution | None,
+        *,
+        now: datetime,
+    ) -> None:
+        if execution is None:
+            if job.owner_worker_id is None:
+                return
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "索引任务已由 worker 领取，写入必须携带 execution fence",
+                status_code=409,
+            )
+        if (
+            job.owner_worker_id != execution.worker_id
+            or job.execution_fence != execution.execution_fence
+            or job.lease_expires_at is None
+            or _utc_naive(job.lease_expires_at) <= now
+        ):
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "索引任务 execution lease 已失效",
+                status_code=409,
+                safe_details={"current_execution_fence": job.execution_fence},
+            )
+
+    @staticmethod
+    def _assert_cleanup_execution(
+        job: DocumentCleanupJob,
+        execution: CleanupJobExecution,
+        *,
+        now: datetime,
+    ) -> None:
+        if (
+            job.owner_worker_id != execution.worker_id
+            or job.execution_fence != execution.execution_fence
+            or job.status != CleanupJobStatus.RUNNING
+            or job.lease_expires_at is None
+            or _utc_naive(job.lease_expires_at) <= now
+        ):
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "清理任务 execution lease 已失效",
+                status_code=409,
+                safe_details={"current_execution_fence": job.execution_fence},
+            )
+
+    @staticmethod
+    def _ensure_cleanup_job(
+        db: Session,
+        version: DocumentVersion,
+        *,
+        next_retry_at: datetime,
+        max_attempts: int = 3,
+    ) -> DocumentCleanupJob:
+        job = (
+            db.query(DocumentCleanupJob)
+            .filter(DocumentCleanupJob.document_version_id == version.id)
+            .first()
+        )
+        if job is not None:
+            if job.status in {
+                CleanupJobStatus.PENDING,
+                CleanupJobStatus.RETRY_WAIT,
+            } and (job.next_retry_at is None or next_retry_at < job.next_retry_at):
+                job.next_retry_at = next_retry_at
+                job.updated_at = utcnow()
+            return job
+        created_at = utcnow()
+        job = DocumentCleanupJob(
+            id=_new_id("cleanup"),
+            document_version_id=version.id,
+            status=CleanupJobStatus.PENDING,
+            current_step="pending",
+            attempts=0,
+            max_attempts=max(max_attempts, 1),
+            execution_fence=0,
+            next_retry_at=next_retry_at,
+            step_state_json={},
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        db.add(job)
+        return job
+
+    @staticmethod
+    def _upsert_retirement_job(
+        db: Session,
+        *,
+        retirement_job_id: str | None,
+        document: Document,
+        cleanup_versions: Iterable[DocumentVersion],
+        publication_fence: int,
+        now: datetime,
+        error_code: str | None = None,
+    ) -> str | None:
+        if retirement_job_id is None:
+            return None
+        job_id = _required_text(retirement_job_id, "retirement_job_id", 64)
+        cleanup_ids = {version.id for version in cleanup_versions}
+        row = (
+            db.query(DocumentRetirementJob)
+            .filter(DocumentRetirementJob.id == job_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            row = DocumentRetirementJob(
+                id=job_id,
+                document_id=document.id,
+                tenant_id=document.tenant_id,
+                canonical_name=document.canonical_name,
+                publication_fence=publication_fence,
+                cleanup_version_ids_json=sorted(cleanup_ids),
+                error_code=error_code,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+            return job_id
+        if (
+            row.document_id != document.id
+            or row.tenant_id != document.tenant_id
+            or row.canonical_name != document.canonical_name
+        ):
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "retirement job identity 与文档不一致",
+                status_code=409,
+            )
+        row.publication_fence = max(row.publication_fence, publication_fence)
+        row.cleanup_version_ids_json = sorted(
+            set(row.cleanup_version_ids_json or ()) | cleanup_ids
+        )
+        row.error_code = error_code
+        row.updated_at = now
+        return job_id
 
     @staticmethod
     def _append_legacy_tombstone(
@@ -814,7 +1096,7 @@ class DocumentCatalog:
                     .with_for_update()
                     .first()
                 )
-                now = utcnow()
+                now = _database_now(db)
                 if (
                     row is None
                     or row.legacy_collection != collection
@@ -873,7 +1155,7 @@ class DocumentCatalog:
                     .with_for_update()
                     .first()
                 )
-                now = utcnow()
+                now = _database_now(db)
                 if row is None:
                     row = DocumentCatalogState(
                         tenant_id=tenant,
@@ -1267,8 +1549,8 @@ class DocumentCatalog:
                     )
                     db.add(job)
                     job.status = IndexJobStatus.PENDING
-                    job.current_step = "uploaded"
-                    job.progress = 0
+                    job.current_step = "upload"
+                    job.progress = 5
                     job.publication_fence = document.publication_fence
                     job.expected_current_version_id = document.current_version_id
                     job.owner_worker_id = None
@@ -1281,6 +1563,9 @@ class DocumentCatalog:
                     job.step_state_json = {
                         "build_fingerprint": profile.fingerprint,
                         "storage_layout": StorageLayout.VERSIONED,
+                        "message": "文件已保存，候选版本等待持久化 worker 构建",
+                        "active_step": "upload",
+                        "active_step_percent": 100,
                     }
                     job.updated_at = now
                     self._bump_revision(knowledge_base, now)
@@ -1323,6 +1608,7 @@ class DocumentCatalog:
         version.superseded_at = now
         version.cleanup_after = cleanup_after
         version.updated_at = now
+        cleanup_attempts = 3
         if cancel_job:
             job = DocumentCatalog._job_for_version(db, version.id)
             if job and job.status not in {
@@ -1337,6 +1623,14 @@ class DocumentCatalog:
                 job.owner_worker_id = None
                 job.lease_expires_at = None
                 job.updated_at = now
+            if job is not None:
+                cleanup_attempts = job.max_attempts
+        DocumentCatalog._ensure_cleanup_job(
+            db,
+            version,
+            next_retry_at=cleanup_after,
+            max_attempts=cleanup_attempts,
+        )
 
     @staticmethod
     def _manifest_entry(value: ManifestEntry | Mapping) -> ManifestEntry:
@@ -1375,6 +1669,7 @@ class DocumentCatalog:
         entries: Iterable[ManifestEntry | Mapping],
         vector_chunk_count: int | None = None,
         parent_chunk_count: int | None = None,
+        execution: IndexJobExecution | None = None,
     ) -> VersionBuild:
         normalized: dict[tuple[str, str], ManifestEntry] = {}
         for value in entries:
@@ -1417,13 +1712,14 @@ class DocumentCatalog:
                 job, version, document, knowledge_base = self._job_graph(
                     db, job_id=job_id, tenant_id=None, lock=True
                 )
+                now = _database_now(db)
+                self._assert_index_execution(job, execution, now=now)
                 self._assert_candidate(
                     document,
                     job,
                     version,
                     publication_fence=publication_fence,
                 )
-                now = utcnow()
                 db.query(IndexManifest).filter(
                     IndexManifest.document_version_id == version.id
                 ).delete(synchronize_session=False)
@@ -1511,6 +1807,7 @@ class DocumentCatalog:
         publication_fence: int,
         expected_current_version_id: str | None,
         cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
+        execution: IndexJobExecution | None = None,
     ) -> PublicationResult:
         db = self._session_factory()
         try:
@@ -1529,6 +1826,8 @@ class DocumentCatalog:
                         previous_version=None,
                         published=False,
                     )
+                now = _database_now(db)
+                self._assert_index_execution(job, execution, now=now)
                 self._assert_candidate(
                     document,
                     job,
@@ -1578,7 +1877,6 @@ class DocumentCatalog:
                     if expected_current_version_id is None
                     else Document.current_version_id == expected_current_version_id
                 )
-                now = utcnow()
                 result = db.execute(
                     update(Document)
                     .where(
@@ -1626,6 +1924,7 @@ class DocumentCatalog:
                 job.progress = 100
                 job.owner_worker_id = None
                 job.lease_expires_at = None
+                job.next_retry_at = None
                 job.finished_at = now
                 job.updated_at = now
                 self._bump_revision(knowledge_base, now)
@@ -1642,7 +1941,7 @@ class DocumentCatalog:
         finally:
             db.close()
 
-    def _fail_locked(
+    def _dead_letter_locked(
         self,
         db: Session,
         *,
@@ -1653,37 +1952,37 @@ class DocumentCatalog:
         publication_fence: int,
         error_code: str,
         error_detail_redacted: str | None,
-        step_state_patch: Mapping | None = None,
+        now: datetime,
     ) -> IndexJobRecord:
         if publication_fence != job.publication_fence:
             raise AppError(
                 ErrorCode.CONFLICT,
-                "索引任务 fencing token 已失效",
+                "索引任务 publication fence 已失效",
                 status_code=409,
             )
-        if job.status == IndexJobStatus.FAILED:
+        if job.status == IndexJobStatus.DEAD_LETTER:
             return self._job_record(job, document=document)
         if job.status in {
             IndexJobStatus.COMPLETED,
+            IndexJobStatus.FAILED,
             IndexJobStatus.CANCELLED,
-            IndexJobStatus.DEAD_LETTER,
         }:
             raise AppError(
                 ErrorCode.CONFLICT,
-                f"终态任务 {job.status} 不能改写为 failed",
+                f"终态任务 {job.status} 不能改写为 dead_letter",
                 status_code=409,
             )
-        now = utcnow()
-        job.status = IndexJobStatus.FAILED
-        job.current_step = "failed"
+        job.status = IndexJobStatus.DEAD_LETTER
+        job.current_step = "dead_letter"
         job.error_code = error_code
         job.error_detail_redacted = error_detail_redacted
         job.step_state_json = {
             **(job.step_state_json or {}),
-            **dict(step_state_patch or {}),
+            "last_error_code": error_code,
         }
         job.owner_worker_id = None
         job.lease_expires_at = None
+        job.next_retry_at = None
         job.finished_at = now
         job.updated_at = now
         active_candidate = (
@@ -1715,7 +2014,7 @@ class DocumentCatalog:
             if result.rowcount != 1:
                 raise AppError(
                     ErrorCode.CONFLICT,
-                    "失败状态 CAS 冲突",
+                    "dead-letter 清除 pending_version CAS 冲突",
                     status_code=409,
                     retryable=True,
                 )
@@ -1728,7 +2027,112 @@ class DocumentCatalog:
             version.index_cleaned_at = None
             version.cleanup_error_code = None
             version.updated_at = now
+        self._ensure_cleanup_job(
+            db,
+            version,
+            next_retry_at=now,
+            max_attempts=job.max_attempts,
+        )
         self._bump_revision(knowledge_base, now)
+        db.flush()
+        return self._job_record(job, document=document)
+
+    def _fail_locked(
+        self,
+        db: Session,
+        *,
+        job: IndexJob,
+        version: DocumentVersion,
+        document: Document,
+        knowledge_base: KnowledgeBase,
+        publication_fence: int,
+        error_code: str,
+        error_detail_redacted: str | None,
+        step_state_patch: Mapping | None = None,
+        execution: IndexJobExecution | None = None,
+        now: datetime | None = None,
+    ) -> IndexJobRecord:
+        if publication_fence != job.publication_fence:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "索引任务 fencing token 已失效",
+                status_code=409,
+            )
+        clock = _lease_clock(db, now)
+        if job.status == IndexJobStatus.FAILED and execution is None:
+            return self._job_record(job, document=document)
+        self._assert_index_execution(job, execution, now=clock)
+        if job.status in {
+            IndexJobStatus.COMPLETED,
+            IndexJobStatus.CANCELLED,
+            IndexJobStatus.DEAD_LETTER,
+        }:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                f"终态任务 {job.status} 不能改写为 failed",
+                status_code=409,
+            )
+        job.status = IndexJobStatus.FAILED
+        job.current_step = "failed"
+        job.error_code = error_code
+        job.error_detail_redacted = error_detail_redacted
+        job.step_state_json = {
+            **(job.step_state_json or {}),
+            **dict(step_state_patch or {}),
+        }
+        job.owner_worker_id = None
+        job.lease_expires_at = None
+        job.finished_at = clock
+        job.updated_at = clock
+        active_candidate = (
+            document.pending_version_id == version.id
+            and document.publication_fence == publication_fence
+        )
+        if active_candidate:
+            version.status = DocumentVersionStatus.FAILED
+            version.error_code = error_code
+            version.error_detail_redacted = error_detail_redacted
+            version.cleanup_after = clock
+            version.index_cleaned_at = None
+            version.cleanup_error_code = None
+            version.updated_at = clock
+            result = db.execute(
+                update(Document)
+                .where(
+                    Document.id == document.id,
+                    Document.pending_version_id == version.id,
+                    Document.publication_fence == publication_fence,
+                )
+                .values(
+                    pending_version_id=None,
+                    status=("ready" if document.current_version_id else "failed"),
+                    updated_at=clock,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise AppError(
+                    ErrorCode.CONFLICT,
+                    "失败状态 CAS 冲突",
+                    status_code=409,
+                    retryable=True,
+                )
+            db.expire(document)
+        elif version.status != DocumentVersionStatus.SUPERSEDED:
+            version.status = DocumentVersionStatus.FAILED
+            version.error_code = error_code
+            version.error_detail_redacted = error_detail_redacted
+            version.cleanup_after = clock
+            version.index_cleaned_at = None
+            version.cleanup_error_code = None
+            version.updated_at = clock
+        self._ensure_cleanup_job(
+            db,
+            version,
+            next_retry_at=clock,
+            max_attempts=job.max_attempts,
+        )
+        self._bump_revision(knowledge_base, clock)
         db.flush()
         return self._job_record(job, document=document)
 
@@ -1739,6 +2143,7 @@ class DocumentCatalog:
         publication_fence: int,
         error_code: str,
         error_detail_redacted: str | None = None,
+        execution: IndexJobExecution | None = None,
     ) -> IndexJobRecord:
         code = _required_text(error_code, "error_code", 64)
         detail = str(error_detail_redacted or "")[:2000] or None
@@ -1757,6 +2162,7 @@ class DocumentCatalog:
                     publication_fence=publication_fence,
                     error_code=code,
                     error_detail_redacted=detail,
+                    execution=execution,
                 )
         finally:
             db.close()
@@ -1771,6 +2177,7 @@ class DocumentCatalog:
         progress: int | None = None,
         step_state_patch: Mapping | None = None,
         increment_attempts: bool = False,
+        execution: IndexJobExecution | None = None,
     ) -> IndexJobRecord:
         target_status = str(status) if status is not None else None
         if target_status is not None and target_status not in _JOB_TRANSITIONS:
@@ -1803,6 +2210,8 @@ class DocumentCatalog:
                         "索引任务 fencing token 已失效",
                         status_code=409,
                     )
+                clock = _database_now(db)
+                self._assert_index_execution(job, execution, now=clock)
                 next_status = target_status or job.status
                 if next_status not in _JOB_TRANSITIONS.get(job.status, set()):
                     raise AppError(
@@ -1827,6 +2236,8 @@ class DocumentCatalog:
                         error_code=code,
                         error_detail_redacted=detail,
                         step_state_patch=patch,
+                        execution=execution,
+                        now=clock,
                     )
                 if next_status == IndexJobStatus.COMPLETED and not (
                     document.current_version_id == version.id
@@ -1858,7 +2269,7 @@ class DocumentCatalog:
                         "progress 不能倒退",
                         status_code=409,
                     )
-                now = utcnow()
+                now = clock
                 job.status = next_status
                 if step is not None:
                     job.current_step = step
@@ -1924,6 +2335,13 @@ class DocumentCatalog:
                             status_code=409,
                             retryable=True,
                         )
+                    if next_status == IndexJobStatus.DEAD_LETTER:
+                        self._ensure_cleanup_job(
+                            db,
+                            version,
+                            next_retry_at=now,
+                            max_attempts=job.max_attempts,
+                        )
                     job.finished_at = now
                     job.owner_worker_id = None
                     job.lease_expires_at = None
@@ -1981,6 +2399,389 @@ class DocumentCatalog:
                 .all()
             )
             return [self._job_record(job, document=document) for job, document in rows]
+        finally:
+            db.close()
+
+    def _version_build(
+        self,
+        db: Session,
+        *,
+        job: IndexJob,
+        version: DocumentVersion,
+        document: Document,
+    ) -> VersionBuild:
+        return VersionBuild(
+            job=self._job_record(job, document=document),
+            document=self._document_records(db, [document])[0],
+            version=self._version_record(version),
+        )
+
+    def claim_index_job(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        build_fingerprint: str | None = None,
+        now: datetime | None = None,
+    ) -> VersionBuild | None:
+        worker = _required_text(worker_id, "worker_id", 128)
+        capability = (
+            _content_hash(build_fingerprint) if build_fingerprint is not None else None
+        )
+        if lease_seconds < 1:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "lease_seconds 必须大于 0",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            with db.begin():
+                clock = _lease_clock(db, now)
+                graph = (
+                    db.query(IndexJob, DocumentVersion, Document, KnowledgeBase)
+                    .join(
+                        DocumentVersion,
+                        DocumentVersion.id == IndexJob.document_version_id,
+                    )
+                    .join(Document, Document.id == DocumentVersion.document_id)
+                    .join(
+                        KnowledgeBase,
+                        KnowledgeBase.id == Document.knowledge_base_id,
+                    )
+                )
+                if capability is not None:
+                    graph = graph.filter(
+                        or_(
+                            IndexJob.status == IndexJobStatus.STAGED,
+                            DocumentVersion.build_fingerprint == capability,
+                        )
+                    )
+                owned = (
+                    graph.filter(
+                        IndexJob.owner_worker_id == worker,
+                        IndexJob.status.in_(
+                            {IndexJobStatus.RUNNING, IndexJobStatus.STAGED}
+                        ),
+                        IndexJob.lease_expires_at.is_not(None),
+                        IndexJob.lease_expires_at > clock,
+                    )
+                    .order_by(IndexJob.created_at.asc(), IndexJob.id.asc())
+                    .with_for_update(skip_locked=True)
+                    .first()
+                )
+                if owned is not None:
+                    job, version, document, _knowledge_base = owned
+                    job.heartbeat_at = clock
+                    job.lease_expires_at = clock + timedelta(seconds=lease_seconds)
+                    job.updated_at = clock
+                    db.flush()
+                    return self._version_build(
+                        db,
+                        job=job,
+                        version=version,
+                        document=document,
+                    )
+
+                ready = or_(
+                    and_(
+                        IndexJob.status == IndexJobStatus.PENDING,
+                        or_(
+                            IndexJob.owner_worker_id.is_(None),
+                            IndexJob.lease_expires_at.is_(None),
+                            IndexJob.lease_expires_at <= clock,
+                        ),
+                    ),
+                    and_(
+                        IndexJob.status == IndexJobStatus.RETRY_WAIT,
+                        IndexJob.next_retry_at.is_not(None),
+                        IndexJob.next_retry_at <= clock,
+                        or_(
+                            IndexJob.owner_worker_id.is_(None),
+                            IndexJob.lease_expires_at.is_(None),
+                            IndexJob.lease_expires_at <= clock,
+                        ),
+                    ),
+                    and_(
+                        IndexJob.status == IndexJobStatus.STAGED,
+                        or_(
+                            IndexJob.next_retry_at.is_(None),
+                            IndexJob.next_retry_at <= clock,
+                        ),
+                        or_(
+                            IndexJob.owner_worker_id.is_(None),
+                            IndexJob.lease_expires_at.is_(None),
+                            IndexJob.lease_expires_at <= clock,
+                        ),
+                    ),
+                    and_(
+                        IndexJob.status == IndexJobStatus.RUNNING,
+                        or_(
+                            IndexJob.owner_worker_id.is_(None),
+                            IndexJob.lease_expires_at.is_(None),
+                            IndexJob.lease_expires_at <= clock,
+                        ),
+                    ),
+                )
+                priority = case(
+                    (IndexJob.status == IndexJobStatus.STAGED, 0),
+                    (IndexJob.status == IndexJobStatus.PENDING, 1),
+                    (IndexJob.status == IndexJobStatus.RETRY_WAIT, 2),
+                    else_=3,
+                )
+                while True:
+                    row = (
+                        graph.filter(ready)
+                        .order_by(
+                            priority.asc(), IndexJob.created_at.asc(), IndexJob.id.asc()
+                        )
+                        .with_for_update(skip_locked=True)
+                        .first()
+                    )
+                    if row is None:
+                        return None
+                    job, version, document, knowledge_base = row
+                    candidate_owned = (
+                        document.deleted_at is None
+                        and document.pending_version_id == version.id
+                        and document.publication_fence == job.publication_fence
+                        and version.status in _ACTIVE_VERSION_STATUSES
+                    )
+                    if not candidate_owned:
+                        job.status = IndexJobStatus.CANCELLED
+                        job.current_step = "superseded"
+                        job.owner_worker_id = None
+                        job.lease_expires_at = None
+                        job.finished_at = clock
+                        job.updated_at = clock
+                        if (
+                            version.id != document.current_version_id
+                            and version.status in _ACTIVE_VERSION_STATUSES
+                        ):
+                            self._supersede_version(
+                                db,
+                                version,
+                                now=clock,
+                                cleanup_after=clock,
+                                cancel_job=False,
+                            )
+                        db.flush()
+                        continue
+                    staged_crash_recovery = (
+                        job.status == IndexJobStatus.STAGED
+                        and job.attempts == job.max_attempts
+                        and job.next_retry_at is None
+                    )
+                    if job.attempts >= job.max_attempts and not staged_crash_recovery:
+                        self._dead_letter_locked(
+                            db,
+                            job=job,
+                            version=version,
+                            document=document,
+                            knowledge_base=knowledge_base,
+                            publication_fence=job.publication_fence,
+                            error_code="INDEX_ATTEMPTS_EXHAUSTED",
+                            error_detail_redacted=None,
+                            now=clock,
+                        )
+                        db.flush()
+                        continue
+                    preserve_staged = job.status == IndexJobStatus.STAGED
+                    job.status = (
+                        IndexJobStatus.STAGED
+                        if preserve_staged
+                        else IndexJobStatus.RUNNING
+                    )
+                    job.owner_worker_id = worker
+                    job.execution_fence += 1
+                    job.attempts += 1
+                    job.started_at = job.started_at or clock
+                    job.heartbeat_at = clock
+                    job.lease_expires_at = clock + timedelta(seconds=lease_seconds)
+                    job.next_retry_at = None
+                    job.error_code = None
+                    job.error_detail_redacted = None
+                    job.updated_at = clock
+                    if not preserve_staged:
+                        version.status = (
+                            DocumentVersionStatus.PARSING
+                            if job.current_step
+                            in {"upload", "uploaded", "reserve", "parse", "parsing"}
+                            else DocumentVersionStatus.INDEXING
+                        )
+                        version.updated_at = clock
+                    db.flush()
+                    return self._version_build(
+                        db,
+                        job=job,
+                        version=version,
+                        document=document,
+                    )
+        finally:
+            db.close()
+
+    def assert_index_lease(
+        self,
+        *,
+        job_id: str,
+        execution: IndexJobExecution,
+        now: datetime | None = None,
+    ) -> VersionBuild:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, document, _knowledge_base = self._job_graph(
+                    db, job_id=job_id, tenant_id=None, lock=True
+                )
+                clock = _lease_clock(db, now)
+                self._assert_index_execution(job, execution, now=clock)
+                self._assert_candidate(
+                    document,
+                    job,
+                    version,
+                    publication_fence=job.publication_fence,
+                )
+                return self._version_build(
+                    db,
+                    job=job,
+                    version=version,
+                    document=document,
+                )
+        finally:
+            db.close()
+
+    def heartbeat_index_job(
+        self,
+        *,
+        job_id: str,
+        execution: IndexJobExecution,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> IndexJobRecord:
+        if lease_seconds < 1:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "lease_seconds 必须大于 0",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, document, _knowledge_base = self._job_graph(
+                    db, job_id=job_id, tenant_id=None, lock=True
+                )
+                clock = _lease_clock(db, now)
+                self._assert_index_execution(job, execution, now=clock)
+                self._assert_candidate(
+                    document,
+                    job,
+                    version,
+                    publication_fence=job.publication_fence,
+                )
+                job.heartbeat_at = clock
+                job.lease_expires_at = clock + timedelta(seconds=lease_seconds)
+                job.updated_at = clock
+                db.flush()
+                return self._job_record(job, document=document)
+        finally:
+            db.close()
+
+    def schedule_index_retry(
+        self,
+        *,
+        job_id: str,
+        execution: IndexJobExecution,
+        retry_delay_seconds: float,
+        error_code: str,
+        error_detail_redacted: str | None = None,
+        now: datetime | None = None,
+    ) -> IndexJobRecord:
+        delay = float(retry_delay_seconds)
+        if not math.isfinite(delay) or delay < 0:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "retry_delay_seconds 必须是非负有限数",
+                status_code=400,
+            )
+        code = _required_text(error_code, "error_code", 64)
+        detail = str(error_detail_redacted or "")[:2000] or None
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, document, knowledge_base = self._job_graph(
+                    db, job_id=job_id, tenant_id=None, lock=True
+                )
+                clock = _lease_clock(db, now)
+                self._assert_index_execution(job, execution, now=clock)
+                self._assert_candidate(
+                    document,
+                    job,
+                    version,
+                    publication_fence=job.publication_fence,
+                )
+                if job.attempts >= job.max_attempts:
+                    return self._dead_letter_locked(
+                        db,
+                        job=job,
+                        version=version,
+                        document=document,
+                        knowledge_base=knowledge_base,
+                        publication_fence=job.publication_fence,
+                        error_code=code,
+                        error_detail_redacted=detail,
+                        now=clock,
+                    )
+                staged = job.status == IndexJobStatus.STAGED
+                job.status = (
+                    IndexJobStatus.STAGED if staged else IndexJobStatus.RETRY_WAIT
+                )
+                job.current_step = "publish" if staged else job.current_step
+                job.next_retry_at = clock + timedelta(seconds=delay)
+                job.error_code = code
+                job.error_detail_redacted = detail
+                job.step_state_json = {
+                    **(job.step_state_json or {}),
+                    "last_error_code": code,
+                    "retry_scheduled_at": job.next_retry_at.isoformat(),
+                }
+                job.owner_worker_id = None
+                job.lease_expires_at = None
+                job.heartbeat_at = clock
+                job.updated_at = clock
+                db.flush()
+                return self._job_record(job, document=document)
+        finally:
+            db.close()
+
+    def dead_letter_index_job(
+        self,
+        *,
+        job_id: str,
+        execution: IndexJobExecution,
+        error_code: str,
+        error_detail_redacted: str | None = None,
+    ) -> IndexJobRecord:
+        code = _required_text(error_code, "error_code", 64)
+        detail = str(error_detail_redacted or "")[:2000] or None
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, document, knowledge_base = self._job_graph(
+                    db, job_id=job_id, tenant_id=None, lock=True
+                )
+                clock = _database_now(db)
+                self._assert_index_execution(job, execution, now=clock)
+                return self._dead_letter_locked(
+                    db,
+                    job=job,
+                    version=version,
+                    document=document,
+                    knowledge_base=knowledge_base,
+                    publication_fence=job.publication_fence,
+                    error_code=code,
+                    error_detail_redacted=detail,
+                    now=clock,
+                )
         finally:
             db.close()
 
@@ -2080,6 +2881,7 @@ class DocumentCatalog:
         canonical_name: str,
         knowledge_base_id: str | None = None,
         cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
+        retirement_job_id: str | None = None,
     ) -> RetirementResult:
         name = _required_text(canonical_name, "canonical_name", 255)
         db = self._session_factory()
@@ -2109,6 +2911,7 @@ class DocumentCatalog:
                     db, document, document.pending_version_id
                 )
                 if document.deleted_at is not None:
+                    now = _database_now(db)
                     cleanup_rows = (
                         db.query(DocumentVersion)
                         .filter(
@@ -2124,6 +2927,14 @@ class DocumentCatalog:
                         .order_by(DocumentVersion.version_number.asc())
                         .all()
                     )
+                    operation_id = self._upsert_retirement_job(
+                        db,
+                        retirement_job_id=retirement_job_id,
+                        document=document,
+                        cleanup_versions=cleanup_rows,
+                        publication_fence=document.publication_fence,
+                        now=now,
+                    )
                     return RetirementResult(
                         document_id=document.id,
                         tenant_id=document.tenant_id,
@@ -2134,6 +2945,7 @@ class DocumentCatalog:
                         cleanup_versions=tuple(
                             self._version_record(row) for row in cleanup_rows
                         ),
+                        retirement_job_id=operation_id,
                     )
                 knowledge_base = self._knowledge_base(
                     db,
@@ -2141,7 +2953,7 @@ class DocumentCatalog:
                     knowledge_base_id=document.knowledge_base_id,
                     lock=True,
                 )
-                now = utcnow()
+                now = _database_now(db)
                 cleanup_after = _cleanup_at(now, cleanup_grace)
                 if current:
                     self._supersede_version(
@@ -2198,6 +3010,17 @@ class DocumentCatalog:
                         retryable=True,
                     )
                 self._bump_revision(knowledge_base, now)
+                cleanup_rows = tuple(
+                    {row.id: row for row in (current, pending) if row}.values()
+                )
+                operation_id = self._upsert_retirement_job(
+                    db,
+                    retirement_job_id=retirement_job_id,
+                    document=document,
+                    cleanup_versions=cleanup_rows,
+                    publication_fence=old_fence + 1,
+                    now=now,
+                )
                 db.flush()
                 return RetirementResult(
                     document_id=document.id,
@@ -2207,11 +3030,9 @@ class DocumentCatalog:
                     found=True,
                     already_deleted=False,
                     cleanup_versions=tuple(
-                        self._version_record(row)
-                        for row in {
-                            row.id: row for row in (current, pending) if row
-                        }.values()
+                        self._version_record(row) for row in cleanup_rows
                     ),
+                    retirement_job_id=operation_id,
                 )
         finally:
             db.close()
@@ -2225,6 +3046,7 @@ class DocumentCatalog:
         owner_id: int,
         vector_collection: str,
         cleanup_grace: timedelta = timedelta(0),
+        retirement_job_id: str | None = None,
     ) -> RetirementResult:
         """Create a durable filename tombstone before legacy physical cleanup."""
 
@@ -2266,7 +3088,7 @@ class DocumentCatalog:
                     global_claim is not None
                     and (document is None or global_claim[1].id != document.id)
                 )
-                now = utcnow()
+                now = _database_now(db)
                 if document is None:
                     document = Document(
                         id=_new_id("doc"),
@@ -2293,6 +3115,14 @@ class DocumentCatalog:
                     document.deleted_at = document.deleted_at or now
                     document.updated_at = now
                     self._bump_revision(knowledge_base, now)
+                    operation_id = self._upsert_retirement_job(
+                        db,
+                        retirement_job_id=retirement_job_id,
+                        document=document,
+                        cleanup_versions=(),
+                        publication_fence=document.publication_fence,
+                        now=now,
+                    )
                     db.flush()
                     return RetirementResult(
                         document_id=document.id,
@@ -2302,6 +3132,7 @@ class DocumentCatalog:
                         found=True,
                         already_deleted=True,
                         cleanup_versions=(),
+                        retirement_job_id=operation_id,
                     )
 
                 tombstone = global_claim[0] if global_claim is not None else None
@@ -2325,14 +3156,29 @@ class DocumentCatalog:
                 else:
                     tombstone.status = DocumentVersionStatus.SUPERSEDED
                     tombstone.superseded_at = tombstone.superseded_at or now
-                    tombstone.cleanup_after = cleanup_after
-                    tombstone.index_cleaned_at = None
-                    tombstone.cleanup_error_code = None
                     tombstone.updated_at = now
+                cleanup_versions = ()
+                if tombstone.index_cleaned_at is None:
+                    tombstone.cleanup_after = cleanup_after
+                    tombstone.cleanup_error_code = None
+                    self._ensure_cleanup_job(
+                        db,
+                        tombstone,
+                        next_retry_at=cleanup_after,
+                    )
+                    cleanup_versions = (tombstone,)
                 document.status = "deleted"
                 document.deleted_at = document.deleted_at or now
                 document.updated_at = now
                 self._bump_revision(knowledge_base, now)
+                operation_id = self._upsert_retirement_job(
+                    db,
+                    retirement_job_id=retirement_job_id,
+                    document=document,
+                    cleanup_versions=cleanup_versions,
+                    publication_fence=document.publication_fence,
+                    now=now,
+                )
                 db.flush()
                 return RetirementResult(
                     document_id=document.id,
@@ -2341,10 +3187,83 @@ class DocumentCatalog:
                     canonical_name=name,
                     found=True,
                     already_deleted=True,
-                    cleanup_versions=(self._version_record(tombstone),),
+                    cleanup_versions=tuple(
+                        self._version_record(version) for version in cleanup_versions
+                    ),
+                    retirement_job_id=operation_id,
                 )
         finally:
             db.close()
+
+    def retire_with_legacy_suppression(
+        self,
+        *,
+        tenant_id: str,
+        knowledge_base_id: str,
+        canonical_name: str,
+        owner_id: int,
+        vector_collection: str,
+        cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
+        retirement_job_id: str | None = None,
+    ) -> RetirementResult:
+        """Atomically revoke versioned scope and persist the legacy tombstone."""
+
+        outer = self._session_factory()
+        try:
+            connection = outer.connection()
+
+            def transaction_session() -> Session:
+                return Session(
+                    bind=connection,
+                    autoflush=False,
+                    expire_on_commit=False,
+                    join_transaction_mode="rollback_only",
+                )
+
+            transactional = DocumentCatalog(transaction_session)
+            retired = transactional.retire(
+                tenant_id=tenant_id,
+                canonical_name=canonical_name,
+                knowledge_base_id=knowledge_base_id,
+                cleanup_grace=cleanup_grace,
+                retirement_job_id=retirement_job_id,
+            )
+            suppressed = transactional.suppress_legacy_name(
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                canonical_name=canonical_name,
+                owner_id=owner_id,
+                vector_collection=vector_collection,
+                cleanup_grace=cleanup_grace,
+                retirement_job_id=retirement_job_id,
+            )
+            cleanup_versions = {
+                version.id: version
+                for version in (
+                    *retired.cleanup_versions,
+                    *suppressed.cleanup_versions,
+                )
+            }
+            outcome = RetirementResult(
+                document_id=suppressed.document_id or retired.document_id,
+                tenant_id=suppressed.tenant_id,
+                knowledge_base_id=(
+                    suppressed.knowledge_base_id or retired.knowledge_base_id
+                ),
+                canonical_name=suppressed.canonical_name,
+                found=retired.found or suppressed.found,
+                already_deleted=(
+                    retired.already_deleted and suppressed.already_deleted
+                ),
+                cleanup_versions=tuple(cleanup_versions.values()),
+                retirement_job_id=(
+                    suppressed.retirement_job_id or retired.retirement_job_id
+                ),
+            )
+            outer.commit()
+            return outcome
+        finally:
+            outer.close()
 
     def adopt_legacy(
         self,
@@ -2686,6 +3605,977 @@ class DocumentCatalog:
         finally:
             db.close()
 
+    @staticmethod
+    def _cleanup_graph(
+        db: Session,
+        *,
+        job_id: str,
+        lock: bool,
+    ) -> tuple[DocumentCleanupJob, DocumentVersion, Document, KnowledgeBase]:
+        query = (
+            db.query(DocumentCleanupJob, DocumentVersion, Document, KnowledgeBase)
+            .join(
+                DocumentVersion,
+                DocumentVersion.id == DocumentCleanupJob.document_version_id,
+            )
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .join(KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id)
+            .filter(DocumentCleanupJob.id == job_id)
+        )
+        if lock:
+            query = query.with_for_update()
+        row = query.first()
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "文档清理任务不存在", status_code=404)
+        return row
+
+    def _cleanup_build(
+        self,
+        db: Session,
+        *,
+        job: DocumentCleanupJob,
+        version: DocumentVersion,
+        document: Document,
+    ) -> CleanupBuild:
+        return CleanupBuild(
+            job=self._cleanup_job_record(job),
+            document=self._document_records(db, [document])[0],
+            version=self._version_record(version),
+        )
+
+    def claim_cleanup_job(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> CleanupBuild | None:
+        worker = _required_text(worker_id, "worker_id", 128)
+        if lease_seconds < 1:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "lease_seconds 必须大于 0",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            with db.begin():
+                clock = _lease_clock(db, now)
+                graph = (
+                    db.query(
+                        DocumentCleanupJob,
+                        DocumentVersion,
+                        Document,
+                        KnowledgeBase,
+                    )
+                    .join(
+                        DocumentVersion,
+                        DocumentVersion.id == DocumentCleanupJob.document_version_id,
+                    )
+                    .join(Document, Document.id == DocumentVersion.document_id)
+                    .join(
+                        KnowledgeBase,
+                        KnowledgeBase.id == Document.knowledge_base_id,
+                    )
+                )
+                owned = (
+                    graph.filter(
+                        DocumentCleanupJob.owner_worker_id == worker,
+                        DocumentCleanupJob.status == CleanupJobStatus.RUNNING,
+                        DocumentCleanupJob.lease_expires_at.is_not(None),
+                        DocumentCleanupJob.lease_expires_at > clock,
+                    )
+                    .order_by(
+                        DocumentCleanupJob.created_at.asc(),
+                        DocumentCleanupJob.id.asc(),
+                    )
+                    .with_for_update(skip_locked=True)
+                    .first()
+                )
+                if owned is not None:
+                    job, version, document, _knowledge_base = owned
+                    job.heartbeat_at = clock
+                    job.lease_expires_at = clock + timedelta(seconds=lease_seconds)
+                    job.updated_at = clock
+                    db.flush()
+                    return self._cleanup_build(
+                        db,
+                        job=job,
+                        version=version,
+                        document=document,
+                    )
+                ready = or_(
+                    and_(
+                        DocumentCleanupJob.status == CleanupJobStatus.PENDING,
+                        or_(
+                            DocumentCleanupJob.next_retry_at.is_(None),
+                            DocumentCleanupJob.next_retry_at <= clock,
+                        ),
+                        DocumentCleanupJob.owner_worker_id.is_(None),
+                    ),
+                    and_(
+                        DocumentCleanupJob.status == CleanupJobStatus.RETRY_WAIT,
+                        DocumentCleanupJob.next_retry_at.is_not(None),
+                        DocumentCleanupJob.next_retry_at <= clock,
+                        DocumentCleanupJob.owner_worker_id.is_(None),
+                    ),
+                    and_(
+                        DocumentCleanupJob.status == CleanupJobStatus.RUNNING,
+                        or_(
+                            DocumentCleanupJob.owner_worker_id.is_(None),
+                            DocumentCleanupJob.lease_expires_at.is_(None),
+                            DocumentCleanupJob.lease_expires_at <= clock,
+                        ),
+                    ),
+                )
+                priority = case(
+                    (DocumentCleanupJob.status == CleanupJobStatus.PENDING, 0),
+                    (DocumentCleanupJob.status == CleanupJobStatus.RETRY_WAIT, 1),
+                    else_=2,
+                )
+                while True:
+                    row = (
+                        graph.filter(
+                            ready,
+                            DocumentVersion.cleanup_after.is_not(None),
+                            DocumentVersion.cleanup_after <= clock,
+                            DocumentVersion.index_cleaned_at.is_(None),
+                        )
+                        .order_by(
+                            priority.asc(),
+                            DocumentCleanupJob.next_retry_at.asc(),
+                            DocumentCleanupJob.created_at.asc(),
+                            DocumentCleanupJob.id.asc(),
+                        )
+                        .with_for_update(skip_locked=True)
+                        .first()
+                    )
+                    if row is None:
+                        return None
+                    job, version, document, _knowledge_base = row
+                    safe_scope = (
+                        version.status
+                        in {
+                            DocumentVersionStatus.FAILED,
+                            DocumentVersionStatus.SUPERSEDED,
+                        }
+                        and document.current_version_id != version.id
+                        and document.pending_version_id != version.id
+                    )
+                    if not safe_scope or job.attempts >= job.max_attempts:
+                        failed_step = job.current_step
+                        job.status = CleanupJobStatus.DEAD_LETTER
+                        job.current_step = "dead_letter"
+                        job.error_code = (
+                            "CLEANUP_SCOPE_REACTIVATED"
+                            if not safe_scope
+                            else "CLEANUP_ATTEMPTS_EXHAUSTED"
+                        )
+                        job.owner_worker_id = None
+                        job.lease_expires_at = None
+                        job.next_retry_at = None
+                        job.step_state_json = {
+                            **(job.step_state_json or {}),
+                            "failed_step": failed_step,
+                            "last_error_code": job.error_code,
+                        }
+                        job.finished_at = clock
+                        job.updated_at = clock
+                        version.cleanup_error_code = job.error_code
+                        version.updated_at = clock
+                        db.flush()
+                        continue
+                    job.status = CleanupJobStatus.RUNNING
+                    job.owner_worker_id = worker
+                    job.execution_fence += 1
+                    job.attempts += 1
+                    job.started_at = job.started_at or clock
+                    job.heartbeat_at = clock
+                    job.lease_expires_at = clock + timedelta(seconds=lease_seconds)
+                    job.next_retry_at = None
+                    job.error_code = None
+                    job.error_detail_redacted = None
+                    job.updated_at = clock
+                    db.flush()
+                    return self._cleanup_build(
+                        db,
+                        job=job,
+                        version=version,
+                        document=document,
+                    )
+        finally:
+            db.close()
+
+    def heartbeat_cleanup_job(
+        self,
+        *,
+        job_id: str,
+        execution: CleanupJobExecution,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> CleanupJobRecord:
+        if lease_seconds < 1:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "lease_seconds 必须大于 0",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, _version, _document, _knowledge_base = self._cleanup_graph(
+                    db, job_id=job_id, lock=True
+                )
+                clock = _lease_clock(db, now)
+                self._assert_cleanup_execution(job, execution, now=clock)
+                job.heartbeat_at = clock
+                job.lease_expires_at = clock + timedelta(seconds=lease_seconds)
+                job.updated_at = clock
+                db.flush()
+                return self._cleanup_job_record(job)
+        finally:
+            db.close()
+
+    def update_cleanup_job(
+        self,
+        *,
+        job_id: str,
+        execution: CleanupJobExecution,
+        current_step: str,
+        step_state_patch: Mapping | None = None,
+    ) -> CleanupJobRecord:
+        step = _required_text(current_step, "current_step", 64)
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, _version, _document, _knowledge_base = self._cleanup_graph(
+                    db, job_id=job_id, lock=True
+                )
+                clock = _database_now(db)
+                self._assert_cleanup_execution(job, execution, now=clock)
+                job.current_step = step
+                job.step_state_json = {
+                    **(job.step_state_json or {}),
+                    **dict(step_state_patch or {}),
+                }
+                job.updated_at = clock
+                db.flush()
+                return self._cleanup_job_record(job)
+        finally:
+            db.close()
+
+    def _dead_letter_cleanup_locked(
+        self,
+        *,
+        job: DocumentCleanupJob,
+        version: DocumentVersion,
+        error_code: str,
+        error_detail_redacted: str | None,
+        now: datetime,
+    ) -> CleanupJobRecord:
+        failed_step = job.current_step
+        job.status = CleanupJobStatus.DEAD_LETTER
+        job.current_step = "dead_letter"
+        job.error_code = error_code
+        job.error_detail_redacted = error_detail_redacted
+        job.owner_worker_id = None
+        job.lease_expires_at = None
+        job.next_retry_at = None
+        job.step_state_json = {
+            **(job.step_state_json or {}),
+            "failed_step": failed_step,
+            "last_error_code": error_code,
+        }
+        job.finished_at = now
+        job.updated_at = now
+        version.cleanup_error_code = error_code
+        version.updated_at = now
+        return self._cleanup_job_record(job)
+
+    def schedule_cleanup_retry(
+        self,
+        *,
+        job_id: str,
+        execution: CleanupJobExecution,
+        retry_delay_seconds: float,
+        error_code: str,
+        error_detail_redacted: str | None = None,
+        now: datetime | None = None,
+    ) -> CleanupJobRecord:
+        delay = float(retry_delay_seconds)
+        if not math.isfinite(delay) or delay < 0:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "retry_delay_seconds 必须是非负有限数",
+                status_code=400,
+            )
+        code = _required_text(error_code, "error_code", 64)
+        detail = str(error_detail_redacted or "")[:2000] or None
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, _document, _knowledge_base = self._cleanup_graph(
+                    db, job_id=job_id, lock=True
+                )
+                clock = _lease_clock(db, now)
+                self._assert_cleanup_execution(job, execution, now=clock)
+                if job.attempts >= job.max_attempts:
+                    record = self._dead_letter_cleanup_locked(
+                        job=job,
+                        version=version,
+                        error_code=code,
+                        error_detail_redacted=detail,
+                        now=clock,
+                    )
+                    db.flush()
+                    return record
+                job.status = CleanupJobStatus.RETRY_WAIT
+                job.error_code = code
+                job.error_detail_redacted = detail
+                job.next_retry_at = clock + timedelta(seconds=delay)
+                job.owner_worker_id = None
+                job.lease_expires_at = None
+                job.heartbeat_at = clock
+                job.step_state_json = {
+                    **(job.step_state_json or {}),
+                    "last_error_code": code,
+                    "retry_scheduled_at": job.next_retry_at.isoformat(),
+                }
+                job.updated_at = clock
+                version.cleanup_error_code = code
+                version.updated_at = clock
+                db.flush()
+                return self._cleanup_job_record(job)
+        finally:
+            db.close()
+
+    def dead_letter_cleanup_job(
+        self,
+        *,
+        job_id: str,
+        execution: CleanupJobExecution,
+        error_code: str,
+        error_detail_redacted: str | None = None,
+    ) -> CleanupJobRecord:
+        code = _required_text(error_code, "error_code", 64)
+        detail = str(error_detail_redacted or "")[:2000] or None
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, _document, _knowledge_base = self._cleanup_graph(
+                    db, job_id=job_id, lock=True
+                )
+                clock = _database_now(db)
+                self._assert_cleanup_execution(job, execution, now=clock)
+                record = self._dead_letter_cleanup_locked(
+                    job=job,
+                    version=version,
+                    error_code=code,
+                    error_detail_redacted=detail,
+                    now=clock,
+                )
+                db.flush()
+                return record
+        finally:
+            db.close()
+
+    def complete_cleanup_job(
+        self,
+        *,
+        job_id: str,
+        execution: CleanupJobExecution,
+    ) -> CleanupBuild:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, document, knowledge_base = self._cleanup_graph(
+                    db, job_id=job_id, lock=True
+                )
+                clock = _database_now(db)
+                self._assert_cleanup_execution(job, execution, now=clock)
+                if (
+                    version.status
+                    not in {
+                        DocumentVersionStatus.FAILED,
+                        DocumentVersionStatus.SUPERSEDED,
+                    }
+                    or document.current_version_id == version.id
+                    or document.pending_version_id == version.id
+                ):
+                    raise AppError(
+                        ErrorCode.CONFLICT,
+                        "当前或候选版本不能确认物理清理完成",
+                        status_code=409,
+                    )
+                version.index_cleaned_at = clock
+                version.cleanup_error_code = None
+                version.updated_at = clock
+                job.status = CleanupJobStatus.COMPLETED
+                job.current_step = "completed"
+                job.owner_worker_id = None
+                job.lease_expires_at = None
+                job.next_retry_at = None
+                job.error_code = None
+                job.error_detail_redacted = None
+                job.finished_at = clock
+                job.updated_at = clock
+                self._bump_revision(knowledge_base, clock)
+                db.flush()
+                return self._cleanup_build(
+                    db,
+                    job=job,
+                    version=version,
+                    document=document,
+                )
+        finally:
+            db.close()
+
+    def get_cleanup_job(self, *, job_id: str) -> CleanupBuild:
+        db = self._session_factory()
+        try:
+            job, version, document, _knowledge_base = self._cleanup_graph(
+                db, job_id=job_id, lock=False
+            )
+            return self._cleanup_build(
+                db,
+                job=job,
+                version=version,
+                document=document,
+            )
+        finally:
+            db.close()
+
+    def requeue_cleanup_job(
+        self,
+        *,
+        job_id: str,
+        max_attempts: int | None = None,
+        now: datetime | None = None,
+    ) -> CleanupBuild:
+        if max_attempts is not None and max_attempts < 1:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "max_attempts 必须大于 0",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            with db.begin():
+                job, version, document, _knowledge_base = self._cleanup_graph(
+                    db,
+                    job_id=job_id,
+                    lock=True,
+                )
+                clock = _lease_clock(db, now)
+                if job.status != CleanupJobStatus.DEAD_LETTER:
+                    raise AppError(
+                        ErrorCode.CONFLICT,
+                        "仅 dead-letter 清理任务可以由 operator 重新排队",
+                        status_code=409,
+                    )
+                if (
+                    version.status
+                    not in {
+                        DocumentVersionStatus.FAILED,
+                        DocumentVersionStatus.SUPERSEDED,
+                    }
+                    or version.index_cleaned_at is not None
+                    or document.current_version_id == version.id
+                    or document.pending_version_id == version.id
+                ):
+                    raise AppError(
+                        ErrorCode.CONFLICT,
+                        "清理目标 scope 已不满足重新排队条件",
+                        status_code=409,
+                    )
+                requeues = int((job.step_state_json or {}).get("operator_requeues", 0))
+                job.status = CleanupJobStatus.PENDING
+                job.current_step = "pending"
+                job.attempts = 0
+                if max_attempts is not None:
+                    job.max_attempts = max_attempts
+                job.owner_worker_id = None
+                job.lease_expires_at = None
+                job.heartbeat_at = None
+                job.next_retry_at = clock
+                job.error_code = None
+                job.error_detail_redacted = None
+                job.step_state_json = {
+                    **(job.step_state_json or {}),
+                    "operator_requeues": requeues + 1,
+                    "last_operator_requeue_at": clock.isoformat(),
+                }
+                job.started_at = None
+                job.finished_at = None
+                job.updated_at = clock
+                version.cleanup_error_code = None
+                version.updated_at = clock
+                db.flush()
+                return self._cleanup_build(
+                    db,
+                    job=job,
+                    version=version,
+                    document=document,
+                )
+        finally:
+            db.close()
+
+    def list_cleanup_jobs_for_document(
+        self,
+        *,
+        document_id: str,
+        tenant_id: str | None = None,
+    ) -> list[CleanupBuild]:
+        db = self._session_factory()
+        try:
+            rows = (
+                db.query(DocumentCleanupJob, DocumentVersion, Document)
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == DocumentCleanupJob.document_version_id,
+                )
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .filter(Document.id == document_id)
+            )
+            if tenant_id is not None:
+                rows = rows.filter(Document.tenant_id == tenant_id)
+            rows = rows.order_by(DocumentCleanupJob.created_at.asc()).all()
+            return [
+                self._cleanup_build(
+                    db,
+                    job=job,
+                    version=version,
+                    document=document,
+                )
+                for job, version, document in rows
+            ]
+        finally:
+            db.close()
+
+    def list_cleanup_jobs(
+        self,
+        *,
+        status: str | None = None,
+        tenant_id: str | None = None,
+        limit: int = 100,
+    ) -> list[CleanupBuild]:
+        if limit < 1 or limit > 1000:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "limit 必须位于 1-1000",
+                status_code=400,
+            )
+        normalized_status = str(status or "").strip() or None
+        if normalized_status is not None and normalized_status not in {
+            item.value for item in CleanupJobStatus
+        }:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "未知清理任务状态",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            rows = (
+                db.query(DocumentCleanupJob, DocumentVersion, Document)
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == DocumentCleanupJob.document_version_id,
+                )
+                .join(Document, Document.id == DocumentVersion.document_id)
+            )
+            if normalized_status is not None:
+                rows = rows.filter(DocumentCleanupJob.status == normalized_status)
+            if tenant_id is not None:
+                rows = rows.filter(Document.tenant_id == tenant_id)
+            rows = (
+                rows.order_by(
+                    DocumentCleanupJob.updated_at.desc(),
+                    DocumentCleanupJob.id.asc(),
+                )
+                .limit(limit)
+                .all()
+            )
+            return [
+                self._cleanup_build(
+                    db,
+                    job=job,
+                    version=version,
+                    document=document,
+                )
+                for job, version, document in rows
+            ]
+        finally:
+            db.close()
+
+    def list_cleanup_jobs_for_versions(
+        self,
+        *,
+        document_version_ids: Iterable[str],
+        tenant_id: str,
+    ) -> list[CleanupBuild]:
+        version_ids = tuple(
+            dict.fromkeys(
+                _required_text(value, "document_version_id", 64)
+                for value in document_version_ids
+            )
+        )
+        if not version_ids:
+            return []
+        db = self._session_factory()
+        try:
+            rows = (
+                db.query(DocumentCleanupJob, DocumentVersion, Document)
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == DocumentCleanupJob.document_version_id,
+                )
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .filter(
+                    DocumentVersion.id.in_(version_ids),
+                    Document.tenant_id == tenant_id,
+                )
+                .order_by(DocumentCleanupJob.created_at.asc())
+                .all()
+            )
+            by_version = {
+                version.id: (job, version, document) for job, version, document in rows
+            }
+            return [
+                self._cleanup_build(
+                    db,
+                    job=by_version[version_id][0],
+                    version=by_version[version_id][1],
+                    document=by_version[version_id][2],
+                )
+                for version_id in version_ids
+                if version_id in by_version
+            ]
+        finally:
+            db.close()
+
+    def get_retirement_job(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+    ) -> RetirementJobRecord:
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(DocumentRetirementJob)
+                .filter(
+                    DocumentRetirementJob.id == job_id,
+                    DocumentRetirementJob.tenant_id == tenant_id,
+                )
+                .first()
+            )
+            if row is None:
+                raise AppError(
+                    ErrorCode.NOT_FOUND,
+                    "文档删除任务不存在",
+                    status_code=404,
+                )
+            return self._retirement_job_record(row)
+        finally:
+            db.close()
+
+    def list_retirement_jobs(
+        self,
+        *,
+        tenant_id: str,
+        limit: int = 100,
+    ) -> list[RetirementJobRecord]:
+        if limit < 1 or limit > 1000:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "limit 必须位于 1-1000",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            rows = (
+                db.query(DocumentRetirementJob)
+                .filter(DocumentRetirementJob.tenant_id == tenant_id)
+                .order_by(
+                    DocumentRetirementJob.created_at.desc(),
+                    DocumentRetirementJob.id.asc(),
+                )
+                .limit(limit)
+                .all()
+            )
+            return [self._retirement_job_record(row) for row in rows]
+        finally:
+            db.close()
+
+    def record_retirement_error(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        error_code: str,
+    ) -> RetirementJobRecord:
+        code = _required_text(error_code, "error_code", 64)
+        db = self._session_factory()
+        try:
+            with db.begin():
+                row = (
+                    db.query(DocumentRetirementJob)
+                    .filter(
+                        DocumentRetirementJob.id == job_id,
+                        DocumentRetirementJob.tenant_id == tenant_id,
+                    )
+                    .with_for_update()
+                    .first()
+                )
+                if row is None:
+                    raise AppError(
+                        ErrorCode.NOT_FOUND,
+                        "文档删除任务不存在",
+                        status_code=404,
+                    )
+                row.error_code = code
+                row.updated_at = _database_now(db)
+                db.flush()
+                return self._retirement_job_record(row)
+        finally:
+            db.close()
+
+    def record_worker_heartbeat(
+        self,
+        *,
+        worker_id: str,
+        worker_kind: str,
+        status: str | WorkerStatus,
+        metadata: Mapping | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        worker = _required_text(worker_id, "worker_id", 128)
+        kind = _required_text(worker_kind, "worker_kind", 64)
+        state = str(status)
+        if state not in {item.value for item in WorkerStatus}:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "未知 worker 状态",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            with db.begin():
+                clock = _lease_clock(db, now)
+                row = (
+                    db.query(WorkerHeartbeat)
+                    .filter(WorkerHeartbeat.worker_id == worker)
+                    .with_for_update()
+                    .first()
+                )
+                if row is None:
+                    row = WorkerHeartbeat(
+                        worker_id=worker,
+                        worker_kind=kind,
+                        status=state,
+                        started_at=clock,
+                        heartbeat_at=clock,
+                        stopped_at=(clock if state == WorkerStatus.STOPPED else None),
+                        metadata_json=dict(metadata or {}),
+                        created_at=clock,
+                        updated_at=clock,
+                    )
+                    db.add(row)
+                else:
+                    if row.status == WorkerStatus.STOPPED and state in {
+                        WorkerStatus.STARTING,
+                        WorkerStatus.RUNNING,
+                    }:
+                        row.started_at = clock
+                    row.worker_kind = kind
+                    row.status = state
+                    row.heartbeat_at = clock
+                    row.stopped_at = clock if state == WorkerStatus.STOPPED else None
+                    row.metadata_json = dict(metadata or {})
+                    row.updated_at = clock
+        finally:
+            db.close()
+
+    def worker_readiness(
+        self,
+        *,
+        worker_kind: str = "indexing",
+        stale_after_seconds: int = 45,
+        expected_build_fingerprint: str | None = None,
+        now: datetime | None = None,
+    ) -> WorkerReadiness:
+        kind = _required_text(worker_kind, "worker_kind", 64)
+        expected_capability = (
+            _content_hash(expected_build_fingerprint)
+            if expected_build_fingerprint is not None
+            else None
+        )
+        if stale_after_seconds < 1:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST,
+                "stale_after_seconds 必须大于 0",
+                status_code=400,
+            )
+        db = self._session_factory()
+        try:
+            clock = _lease_clock(db, now)
+            cutoff = clock - timedelta(seconds=stale_after_seconds)
+            fresh_candidates = (
+                db.query(WorkerHeartbeat)
+                .filter(
+                    WorkerHeartbeat.worker_kind == kind,
+                    WorkerHeartbeat.status == WorkerStatus.RUNNING,
+                    WorkerHeartbeat.heartbeat_at >= cutoff,
+                )
+                .all()
+            )
+            fresh = [
+                row
+                for row in fresh_candidates
+                if expected_capability is None
+                or (row.metadata_json or {}).get("build_fingerprint")
+                == expected_capability
+            ]
+            incompatible_fresh_workers = len(fresh_candidates) - len(fresh)
+            latest = max(
+                (row.heartbeat_at for row in fresh),
+                default=None,
+            )
+            queue_counts: dict[str, int] = {}
+            for status_value, count in db.query(
+                IndexJob.status, func.count(IndexJob.id)
+            ).group_by(IndexJob.status):
+                queue_counts[f"index_{status_value}"] = int(count)
+            for status_value, count in db.query(
+                DocumentCleanupJob.status,
+                func.count(DocumentCleanupJob.id),
+            ).group_by(DocumentCleanupJob.status):
+                queue_counts[f"cleanup_{status_value}"] = int(count)
+            index_oldest_query = (
+                db.query(func.min(IndexJob.created_at))
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == IndexJob.document_version_id,
+                )
+                .filter(
+                    or_(
+                        and_(
+                            IndexJob.status == IndexJobStatus.PENDING,
+                            or_(
+                                IndexJob.owner_worker_id.is_(None),
+                                IndexJob.lease_expires_at.is_(None),
+                                IndexJob.lease_expires_at <= clock,
+                            ),
+                        ),
+                        and_(
+                            IndexJob.status == IndexJobStatus.RETRY_WAIT,
+                            IndexJob.next_retry_at <= clock,
+                            or_(
+                                IndexJob.owner_worker_id.is_(None),
+                                IndexJob.lease_expires_at.is_(None),
+                                IndexJob.lease_expires_at <= clock,
+                            ),
+                        ),
+                        and_(
+                            IndexJob.status == IndexJobStatus.STAGED,
+                            or_(
+                                IndexJob.next_retry_at.is_(None),
+                                IndexJob.next_retry_at <= clock,
+                            ),
+                            or_(
+                                IndexJob.owner_worker_id.is_(None),
+                                IndexJob.lease_expires_at.is_(None),
+                                IndexJob.lease_expires_at <= clock,
+                            ),
+                        ),
+                        and_(
+                            IndexJob.status == IndexJobStatus.RUNNING,
+                            or_(
+                                IndexJob.lease_expires_at.is_(None),
+                                IndexJob.lease_expires_at <= clock,
+                            ),
+                        ),
+                    )
+                )
+            )
+            if expected_capability is not None:
+                index_oldest_query = index_oldest_query.filter(
+                    or_(
+                        IndexJob.status == IndexJobStatus.STAGED,
+                        DocumentVersion.build_fingerprint == expected_capability,
+                    )
+                )
+            index_oldest = index_oldest_query.scalar()
+            cleanup_oldest = (
+                db.query(func.min(DocumentCleanupJob.created_at))
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == DocumentCleanupJob.document_version_id,
+                )
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .filter(
+                    DocumentVersion.cleanup_after.is_not(None),
+                    DocumentVersion.cleanup_after <= clock,
+                    DocumentVersion.index_cleaned_at.is_(None),
+                    DocumentVersion.status.in_(
+                        {
+                            DocumentVersionStatus.FAILED,
+                            DocumentVersionStatus.SUPERSEDED,
+                        }
+                    ),
+                    or_(
+                        Document.current_version_id.is_(None),
+                        Document.current_version_id != DocumentVersion.id,
+                    ),
+                    or_(
+                        Document.pending_version_id.is_(None),
+                        Document.pending_version_id != DocumentVersion.id,
+                    ),
+                    or_(
+                        and_(
+                            DocumentCleanupJob.status == CleanupJobStatus.PENDING,
+                            or_(
+                                DocumentCleanupJob.next_retry_at.is_(None),
+                                DocumentCleanupJob.next_retry_at <= clock,
+                            ),
+                        ),
+                        and_(
+                            DocumentCleanupJob.status == CleanupJobStatus.RETRY_WAIT,
+                            DocumentCleanupJob.next_retry_at <= clock,
+                        ),
+                        and_(
+                            DocumentCleanupJob.status == CleanupJobStatus.RUNNING,
+                            or_(
+                                DocumentCleanupJob.lease_expires_at.is_(None),
+                                DocumentCleanupJob.lease_expires_at <= clock,
+                            ),
+                        ),
+                    ),
+                )
+                .scalar()
+            )
+            oldest = min(
+                (
+                    value
+                    for value in (index_oldest, cleanup_oldest)
+                    if value is not None
+                ),
+                default=None,
+            )
+            return WorkerReadiness(
+                worker_kind=kind,
+                ready=bool(fresh),
+                fresh_workers=len(fresh),
+                latest_heartbeat_at=latest,
+                queue_counts=queue_counts,
+                oldest_ready_at=oldest,
+                incompatible_fresh_workers=incompatible_fresh_workers,
+                expected_build_fingerprint=expected_capability,
+            )
+        finally:
+            db.close()
+
     def cleanup_candidates(
         self,
         *,
@@ -2693,7 +4583,7 @@ class DocumentCatalog:
         now: datetime | None = None,
         limit: int = 100,
     ) -> list[CleanupCandidate]:
-        cutoff = now or utcnow()
+        cutoff = _utc_naive(now) if now is not None else utcnow()
         db = self._session_factory()
         try:
             rows = (
@@ -2749,7 +4639,7 @@ class DocumentCatalog:
                     raise AppError(
                         ErrorCode.NOT_FOUND, "文档版本不存在", status_code=404
                     )
-                version, _document, knowledge_base = row
+                version, document, knowledge_base = row
                 if version.status not in {
                     DocumentVersionStatus.FAILED,
                     DocumentVersionStatus.SUPERSEDED,
@@ -2759,16 +4649,66 @@ class DocumentCatalog:
                         "仅 failed/superseded 版本可以记录清理结果",
                         status_code=409,
                     )
-                now = utcnow()
-                if version.index_cleaned_at is not None:
-                    return self._version_record(version)
-                if error_code:
-                    version.cleanup_error_code = _required_text(
-                        error_code, "error_code", 64
+                if (
+                    document.current_version_id == version.id
+                    or document.pending_version_id == version.id
+                ):
+                    raise AppError(
+                        ErrorCode.CONFLICT,
+                        "当前或候选版本不能记录物理清理结果",
+                        status_code=409,
                     )
+                now = _database_now(db)
+                cleanup_job = (
+                    db.query(DocumentCleanupJob)
+                    .filter(DocumentCleanupJob.document_version_id == version.id)
+                    .with_for_update()
+                    .first()
+                )
+                if cleanup_job is not None:
+                    if cleanup_job.status == CleanupJobStatus.RUNNING:
+                        raise AppError(
+                            ErrorCode.CONFLICT,
+                            "清理任务已由 worker 领取，必须使用 execution finalize",
+                            status_code=409,
+                        )
+                    if cleanup_job.status == CleanupJobStatus.DEAD_LETTER:
+                        raise AppError(
+                            ErrorCode.CONFLICT,
+                            "dead-letter 清理任务必须先由 operator 重新排队",
+                            status_code=409,
+                        )
+                    if cleanup_job.status == CleanupJobStatus.COMPLETED:
+                        if version.index_cleaned_at is None:
+                            raise AppError(
+                                ErrorCode.CONFLICT,
+                                "cleanup job 与版本清理状态不一致",
+                                status_code=409,
+                            )
+                        return self._version_record(version)
+                if error_code:
+                    code = _required_text(error_code, "error_code", 64)
+                    if version.index_cleaned_at is None:
+                        version.cleanup_error_code = code
+                    if cleanup_job is not None and cleanup_job.status not in {
+                        CleanupJobStatus.COMPLETED,
+                        CleanupJobStatus.DEAD_LETTER,
+                    }:
+                        cleanup_job.error_code = code
+                        cleanup_job.updated_at = now
                 else:
                     version.index_cleaned_at = now
                     version.cleanup_error_code = None
+                    if cleanup_job is not None:
+                        cleanup_job.status = CleanupJobStatus.COMPLETED
+                        cleanup_job.current_step = "completed"
+                        cleanup_job.owner_worker_id = None
+                        cleanup_job.lease_expires_at = None
+                        cleanup_job.next_retry_at = None
+                        cleanup_job.error_code = None
+                        cleanup_job.error_detail_redacted = None
+                        cleanup_job.finished_at = cleanup_job.finished_at or now
+                        cleanup_job.updated_at = now
                 version.updated_at = now
                 self._bump_revision(knowledge_base, now)
                 db.flush()

@@ -244,6 +244,7 @@ class MilvusWriter:
         collection_name: str | None = None,
         batch_size: int = 50,
         progress_callback=None,
+        ownership_guard=None,
     ) -> IndexWriteReceipt:
         """写入隔离的候选 collection，并返回可做 exact verify 的回执。"""
 
@@ -301,6 +302,8 @@ class MilvusWriter:
             document_version_id=version_id,
             index_version=index_version,
         )
+        if ownership_guard:
+            ownership_guard()
         store.delete_by_version(
             tenant_id=scope.tenant_id,
             knowledge_base_id=scope.knowledge_base_id,
@@ -308,11 +311,15 @@ class MilvusWriter:
             document_version_id=scope.document_version_id,
             index_version=scope.index_version,
         )
+        if ownership_guard:
+            ownership_guard()
 
         inserted_count = 0
         batch_count = 0
         total = len(normalized_documents)
         for index in range(0, total, batch_size):
+            if ownership_guard:
+                ownership_guard()
             batch = normalized_documents[index : index + batch_size]
             texts = [document["text"] for document in batch]
             dense_embeddings = self.embedding_service.get_embeddings(texts)
@@ -338,6 +345,8 @@ class MilvusWriter:
                 for document, dense_embedding in zip(batch, dense_embeddings)
             ]
             response = store.insert(insert_data)
+            if ownership_guard:
+                ownership_guard()
             inserted_count += _insert_count(response, len(batch))
             batch_count += 1
             if progress_callback:

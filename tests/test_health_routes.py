@@ -6,7 +6,13 @@ from unittest.mock import patch
 import backend.api.routes.health as health
 
 
-def _runtime(*, running: bool, embedding_ready: bool, warmup: bool):
+def _runtime(
+    *,
+    running: bool,
+    embedding_ready: bool,
+    warmup: bool,
+    worker_required: bool = True,
+):
     snapshot = SimpleNamespace(
         running=running,
         embedding=SimpleNamespace(
@@ -20,7 +26,13 @@ def _runtime(*, running: bool, embedding_ready: bool, warmup: bool):
         rerank_model=None,
     )
     return SimpleNamespace(
-        settings=SimpleNamespace(embedding=SimpleNamespace(warmup_on_start=warmup)),
+        settings=SimpleNamespace(
+            embedding=SimpleNamespace(warmup_on_start=warmup),
+            worker=SimpleNamespace(
+                indexing_worker_required=worker_required,
+                indexing_readiness_ttl_seconds=45,
+            ),
+        ),
         readiness=lambda: snapshot,
     )
 
@@ -31,6 +43,7 @@ def _catalog(
     state_exists: bool = True,
     collection: str | None = None,
     knowledge_base_name: str | None = None,
+    worker_ready: bool = True,
 ):
     return SimpleNamespace(
         legacy_adoption_state=lambda **_kwargs: SimpleNamespace(
@@ -47,7 +60,28 @@ def _catalog(
                 else health.document_publication.config.knowledge_base_name
             ),
             fingerprint="a" * 64,
-        )
+        ),
+        worker_readiness=lambda **_kwargs: SimpleNamespace(
+            worker_kind="indexing",
+            ready=worker_ready,
+            fresh_workers=1 if worker_ready else 0,
+            latest_heartbeat_at=(
+                SimpleNamespace(isoformat=lambda: "2026-07-15T12:00:00")
+                if worker_ready
+                else None
+            ),
+            queue_counts={
+                "index_pending": 0,
+                "index_running": 0,
+                "cleanup_pending": 0,
+                "cleanup_running": 0,
+            },
+            oldest_ready_at=None,
+            incompatible_fresh_workers=0,
+            expected_build_fingerprint=(
+                health.document_publication.config.build_profile.fingerprint
+            ),
+        ),
     )
 
 
@@ -97,6 +131,84 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.body)
         self.assertEqual(503, response.status_code)
         self.assertFalse(payload["document_catalog"]["legacy_adoption_complete"])
+
+    async def test_ready_fails_without_a_fresh_indexing_worker_heartbeat(self):
+        with (
+            patch.object(
+                health,
+                "provider_runtime",
+                _runtime(running=True, embedding_ready=True, warmup=True),
+            ),
+            patch.object(
+                health,
+                "document_catalog",
+                _catalog(complete=True, worker_ready=False),
+            ),
+        ):
+            response = await health.ready()
+
+        payload = json.loads(response.body)
+        self.assertEqual(503, response.status_code)
+        self.assertFalse(payload["indexing_worker"]["ready"])
+
+    async def test_ready_requires_a_worker_with_the_current_build_profile(self):
+        expected = health.document_publication.config.build_profile.fingerprint
+        captured: list[dict] = []
+
+        def worker_readiness(**kwargs):
+            captured.append(kwargs)
+            matching = len(captured) > 1
+            return SimpleNamespace(
+                worker_kind="indexing",
+                ready=matching,
+                fresh_workers=1 if matching else 0,
+                incompatible_fresh_workers=0 if matching else 1,
+                expected_build_fingerprint=expected,
+                latest_heartbeat_at=None,
+                queue_counts={},
+                oldest_ready_at=None,
+            )
+
+        catalog = _catalog(complete=True)
+        catalog.worker_readiness = worker_readiness
+        with (
+            patch.object(
+                health,
+                "provider_runtime",
+                _runtime(running=True, embedding_ready=True, warmup=True),
+            ),
+            patch.object(health, "document_catalog", catalog),
+        ):
+            incompatible = await health.ready()
+            matching = await health.ready()
+
+        self.assertEqual(503, incompatible.status_code)
+        self.assertEqual(200, matching.status_code)
+        self.assertEqual(expected, captured[0]["expected_build_fingerprint"])
+        payload = json.loads(incompatible.body)
+        self.assertEqual(1, payload["indexing_worker"]["incompatible_fresh_workers"])
+
+    async def test_ready_can_explicitly_disable_the_indexing_worker_gate(self):
+        with (
+            patch.object(
+                health,
+                "provider_runtime",
+                _runtime(
+                    running=True,
+                    embedding_ready=True,
+                    warmup=True,
+                    worker_required=False,
+                ),
+            ),
+            patch.object(
+                health,
+                "document_catalog",
+                _catalog(complete=True, worker_ready=False),
+            ),
+        ):
+            response = await health.ready()
+
+        self.assertEqual(200, response.status_code)
 
     async def test_ready_is_read_only_and_fails_when_catalog_state_is_missing(self):
         with (

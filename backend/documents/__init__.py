@@ -1,11 +1,16 @@
 from backend.documents.catalog import (
     BuildProfile,
+    CleanupBuild,
     CleanupCandidate,
+    CleanupJobExecution,
+    CleanupJobRecord,
+    CleanupJobStatus,
     DocumentCatalog,
     DocumentRecord,
     DocumentVersionRecord,
     DocumentVersionStatus,
     IndexJobRecord,
+    IndexJobExecution,
     IndexJobStatus,
     KnowledgeBaseRecord,
     LegacyAdoptionResult,
@@ -17,6 +22,8 @@ from backend.documents.catalog import (
     StorageLayout,
     UploadReservation,
     VersionBuild,
+    WorkerReadiness,
+    WorkerStatus,
     legacy_source_identity,
 )
 from backend.documents.publication import (
@@ -34,7 +41,11 @@ from backend.documents.retrieval import (
 
 __all__ = [
     "BuildProfile",
+    "CleanupBuild",
     "CleanupCandidate",
+    "CleanupJobExecution",
+    "CleanupJobRecord",
+    "CleanupJobStatus",
     "DocumentCatalog",
     "DocumentPublication",
     "DocumentPublicationConfig",
@@ -44,6 +55,7 @@ __all__ = [
     "DocumentVersionRecord",
     "DocumentVersionStatus",
     "IndexJobRecord",
+    "IndexJobExecution",
     "IndexJobStatus",
     "KnowledgeBaseRecord",
     "LegacyAdoptionResult",
@@ -58,5 +70,7 @@ __all__ = [
     "StorageLayout",
     "UploadReservation",
     "VersionBuild",
+    "WorkerReadiness",
+    "WorkerStatus",
     "legacy_source_identity",
 ]

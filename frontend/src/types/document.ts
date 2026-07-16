@@ -42,6 +42,7 @@ export type UploadJobStatus =
 
 export interface UploadJob {
   job_id: string;
+  cleanup_job_id?: string | null;
   filename?: string;
   status: UploadJobStatus;
   current_step?: string;
@@ -49,6 +50,10 @@ export interface UploadJob {
   total_chunks?: number;
   processed_chunks?: number;
   error?: string | null;
+  attempts?: number;
+  max_attempts?: number;
+  execution_fence?: number;
+  next_retry_at?: string | null;
   created_at?: string;
   updated_at?: string;
   steps: UploadStep[];
@@ -64,8 +69,17 @@ export interface DeleteStep {
 
 export interface DeleteJob {
   job_id: string;
+  cleanup_job_id?: string | null;
+  filename: string;
+  document_id?: string | null;
+  document_version_id?: string | null;
+  dead_letter_job_ids?: string[];
   status: DeleteJobStatus;
+  current_step?: string;
   message: string;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
   steps: DeleteStep[];
 }
 
@@ -73,6 +87,11 @@ export type DeleteJobStatus = 'running' | 'completed' | 'failed' | 'cleanup_pend
 
 export interface ActiveDeleteJob {
   jobId?: string;
+  documentId?: string | null;
+  documentVersionId?: string | null;
+  deadLetterJobIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
   status: DeleteJobStatus;
   message: string;
   collapsed: boolean;

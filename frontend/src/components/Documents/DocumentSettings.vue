@@ -111,7 +111,7 @@ const filteredDocuments = computed(() => {
 
 const onRefresh = async () => {
   try {
-    await documentStore.loadDocuments();
+    await documentStore.initializeDocumentWorkspace();
   } catch (error: any) {
     alert(error.message);
   }

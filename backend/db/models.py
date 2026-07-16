@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     CHAR,
+    BigInteger,
     CheckConstraint,
     JSON,
     Boolean,
@@ -406,6 +407,11 @@ class Document(Base):
         foreign_keys=[pending_version_id],
         post_update=True,
     )
+    retirement_jobs = relationship(
+        "DocumentRetirementJob",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
 
 
 class DocumentVersion(Base):
@@ -492,6 +498,12 @@ class DocumentVersion(Base):
     jobs = relationship(
         "IndexJob", back_populates="document_version", cascade="all, delete-orphan"
     )
+    cleanup_job = relationship(
+        "DocumentCleanupJob",
+        back_populates="document_version",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     manifests = relationship(
         "IndexManifest",
         back_populates="document_version",
@@ -503,6 +515,18 @@ class IndexJob(Base):
     __tablename__ = "index_jobs"
     __table_args__ = (
         UniqueConstraint("document_version_id", name="uq_index_job_document_version"),
+        Index(
+            "ix_index_jobs_claim_ready",
+            "status",
+            "next_retry_at",
+            "created_at",
+        ),
+        Index(
+            "ix_index_jobs_claim_expired",
+            "status",
+            "lease_expires_at",
+            "created_at",
+        ),
         CheckConstraint(
             "status IN ('pending', 'running', 'retry_wait', 'staged', "
             "'completed', 'failed', 'cancelled', 'dead_letter')",
@@ -526,6 +550,7 @@ class IndexJob(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     publication_fence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    execution_fence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     expected_current_version_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
@@ -536,6 +561,7 @@ class IndexJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
     step_state_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
@@ -545,6 +571,128 @@ class IndexJob(Base):
     )
 
     document_version = relationship("DocumentVersion", back_populates="jobs")
+
+
+class DocumentCleanupJob(Base):
+    __tablename__ = "document_cleanup_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_version_id",
+            name="uq_document_cleanup_job_document_version",
+        ),
+        Index(
+            "ix_document_cleanup_jobs_claim_ready",
+            "status",
+            "next_retry_at",
+            "created_at",
+        ),
+        Index(
+            "ix_document_cleanup_jobs_claim_expired",
+            "status",
+            "lease_expires_at",
+            "created_at",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'retry_wait', "
+            "'completed', 'dead_letter')",
+            name="ck_document_cleanup_jobs_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document_version_id: Mapped[str] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    current_step: Mapped[str] = mapped_column(
+        String(64), default="pending", nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    owner_worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    execution_fence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    step_state_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    document_version = relationship("DocumentVersion", back_populates="cleanup_job")
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        Index(
+            "ix_worker_heartbeats_readiness",
+            "worker_kind",
+            "status",
+            "heartbeat_at",
+        ),
+        CheckConstraint(
+            "status IN ('starting', 'running', 'draining', 'stopped')",
+            name="ck_worker_heartbeats_status",
+        ),
+    )
+
+    worker_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    worker_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="starting", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class DocumentRetirementJob(Base):
+    __tablename__ = "document_retirement_jobs"
+    __table_args__ = (
+        Index(
+            "ix_document_retirement_jobs_tenant_created",
+            "tenant_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    publication_fence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cleanup_version_ids_json: Mapped[list] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    document = relationship("Document", back_populates="retirement_jobs")
 
 
 class IndexManifest(Base):

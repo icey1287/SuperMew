@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
@@ -17,6 +18,7 @@ from backend.documents.catalog import (
     DocumentCatalog,
     DocumentRecord,
     DocumentVersionRecord,
+    IndexJobExecution,
     IndexJobRecord,
     IndexJobStatus,
     ManifestEntry,
@@ -151,6 +153,7 @@ class DocumentRetirementOutcome:
     cleanup_pending: bool = False
     cleanup_error_code: str | None = None
     cleanup_step: str | None = None
+    retirement_job_id: str | None = None
 
 
 class _PreserveCandidateArtifacts(AppError):
@@ -234,18 +237,6 @@ class DocumentPublication:
             raise
         if reservation.version.source_object_key != stored_upload.object_key:
             self._discard_upload(stored_upload)
-        if not reservation.already_current and (
-            reservation.created or reservation.requeued
-        ):
-            self._update_job(
-                reservation.job.id,
-                reservation.publication_fence,
-                status=IndexJobStatus.PENDING,
-                current_step="upload",
-                progress=_STEP_GLOBAL_PROGRESS["upload"],
-                message="文件已保存，候选版本等待构建",
-                step_percent=100,
-            )
         return reservation
 
     def _discard_upload(self, stored_upload: StoredUpload) -> None:
@@ -268,6 +259,7 @@ class DocumentPublication:
         increment_attempts: bool = False,
         total_chunks: int | None = None,
         processed_chunks: int | None = None,
+        execution: IndexJobExecution | None = None,
     ) -> IndexJobRecord:
         patch: dict[str, Any] = {
             "message": message,
@@ -286,6 +278,7 @@ class DocumentPublication:
             progress=max(0, min(100, int(progress))),
             step_state_patch=patch,
             increment_attempts=increment_attempts,
+            execution=execution,
         )
 
     @staticmethod
@@ -318,6 +311,7 @@ class DocumentPublication:
         total_chunks: int | None = None,
         processed_chunks: int | None = None,
         status: str = IndexJobStatus.RUNNING,
+        execution: IndexJobExecution | None = None,
     ) -> None:
         self._update_job(
             job_id,
@@ -330,6 +324,7 @@ class DocumentPublication:
             increment_attempts=increment_attempts,
             total_chunks=total_chunks,
             processed_chunks=processed_chunks,
+            execution=execution,
         )
         self._notify(callback, step, step_percent, message)
 
@@ -346,10 +341,56 @@ class DocumentPublication:
             for document in documents
         ]
 
+    def _guard_execution(
+        self,
+        job_id: str,
+        execution: IndexJobExecution | None,
+    ) -> None:
+        if execution is not None:
+            self.catalog.assert_index_lease(job_id=job_id, execution=execution)
+
+    @staticmethod
+    def _recorded_build_profile(build) -> BuildProfile:
+        recorded = BuildProfile(
+            parser_version=build.version.parser_version,
+            chunker_version=build.version.chunker_version,
+            embedding_model=build.version.embedding_model,
+            index_version=build.version.index_version,
+        )
+        if recorded.fingerprint != build.version.build_fingerprint:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "候选版本 build profile 完整性校验失败",
+                status_code=409,
+                safe_details={
+                    "job_build_fingerprint": build.version.build_fingerprint,
+                    "recorded_build_fingerprint": recorded.fingerprint,
+                },
+                stage="build_profile_integrity",
+            )
+        return recorded
+
+    def _assert_worker_build_profile(self, build) -> None:
+        configured = self.config.build_profile
+        if configured.fingerprint != build.version.build_fingerprint:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "当前 worker 构建能力与候选版本 profile 不匹配",
+                status_code=409,
+                retryable=True,
+                safe_details={
+                    "job_build_fingerprint": build.version.build_fingerprint,
+                    "worker_build_fingerprint": configured.fingerprint,
+                },
+                stage="worker_capability",
+            )
+
     def run(
         self,
         reservation_or_job_id: UploadReservation | str,
         progress: ProgressCallback | None = None,
+        *,
+        execution: IndexJobExecution | None = None,
     ) -> PublicationOutcome:
         job_id = (
             reservation_or_job_id.job.id
@@ -359,14 +400,22 @@ class DocumentPublication:
         with self._job_locks_guard:
             job_lock = self._job_locks.setdefault(job_id, Lock())
         with job_lock:
-            return self._run_once(job_id, progress)
+            return self._run_once(job_id, progress, execution)
 
     def _run_once(
         self,
         job_id: str,
         progress: ProgressCallback | None,
+        execution: IndexJobExecution | None,
     ) -> PublicationOutcome:
-        build = self.catalog.load_build(job_id=job_id, tenant_id=self.config.tenant_id)
+        build = (
+            self.catalog.assert_index_lease(job_id=job_id, execution=execution)
+            if execution is not None
+            else self.catalog.load_build(
+                job_id=job_id,
+                tenant_id=self.config.tenant_id,
+            )
+        )
         if build.job.status == IndexJobStatus.COMPLETED:
             return PublicationOutcome(
                 job_id=job_id,
@@ -378,8 +427,6 @@ class DocumentPublication:
                 published=False,
                 reused_current=True,
             )
-        if build.job.status == IndexJobStatus.STAGED:
-            return self._publish_staged(build, progress)
         if build.job.status in {
             IndexJobStatus.FAILED,
             IndexJobStatus.CANCELLED,
@@ -390,6 +437,11 @@ class DocumentPublication:
                 "索引任务已失效，不能继续构建",
                 status_code=409,
             )
+        self._recorded_build_profile(build)
+        if build.job.status == IndexJobStatus.STAGED:
+            return self._publish_staged(build, progress, execution)
+
+        self._assert_worker_build_profile(build)
 
         fence = build.job.publication_fence
         scope = self.writer.build_version_scope(
@@ -414,7 +466,7 @@ class DocumentPublication:
                 step_percent=100,
                 message=f"候选版本 v{build.version.version_number} 已获得发布 fencing",
                 callback=progress,
-                increment_attempts=True,
+                execution=execution,
             )
 
             stage = "parse"
@@ -426,7 +478,9 @@ class DocumentPublication:
                 step_percent=5,
                 message="正在解析并生成版本隔离的三级分块",
                 callback=progress,
+                execution=execution,
             )
+            self._guard_execution(job_id, execution)
             source_path = _source_path(
                 self.config.upload_dir,
                 build.version.source_object_key,
@@ -451,6 +505,7 @@ class DocumentPublication:
                     "文档处理失败",
                     status_code=422,
                 ) from exc
+            self._guard_execution(job_id, execution)
             parent_documents = [
                 document
                 for document in documents
@@ -480,6 +535,7 @@ class DocumentPublication:
                 callback=progress,
                 total_chunks=len(leaf_documents),
                 processed_chunks=0,
+                execution=execution,
             )
 
             stage = "parent_store"
@@ -491,10 +547,12 @@ class DocumentPublication:
                 step_percent=10,
                 message="正在写入隔离的候选父级分块",
                 callback=progress,
+                execution=execution,
             )
             # A crashed attempt may have left a strict subset/superset behind. The
             # candidate is unpublished, so replacing this exact version scope makes
             # the next attempt idempotent without touching the current version.
+            self._guard_execution(job_id, execution)
             self.parent_store.delete_by_version(
                 tenant_id=scope.tenant_id,
                 knowledge_base_id=scope.knowledge_base_id,
@@ -502,7 +560,9 @@ class DocumentPublication:
                 document_version_id=scope.document_version_id,
                 index_version=scope.index_version,
             )
+            self._guard_execution(job_id, execution)
             parent_count = self.parent_store.upsert_documents(parent_documents)
+            self._guard_execution(job_id, execution)
             if parent_count != len(parent_documents):
                 raise RuntimeError("parent chunk write count mismatch")
             parent_verification = self.parent_store.verify_version(
@@ -515,6 +575,7 @@ class DocumentPublication:
                     str(document["chunk_id"]) for document in parent_documents
                 ],
             )
+            self._guard_execution(job_id, execution)
             if not parent_verification.exact:
                 raise RuntimeError("parent chunk exact verification failed")
             self._step(
@@ -525,6 +586,7 @@ class DocumentPublication:
                 step_percent=100,
                 message=f"候选父级分块精确核验通过：{parent_count} 条",
                 callback=progress,
+                execution=execution,
             )
 
             stage = "vector_store"
@@ -538,6 +600,7 @@ class DocumentPublication:
                 callback=progress,
                 total_chunks=len(leaf_documents),
                 processed_chunks=0,
+                execution=execution,
             )
 
             def on_vector_progress(processed: int, total: int) -> None:
@@ -558,13 +621,21 @@ class DocumentPublication:
                     callback=progress,
                     total_chunks=total,
                     processed_chunks=processed,
+                    execution=execution,
                 )
 
+            self._guard_execution(job_id, execution)
             receipt = self.writer.write_versioned_documents(
                 leaf_documents,
                 collection_name=scope.collection_name,
                 progress_callback=on_vector_progress,
+                ownership_guard=(
+                    (lambda: self._guard_execution(job_id, execution))
+                    if execution is not None
+                    else None
+                ),
             )
+            self._guard_execution(job_id, execution)
 
             stage = "verify"
             self._step(
@@ -577,8 +648,11 @@ class DocumentPublication:
                 callback=progress,
                 total_chunks=len(leaf_documents),
                 processed_chunks=len(leaf_documents),
+                execution=execution,
             )
+            self._guard_execution(job_id, execution)
             vector_verification = self.writer.verify_receipt(receipt)
+            self._guard_execution(job_id, execution)
             if not vector_verification.exact:
                 raise RuntimeError("Milvus exact verification failed")
             manifest = [
@@ -591,12 +665,13 @@ class DocumentPublication:
                 entries=manifest,
                 vector_chunk_count=len(leaf_documents),
                 parent_chunk_count=len(parent_documents),
+                execution=execution,
             )
             self._notify(progress, stage, 100, "跨存储索引一致性核验通过")
 
             stage = "publish"
             self._notify(progress, stage, 20, "正在原子切换 PostgreSQL current_version")
-            result = self._publish_with_reconciliation(build)
+            result = self._publish_with_reconciliation(build, execution)
             published = True
             self._notify(progress, stage, 100, "新版本已原子发布，旧版本进入延迟清理")
             return PublicationOutcome(
@@ -614,6 +689,7 @@ class DocumentPublication:
             if stage == "verify" and self._staged_candidate_is_durable(
                 job_id,
                 build.version.id,
+                build.document.tenant_id,
             ):
                 raise _PreserveCandidateArtifacts(
                     ErrorCode.STORAGE_UNAVAILABLE,
@@ -621,6 +697,16 @@ class DocumentPublication:
                     status_code=503,
                     retryable=True,
                     stage="verify",
+                ) from exc
+            if execution is not None:
+                if isinstance(exc, AppError):
+                    raise
+                raise AppError(
+                    _safe_error_code(exc, stage=stage),
+                    "文档候选版本本次构建失败，worker 将按策略处理",
+                    status_code=503,
+                    retryable=stage not in {"parse", "publish"},
+                    stage=stage,
                 ) from exc
             if not published:
                 self._record_failure_before_cleanup(
@@ -644,11 +730,16 @@ class DocumentPublication:
                 stage=stage,
             ) from exc
 
-    def _staged_candidate_is_durable(self, job_id: str, version_id: str) -> bool:
+    def _staged_candidate_is_durable(
+        self,
+        job_id: str,
+        version_id: str,
+        tenant_id: str,
+    ) -> bool:
         try:
             refreshed = self.catalog.load_build(
                 job_id=job_id,
-                tenant_id=self.config.tenant_id,
+                tenant_id=tenant_id,
             )
         except Exception:
             # Unknown commit state is resolved by preserving the unpublished
@@ -661,19 +752,24 @@ class DocumentPublication:
             and pending.id == version_id
         )
 
-    def _publish_with_reconciliation(self, build) -> PublicationResult:
+    def _publish_with_reconciliation(
+        self,
+        build,
+        execution: IndexJobExecution | None,
+    ) -> PublicationResult:
         try:
             return self.catalog.publish(
                 job_id=build.job.id,
                 publication_fence=build.job.publication_fence,
                 expected_current_version_id=build.job.expected_current_version_id,
                 cleanup_grace=self.config.cleanup_grace,
+                execution=execution,
             )
         except Exception as exc:
             try:
                 refreshed = self.catalog.load_build(
                     job_id=build.job.id,
-                    tenant_id=self.config.tenant_id,
+                    tenant_id=build.document.tenant_id,
                 )
             except Exception as refresh_exc:
                 raise _PreserveCandidateArtifacts(
@@ -719,6 +815,7 @@ class DocumentPublication:
         self,
         build,
         progress: ProgressCallback | None,
+        execution: IndexJobExecution | None,
     ) -> PublicationOutcome:
         scope = self.writer.build_version_scope(
             tenant_id=build.document.tenant_id,
@@ -735,7 +832,8 @@ class DocumentPublication:
                 20,
                 "已恢复 exact-verified 候选，正在原子发布",
             )
-            result = self._publish_with_reconciliation(build)
+            self._guard_execution(build.job.id, execution)
+            result = self._publish_with_reconciliation(build, execution)
             self._notify(progress, "publish", 100, "候选版本恢复后已原子发布")
             return PublicationOutcome(
                 job_id=build.job.id,
@@ -749,6 +847,16 @@ class DocumentPublication:
         except Exception as exc:
             if isinstance(exc, _PreserveCandidateArtifacts):
                 raise
+            if execution is not None:
+                if isinstance(exc, AppError):
+                    raise
+                raise AppError(
+                    ErrorCode.STORAGE_UNAVAILABLE,
+                    "候选版本恢复发布失败，worker 将按策略重试",
+                    status_code=503,
+                    retryable=True,
+                    stage="publish",
+                ) from exc
             self._record_failure_before_cleanup(
                 build=build,
                 stage="publish",
@@ -788,6 +896,7 @@ class DocumentPublication:
             if self._candidate_is_terminal_and_unreferenced(
                 build.job.id,
                 build.version.id,
+                build.document.tenant_id,
             ):
                 return
             raise _PreserveCandidateArtifacts(
@@ -802,11 +911,12 @@ class DocumentPublication:
         self,
         job_id: str,
         version_id: str,
+        tenant_id: str,
     ) -> bool:
         try:
             refreshed = self.catalog.load_build(
                 job_id=job_id,
-                tenant_id=self.config.tenant_id,
+                tenant_id=tenant_id,
             )
         except Exception:
             return False
@@ -860,6 +970,8 @@ class DocumentPublication:
         *,
         document: DocumentRecord,
         version: DocumentVersionRecord,
+        finalize: bool = True,
+        step_callback: Callable[[str], None] | None = None,
     ) -> int:
         deleted_vectors = 0
         if version.storage_layout == StorageLayout.VERSIONED:
@@ -872,7 +984,11 @@ class DocumentPublication:
                 collection_name=version.vector_collection,
             )
             try:
+                self._notify_cleanup_step(step_callback, "milvus")
                 deleted_vectors = self.writer.delete_by_version(scope)
+                self._notify_cleanup_step(step_callback, "parent_store")
+            except AppError:
+                raise
             except Exception as exc:
                 raise AppError(
                     ErrorCode.STORAGE_UNAVAILABLE,
@@ -889,6 +1005,9 @@ class DocumentPublication:
                     document_version_id=scope.document_version_id,
                     index_version=scope.index_version,
                 )
+                self._notify_cleanup_step(step_callback, "object_store")
+            except AppError:
+                raise
             except Exception as exc:
                 raise AppError(
                     ErrorCode.STORAGE_UNAVAILABLE,
@@ -899,6 +1018,9 @@ class DocumentPublication:
                 ) from exc
             try:
                 self._unlink_version_object(version)
+                self._notify_cleanup_step(step_callback, "finalize")
+            except AppError:
+                raise
             except Exception as exc:
                 raise AppError(
                     ErrorCode.STORAGE_UNAVAILABLE,
@@ -913,7 +1035,11 @@ class DocumentPublication:
                 version.vector_collection or self.writer.milvus_manager.collection_name
             )
             try:
+                self._notify_cleanup_step(step_callback, "milvus")
                 result = store.delete(eq_filter("filename", filename))
+                self._notify_cleanup_step(step_callback, "parent_store")
+            except AppError:
+                raise
             except Exception as exc:
                 raise AppError(
                     ErrorCode.STORAGE_UNAVAILABLE,
@@ -925,7 +1051,10 @@ class DocumentPublication:
             if isinstance(result, dict):
                 deleted_vectors = int(result.get("delete_count", 0) or 0)
             try:
-                self.parent_store.delete_by_filename(filename)
+                self.parent_store.delete_legacy_by_filename(filename)
+                self._notify_cleanup_step(step_callback, "finalize")
+            except AppError:
+                raise
             except Exception as exc:
                 raise AppError(
                     ErrorCode.STORAGE_UNAVAILABLE,
@@ -940,17 +1069,26 @@ class DocumentPublication:
                 "未知文档存储布局，无法清理",
                 status_code=409,
             )
-        try:
-            self.catalog.record_cleanup(document_version_id=version.id)
-        except Exception as exc:
-            raise AppError(
-                ErrorCode.STORAGE_UNAVAILABLE,
-                "文档清理结果暂时无法持久化",
-                status_code=503,
-                retryable=True,
-                stage="finalize",
-            ) from exc
+        if finalize:
+            try:
+                self.catalog.record_cleanup(document_version_id=version.id)
+            except Exception as exc:
+                raise AppError(
+                    ErrorCode.STORAGE_UNAVAILABLE,
+                    "文档清理结果暂时无法持久化",
+                    status_code=503,
+                    retryable=True,
+                    stage="finalize",
+                ) from exc
         return deleted_vectors
+
+    @staticmethod
+    def _notify_cleanup_step(
+        callback: Callable[[str], None] | None,
+        step: str,
+    ) -> None:
+        if callback is not None:
+            callback(step)
 
     def _unlink_version_object(self, version: DocumentVersionRecord) -> None:
         root = self.config.upload_dir.resolve()
@@ -969,14 +1107,9 @@ class DocumentPublication:
         *,
         owner_id: int | None = None,
     ) -> DocumentRetirementOutcome:
+        retirement_job_id = f"retire_{uuid4().hex}"
         document = self._find_document(canonical_name)
-        result = self.catalog.retire(
-            tenant_id=self.config.tenant_id,
-            canonical_name=canonical_name,
-            knowledge_base_id=(document.knowledge_base_id if document else None),
-            cleanup_grace=timedelta(0),
-        )
-        knowledge_base_id = result.knowledge_base_id
+        knowledge_base_id = document.knowledge_base_id if document else None
         if knowledge_base_id is None:
             knowledge_base = self.catalog.find_knowledge_base(
                 tenant_id=self.config.tenant_id,
@@ -1003,30 +1136,29 @@ class DocumentPublication:
                 status_code=400,
             )
         try:
-            tombstone = self.catalog.suppress_legacy_name(
+            result = self.catalog.retire_with_legacy_suppression(
                 tenant_id=self.config.tenant_id,
                 knowledge_base_id=knowledge_base_id,
                 canonical_name=canonical_name,
                 owner_id=tombstone_owner_id,
                 vector_collection=self.writer.milvus_manager.collection_name,
-                cleanup_grace=timedelta(0),
+                cleanup_grace=self.config.cleanup_grace,
+                retirement_job_id=retirement_job_id,
             )
+        except AppError:
+            raise
         except Exception as exc:
             raise AppError(
                 ErrorCode.STORAGE_UNAVAILABLE,
-                "legacy 删除封印暂时无法持久化，请重试删除",
+                "文档删除 scope 暂时无法原子持久化，请重试删除",
                 status_code=503,
                 retryable=True,
                 safe_details={
                     "logical_retired": False,
-                    "catalog_scope_revoked": bool(result.found),
+                    "catalog_scope_revoked": False,
                 },
                 stage="catalog_tombstone",
             ) from exc
-        cleanup_versions = {
-            version.id: version
-            for version in (*result.cleanup_versions, *tombstone.cleanup_versions)
-        }
         document = self._find_document(canonical_name)
         if document is None:
             raise AppError(
@@ -1034,39 +1166,14 @@ class DocumentPublication:
                 "目录删除结果缺少文档 scope",
                 status_code=409,
             )
-        deleted = 0
-        cleanup_error_code: str | None = None
-        cleanup_step: str | None = None
-        for version in cleanup_versions.values():
-            try:
-                deleted += self.cleanup_version(document=document, version=version)
-            except Exception as exc:
-                public_error = getattr(exc, "public_error", None)
-                error_code = _safe_error_code(exc, stage="cleanup")
-                failed_step = str(getattr(public_error, "stage", None) or "finalize")
-                with suppress(Exception):
-                    self.catalog.record_cleanup(
-                        document_version_id=version.id,
-                        error_code=error_code,
-                    )
-                cleanup_error_code = cleanup_error_code or error_code
-                cleanup_step = cleanup_step or failed_step
-                logger.warning(
-                    "retired document cleanup deferred",
-                    extra={
-                        "document_id": document.id,
-                        "document_version_id": version.id,
-                        "cleanup_step": failed_step,
-                        "error_code": error_code,
-                    },
-                )
         return DocumentRetirementOutcome(
             document_id=document.id,
             canonical_name=document.canonical_name,
-            chunks_deleted=deleted,
-            cleanup_pending=cleanup_error_code is not None,
-            cleanup_error_code=cleanup_error_code,
-            cleanup_step=cleanup_step,
+            chunks_deleted=0,
+            cleanup_pending=bool(result.cleanup_versions),
+            cleanup_error_code=None,
+            cleanup_step=("pending" if result.cleanup_versions else None),
+            retirement_job_id=retirement_job_id,
         )
 
     def _find_document(self, canonical_name: str) -> DocumentRecord | None:
@@ -1162,6 +1269,10 @@ def index_job_compatibility_view(job: IndexJobRecord) -> dict[str, Any]:
         "total_chunks": int(state.get("total_chunks", 0) or 0),
         "processed_chunks": int(state.get("processed_chunks", 0) or 0),
         "error": job.error_code,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "execution_fence": job.execution_fence,
+        "next_retry_at": (job.next_retry_at.isoformat() if job.next_retry_at else None),
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "steps": steps,

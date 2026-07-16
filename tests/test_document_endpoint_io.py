@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import backend.api.routes.documents as documents
+from backend.core.errors import AppError, ErrorCode
 
 
 async def _ticks_while(awaitable) -> tuple[object, int]:
@@ -29,6 +30,18 @@ async def _ticks_while(awaitable) -> tuple[object, int]:
 
 
 class DocumentEndpointIoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_durable_upload_and_delete_routes_return_accepted(self):
+        status_by_path = {
+            route.path: route.status_code
+            for route in documents.router.routes
+            if hasattr(route, "status_code")
+        }
+
+        self.assertEqual(202, status_by_path["/documents/upload/async"])
+        self.assertEqual(202, status_by_path["/documents/upload"])
+        self.assertEqual(202, status_by_path["/documents/delete/async/{filename}"])
+        self.assertEqual(202, status_by_path["/documents/{filename}"])
+
     async def test_list_documents_runs_sync_milvus_work_off_event_loop(self):
         def slow_list():
             time.sleep(0.04)
@@ -93,6 +106,7 @@ class DocumentEndpointIoTests(unittest.IsolatedAsyncioTestCase):
             time.sleep(0.04)
             return SimpleNamespace(
                 document_id="doc-1",
+                retirement_job_id="retire-1",
                 chunks_deleted=3,
                 cleanup_pending=False,
                 cleanup_error_code=None,
@@ -108,25 +122,45 @@ class DocumentEndpointIoTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(3, response.chunks_deleted)
+        self.assertEqual("retire-1", response.job_id)
         self.assertGreater(ticks, 3)
 
-    async def test_direct_upload_runs_parse_and_index_work_off_event_loop(self):
+    async def test_compat_delete_fails_closed_without_a_durable_job_id(self):
+        outcome = SimpleNamespace(
+            document_id="doc-1",
+            retirement_job_id=None,
+            chunks_deleted=0,
+            cleanup_pending=False,
+            cleanup_error_code=None,
+        )
+        with patch.object(
+            documents,
+            "delete_document_transactionally",
+            return_value=outcome,
+        ):
+            with self.assertRaises(AppError) as caught:
+                await documents.delete_document(
+                    "manual.pdf",
+                    SimpleNamespace(id=7),
+                )
+
+        self.assertEqual(ErrorCode.STORAGE_UNAVAILABLE, caught.exception.code)
+
+    async def test_deprecated_direct_upload_only_submits_off_event_loop(self):
         stored = SimpleNamespace(
             original_name="manual.pdf",
             path=Path("/tmp/manual.pdf"),
         )
 
-        def slow_store(stored_upload, owner_id):
+        def slow_submit(stored_upload, owner_id):
             self.assertIs(stored, stored_upload)
             self.assertEqual(7, owner_id)
             time.sleep(0.04)
             return SimpleNamespace(
+                job=SimpleNamespace(id="job-1", status="pending"),
                 document=SimpleNamespace(id="doc-1", canonical_name="manual.pdf"),
                 version=SimpleNamespace(id="version-1", version_number=1),
-                parent_chunk_count=2,
-                vector_chunk_count=5,
-                published=True,
-                reused_current=False,
+                already_current=False,
             )
 
         with (
@@ -137,30 +171,73 @@ class DocumentEndpointIoTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=stored),
             ),
             patch.object(
-                documents,
-                "_store_document_sync",
-                side_effect=slow_store,
+                documents.document_publication,
+                "submit",
+                side_effect=slow_submit,
             ),
+            patch.object(
+                documents.document_publication,
+                "run",
+                side_effect=AssertionError("API must not execute indexing"),
+            ) as run,
         ):
             response, ticks = await _ticks_while(
                 documents.upload_document(SimpleNamespace(), SimpleNamespace(id=7))
             )
 
-        self.assertEqual(5, response.chunks_processed)
+        self.assertEqual("job-1", response.job_id)
         self.assertGreater(ticks, 3)
+        run.assert_not_called()
 
-    async def test_delete_cleanup_failure_preserves_logical_retirement_status(self):
-        job = documents.delete_job_manager.create_job(
-            "manual.pdf",
-            steps=documents.DELETE_STEPS,
-            current_step="prepare",
-            message="等待撤销",
-            completion_step="parent_store",
+    async def test_async_upload_only_submits_the_persistent_job(self):
+        stored = SimpleNamespace(
+            original_name="manual.pdf",
+            path=Path("/tmp/manual.pdf"),
         )
+        reservation = SimpleNamespace(
+            job=SimpleNamespace(id="job-1", status="pending"),
+            document=SimpleNamespace(id="doc-1", canonical_name="manual.pdf"),
+            version=SimpleNamespace(id="version-1", version_number=1),
+            already_current=False,
+        )
+
+        with (
+            patch.object(documents, "ensure_upload_dir"),
+            patch.object(
+                documents,
+                "store_upload",
+                new=AsyncMock(return_value=stored),
+            ),
+            patch.object(
+                documents.document_publication,
+                "submit",
+                return_value=reservation,
+            ) as submit,
+            patch.object(
+                documents.document_publication,
+                "run",
+                side_effect=AssertionError(
+                    "the API process must not execute persistent indexing jobs"
+                ),
+            ) as run,
+        ):
+            response = await documents.upload_document_async(
+                file=SimpleNamespace(),
+                user=SimpleNamespace(id=7),
+            )
+
+        self.assertEqual("job-1", response.job_id)
+        self.assertEqual("pending", response.status)
+        submit.assert_called_once_with(stored, 7)
+        run.assert_not_called()
+
+    async def test_async_delete_only_persists_retirement_and_cleanup_queue(self):
         outcome = SimpleNamespace(
+            document_id="doc-1",
+            retirement_job_id="retire-1",
             chunks_deleted=0,
             cleanup_pending=True,
-            cleanup_step="milvus",
+            cleanup_step="pending",
             cleanup_error_code="VECTOR_STORE_UNAVAILABLE",
         )
 
@@ -168,18 +245,14 @@ class DocumentEndpointIoTests(unittest.IsolatedAsyncioTestCase):
             documents,
             "delete_document_transactionally",
             return_value=outcome,
-        ):
-            await asyncio.to_thread(
-                documents._process_delete_job,
-                job["job_id"],
+        ) as retire:
+            response = await documents.delete_document_async(
                 "manual.pdf",
-                7,
+                SimpleNamespace(id=7),
             )
 
-        saved = documents.delete_job_manager.get_job(job["job_id"])
-        self.assertEqual("cleanup_pending", saved["status"])
-        self.assertEqual("completed", saved["steps"][0]["status"])
-        self.assertEqual("CLEANUP_PENDING", saved["error"])
+        self.assertEqual("retire-1", response.job_id)
+        retire.assert_called_once_with("manual.pdf", owner_id=7)
 
 
 if __name__ == "__main__":

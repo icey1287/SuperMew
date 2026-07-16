@@ -54,6 +54,9 @@ study = [
     "bilibili-api-python>=17.0.0",
 ]
 
+[project.scripts]
+supermew-indexing-worker = "backend.workers.indexing:main"
+
 [tool.setuptools.packages.find]
 include = ["backend*"]
 exclude = ["frontend*", "tests*"]

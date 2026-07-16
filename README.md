@@ -19,6 +19,7 @@ Agent的项目记录，方便后续持续更新与展示。
 uv sync
 
 # 运行服务
+uv run alembic upgrade head
 uv run python backend/app.py
 # 或
 uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
@@ -95,6 +96,16 @@ cd ..
 # 运行后端应用
 uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+另开一个终端启动持久化索引 worker；API 不再在请求进程内解析和向量化文档：
+
+```bash
+uv run python -m backend.workers.indexing
+```
+
+API 与 worker 必须共享同一个 `UPLOAD_DIR`。`GET /health/ready` 会检查近期 worker heartbeat；本地确实不启动 worker 时才可显式设置 `INDEX_WORKER_REQUIRED=false`。
+
+当前 `docker-compose.yml` 与 `docker-compose.prod.yml` 只管理 PostgreSQL、Redis、Milvus 等依赖，不会启动 API 或 indexing worker。生产部署必须由 systemd、Kubernetes 或等价 supervisor 分别管理两个进程，并为它们挂载同一持久上传目录、配置自动重启和 termination grace。
 
 浏览器访问：
 - 前端页面：`http://127.0.0.1:8000/` （后端静态托管编译后的 `frontend/dist` 资源）
@@ -231,7 +242,8 @@ npm run build
   - `infra/`：[database.py](backend/infra/database.py)、[cache.py](backend/infra/cache.py)、[auth.py](backend/infra/auth.py)。
   - `db/`：[models.py](backend/db/models.py)：ORM 模型。
   - `schemas/`：Pydantic 请求/响应（auth / chat / documents）。
-  - `jobs/`：[upload_jobs.py](backend/jobs/upload_jobs.py)：异步上传/删除任务进度。
+  - `documents/`：Document Catalog、两阶段发布、持久 indexing/cleanup worker。
+  - `workers/`：[indexing.py](backend/workers/indexing.py)：独立索引 worker 进程入口。
 - 前端：`frontend/`
   - 采用现代工程化设计（Vite + Vue 3 + TypeScript + Pinia + Axios + Sass）。
   - **前端工程架构与状态流**：
@@ -294,13 +306,13 @@ npm run build
   - 检索分数 `score` 与精排分数 `rerank_score`
 
 ### 3) 文档入库链路
-1. 前端上传 PDF/Word 到 `POST /documents/upload`。
-2. 若同名文件已存在：先清除旧向量与父块 PostgreSQL 数据库及 Redis 缓存，保障库内状态一致。
-3. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk_id / parent_chunk_id / root_chunk_id / chunk_level）。
-4. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore / PostgreSQL）。
-5. L3 叶子分块通过 `milvus_writer` 注入密集向量（由本地 `embedding.py` 的 `HuggingFaceEmbeddings` 产生），并将原始文本写入配置了原生分词中文分析器的 `text` 字段。
-6. Milvus 在数据库端自动、同步触发原生 BM25 逆向抽取，动态生成并存储稀疏向量至 `sparse_embedding`，无需客户端介入统计。
-7. 后续检索可直接利用新文档参与召回。
+1. 前端上传到 `POST /documents/upload/async`；API 保存 source object，并在 PostgreSQL 预留 DocumentVersion 与 IndexJob。
+2. 独立 worker 使用 lease、heartbeat、`SKIP LOCKED`、build fingerprint capability 与 execution fence 领取任务；API 重启不会遗失任务，旧 profile worker 也不会误构建新 profile 候选。
+3. `document_loader.py` 生成带稳定版本身份的三级分块；L1/L2 写入 ParentChunk staging，L3 写入隔离的 Milvus candidate scope。
+4. worker 对 ParentChunk、Milvus 与 exact manifest 做完整身份核验，再用 PostgreSQL CAS 原子切换 `current_version_id`。
+5. 同名旧版本在发布完成前始终可检索；新版本失败不会影响旧版本。
+6. superseded/failed/delete 版本进入持久 cleanup queue，由同一 worker 以独立 lease 和数据库时钟退避策略执行 exact-version 物理清理；删除的 scope revoke、legacy tombstone 和 cleanup snapshot 在一个 PostgreSQL 事务内提交。
+7. worker crash 后 RUNNING 任务可幂等重建；STAGED 任务只恢复 publish，不重复解析和向量化。
 
 ### 4) Milvus 2.5+ 原生 BM25 处理
 - **机制**：项目利用了 Milvus 2.5+ 新版内置的全文检索机制。创建集合时，定义一个 `FunctionType.BM25` 类型的函数，输入字段为 `text` 字段，输出字段为 `sparse_embedding`。
@@ -326,6 +338,7 @@ npm run build
 - 密集与稀疏：Dense 由本地 embedding 生成；Sparse 由 Milvus 中文 analyzer 与 BM25 Function 自动生成和维护
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
+- 文档 build capability：`DEFAULT_TENANT_ID`、`DEFAULT_KNOWLEDGE_BASE_NAME`、`DOCUMENT_PARSER_VERSION`、`DOCUMENT_CHUNKER_VERSION`、`DOCUMENT_INDEX_VERSION`、`DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS`。API 与 indexing worker 必须一致；readiness 会按 build fingerprint 拒绝仅有旧 profile worker 的部署。
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
 - 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`
 - 密码参数：`PASSWORD_PBKDF2_ROUNDS`
@@ -347,8 +360,13 @@ npm run build
   - `DELETE /sessions/{session_id}`：删除当前用户会话。
 - 文档（管理员权限）
   - `GET /documents`：列出已入库文档及 chunk 数。
-  - `POST /documents/upload`：上传并向量化 PDF/Word/Excel。
-  - `DELETE /documents/{filename}`：删除指定文档向量数据（会先按文件名分页拉取 chunk 文本并同步扣减 BM25 持久化统计，再删 Milvus）。
+  - `POST /documents/upload/async`：保存上传并提交持久化索引任务。
+  - `GET /documents/upload/jobs`：列出最近 durable 索引任务，供刷新后恢复。
+  - `GET /documents/upload/jobs/{job_id}`：查询可恢复的索引状态、attempt 与退避时间。
+  - `DELETE /documents/delete/async/{filename}`：立即撤销检索 scope，并提交持久化清理任务。
+  - `GET /documents/delete/jobs`：列出最近 durable 删除 operation，供刷新后恢复。
+  - `GET /documents/delete/jobs/{job_id}`：查询物理清理进度或 dead-letter。
+  - 兼容路径 `POST /documents/upload` 与 `DELETE /documents/{filename}` 已改为 `202 Accepted` 并返回 durable `job_id`：前者只持久化提交任务，后者只原子撤销检索 scope；二者都不再表示物理索引/清理已同步完成。旧客户端升级前必须改为轮询 durable job 接口。
 
 ## 流式输出与实时检索过程 — 技术细节
 

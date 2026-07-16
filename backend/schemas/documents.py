@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DocumentInfo(BaseModel):
@@ -66,9 +66,15 @@ class DocumentUploadJobResponse(BaseModel):
     message: str
     document_id: str | None = None
     document_version_id: str | None = None
+    cleanup_job_id: str | None = None
+    dead_letter_job_ids: list[str] = Field(default_factory=list)
     total_chunks: int = 0
     processed_chunks: int = 0
     error: str | None = None
+    attempts: int = 0
+    max_attempts: int = 0
+    execution_fence: int = 0
+    next_retry_at: str | None = None
     created_at: str
     updated_at: str
     steps: list[UploadStepInfo]
@@ -86,6 +92,7 @@ class DocumentDeleteJobResponse(DocumentUploadJobResponse):
 
 class DocumentDeleteResponse(BaseModel):
     filename: str
+    job_id: str
     chunks_deleted: int
     message: str
     document_id: str | None = None

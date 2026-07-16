@@ -22,6 +22,7 @@ async def live() -> dict[str, str]:
 @router.get("/health/ready")
 async def ready() -> JSONResponse:
     snapshot = provider_runtime.readiness()
+    worker_settings = provider_runtime.settings.worker
     try:
         catalog_state = await asyncio.to_thread(
             document_catalog.legacy_adoption_state,
@@ -31,6 +32,19 @@ async def ready() -> JSONResponse:
     except Exception:
         catalog_state = None
         catalog_available = False
+    try:
+        worker_state = await asyncio.to_thread(
+            document_catalog.worker_readiness,
+            worker_kind="indexing",
+            stale_after_seconds=worker_settings.indexing_readiness_ttl_seconds,
+            expected_build_fingerprint=(
+                document_publication.config.build_profile.fingerprint
+            ),
+        )
+        worker_available = True
+    except Exception:
+        worker_state = None
+        worker_available = False
     catalog_collection_matches = bool(
         catalog_state
         and catalog_state.legacy_collection == milvus_manager.collection_name
@@ -48,6 +62,10 @@ async def ready() -> JSONResponse:
         and catalog_state.complete
         and catalog_collection_matches
         and catalog_target_matches
+        and (
+            not worker_settings.indexing_worker_required
+            or bool(worker_state and worker_state.ready)
+        )
     )
     return JSONResponse(
         status_code=200 if is_ready else 503,
@@ -77,6 +95,31 @@ async def ready() -> JSONResponse:
                 "legacy_collection_matches": catalog_collection_matches,
                 "legacy_target_matches": catalog_target_matches,
                 "fingerprint": catalog_state.fingerprint if catalog_state else None,
+            },
+            "indexing_worker": {
+                "required": worker_settings.indexing_worker_required,
+                "available": worker_available,
+                "ready": bool(worker_state and worker_state.ready),
+                "fresh_workers": (worker_state.fresh_workers if worker_state else 0),
+                "incompatible_fresh_workers": (
+                    worker_state.incompatible_fresh_workers if worker_state else 0
+                ),
+                "expected_build_fingerprint": (
+                    worker_state.expected_build_fingerprint
+                    if worker_state
+                    else document_publication.config.build_profile.fingerprint
+                ),
+                "latest_heartbeat_at": (
+                    worker_state.latest_heartbeat_at.isoformat()
+                    if worker_state and worker_state.latest_heartbeat_at
+                    else None
+                ),
+                "queue_counts": (worker_state.queue_counts if worker_state else {}),
+                "oldest_ready_at": (
+                    worker_state.oldest_ready_at.isoformat()
+                    if worker_state and worker_state.oldest_ready_at
+                    else None
+                ),
             },
         },
     )

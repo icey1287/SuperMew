@@ -6,8 +6,17 @@ import type {
   UploadJobStatus,
   UploadStep,
   ActiveDeleteJob,
+  DeleteJob,
+  DeleteJobStatus,
   DeleteStep,
 } from '@/types/document';
+
+const ACTIVE_UPLOAD_JOB_STATUSES = new Set<UploadJobStatus>([
+  'pending',
+  'running',
+  'retry_wait',
+  'staged',
+]);
 
 const TERMINAL_UPLOAD_JOB_STATUSES = new Set<UploadJobStatus>([
   'completed',
@@ -15,6 +24,33 @@ const TERMINAL_UPLOAD_JOB_STATUSES = new Set<UploadJobStatus>([
   'cancelled',
   'dead_letter',
 ]);
+
+const RECOVERABLE_DELETE_JOB_STATUSES = new Set<DeleteJobStatus>([
+  'running',
+  'cleanup_pending',
+  'failed',
+]);
+
+const jobTimestamp = (job: { updated_at?: string; created_at?: string }): number => {
+  const value = Date.parse(job.created_at || job.updated_at || '');
+  return Number.isFinite(value) ? value : 0;
+};
+
+const latestJobsByKey = <T extends { job_id: string; updated_at?: string; created_at?: string }>(
+  jobs: T[],
+  keyFor: (job: T) => string
+): T[] => {
+  const latest = new Map<string, T>();
+  [...jobs]
+    .sort((left, right) => jobTimestamp(right) - jobTimestamp(left))
+    .forEach((job) => {
+      const key = keyFor(job);
+      if (key && !latest.has(key)) {
+        latest.set(key, job);
+      }
+    });
+  return [...latest.values()];
+};
 
 export const useDocumentStore = defineStore('documents', {
   state: () => ({
@@ -96,6 +132,121 @@ export const useDocumentStore = defineStore('documents', {
       } finally {
         this.documentsLoading = false;
       }
+    },
+
+    async initializeDocumentWorkspace() {
+      const initialResults = await Promise.allSettled([
+        this.loadDocuments(),
+        this.restoreDurableUploadJob(),
+      ]);
+      // Retirement fencing compares the durable operation time with the current
+      // catalog version, so restore it only after the latest document list settles.
+      const deleteResults = await Promise.allSettled([
+        this.restoreDurableDeleteJobs(),
+      ]);
+      const results = [...initialResults, ...deleteResults];
+      const rejected = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      );
+      if (rejected) {
+        const reason = rejected.reason;
+        throw reason instanceof Error ? reason : new Error(String(reason || '知识库同步失败'));
+      }
+    },
+
+    async restoreDurableUploadJob() {
+      const response = await api.get('/documents/upload/jobs');
+      const jobs = Array.isArray(response.data) ? response.data as UploadJob[] : [];
+      const latestPerDocument = latestJobsByKey(
+        jobs,
+        (job) => job.filename || job.job_id
+      );
+      const activeJob = latestPerDocument
+        .filter((job) => ACTIVE_UPLOAD_JOB_STATUSES.has(job.status))
+        .sort((left, right) => jobTimestamp(right) - jobTimestamp(left))[0];
+
+      if (!activeJob) return;
+
+      this.isUploading = true;
+      this.selectedFile = null;
+      this.uploadProgressCollapsed = false;
+      this.syncUploadJob(activeJob);
+      this.startUploadJobPolling(activeJob.job_id);
+    },
+
+    async restoreDurableDeleteJobs() {
+      const response = await api.get('/documents/delete/jobs');
+      const jobs = Array.isArray(response.data) ? response.data as DeleteJob[] : [];
+      const latestPerDocument = latestJobsByKey(
+        jobs,
+        (job) => job.filename || job.document_id || job.job_id
+      );
+
+      latestPerDocument.forEach((job) => {
+        const filename = job.filename?.trim();
+        if (!filename) return;
+
+        if (this.isRetirementSupersededByLiveDocument(job)) {
+          this.stopDeleteJobPolling(filename);
+          this.clearDeleteRemovalTimer(filename);
+          const { [filename]: _stale, ...remaining } = this.deleteJobs;
+          this.deleteJobs = remaining;
+          return;
+        }
+        if (job.status === 'completed') {
+          if (this.deleteJobs[filename]) {
+            this.syncDeleteJob(filename, job);
+            this.scheduleDeletedDocumentRemoval(filename);
+          }
+          return;
+        }
+        if (!RECOVERABLE_DELETE_JOB_STATUSES.has(job.status)) return;
+
+        this.syncDeleteJob(filename, job);
+        this.ensureRecoveredDeleteDocument(job);
+        if (job.status === 'running') {
+          this.startDeleteJobPolling(filename, job.job_id);
+        } else {
+          this.stopDeleteJobPolling(filename);
+        }
+      });
+    },
+
+    isRetirementSupersededByLiveDocument(job: DeleteJob): boolean {
+      if (job.status === 'failed') return false;
+      const document = this.documents.find((item) => item.filename === job.filename);
+      if (!document?.uploaded_at || !job.created_at) return false;
+      const documentTimestamp = Date.parse(document.uploaded_at);
+      const retirementTimestamp = Date.parse(job.created_at);
+      return Number.isFinite(documentTimestamp)
+        && Number.isFinite(retirementTimestamp)
+        && documentTimestamp > retirementTimestamp;
+    },
+
+    ensureRecoveredDeleteDocument(job: DeleteJob) {
+      if (this.documents.some((document) => document.filename === job.filename)) return;
+      const suffix = job.filename.split('.').pop()?.toLowerCase();
+      const fileType = suffix === 'pdf'
+        ? 'PDF'
+        : suffix === 'doc' || suffix === 'docx'
+          ? 'Word'
+          : suffix === 'xls' || suffix === 'xlsx'
+            ? 'Excel'
+            : suffix === 'html' || suffix === 'htm'
+              ? 'HTML'
+              : 'Document';
+      this.documents = [
+        ...this.documents,
+        {
+          filename: job.filename,
+          file_type: fileType,
+          chunk_count: 0,
+          document_id: job.document_id || undefined,
+          current_version_id: null,
+          pending_version_id: null,
+          status: 'deleted',
+        },
+      ];
     },
 
     async uploadDocument() {
@@ -243,7 +394,7 @@ export const useDocumentStore = defineStore('documents', {
       };
     },
 
-    syncDeleteJob(filename: string, job: any) {
+    syncDeleteJob(filename: string, job: DeleteJob) {
       const current = this.deleteJobs[filename] || {};
       if (
         current.jobId === job.job_id &&
@@ -254,6 +405,13 @@ export const useDocumentStore = defineStore('documents', {
       }
       this.setDeleteJob(filename, {
         jobId: job.job_id,
+        documentId: job.document_id,
+        documentVersionId: job.document_version_id,
+        deadLetterJobIds: Array.isArray(job.dead_letter_job_ids)
+          ? [...job.dead_letter_job_ids]
+          : [],
+        createdAt: job.created_at,
+        updatedAt: job.updated_at,
         status: job.status,
         message: job.message || '',
         collapsed:

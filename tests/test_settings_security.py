@@ -9,6 +9,7 @@ from backend.core.settings import (
     EmbeddingSettings,
     ModelSettings,
     ObservabilitySettings,
+    PROJECT_ROOT,
     RagSettings,
     RerankSettings,
     RunSettings,
@@ -67,6 +68,13 @@ class SettingsSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "默认数据库凭据"):
             settings.validate_startup()
 
+    def test_production_requires_postgresql_for_worker_claim_fencing(self):
+        settings = make_settings(secret="x" * 40, environment="production")
+        settings.storage.database_url = SecretStr("sqlite:///supermew.db")
+
+        with self.assertRaisesRegex(ValueError, "必须使用 PostgreSQL"):
+            settings.validate_startup()
+
     def test_redacted_dict_does_not_expose_secrets(self):
         settings = make_settings(secret="x" * 40)
         settings.rerank.api_key = SecretStr("rerank-secret")
@@ -113,6 +121,40 @@ class SettingsSecurityTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "EMBEDDING_WARMUP"):
             settings.validate_startup()
+
+    def test_indexing_worker_lease_and_backoff_relationships_are_validated(self):
+        settings = make_settings(secret="x" * 40)
+        settings.worker.indexing_heartbeat_seconds = (
+            settings.worker.indexing_lease_seconds
+        )
+        with self.assertRaisesRegex(ValueError, "INDEX_WORKER_HEARTBEAT_SECONDS"):
+            settings.validate_startup()
+
+        settings = make_settings(secret="x" * 40)
+        settings.worker.indexing_retry_base_seconds = 10
+        settings.worker.indexing_retry_max_seconds = 5
+        with self.assertRaisesRegex(ValueError, "INDEX_WORKER_RETRY_BASE_SECONDS"):
+            settings.validate_startup()
+
+        settings = make_settings(secret="x" * 40)
+        settings.worker.indexing_poll_seconds = 60
+        settings.worker.indexing_readiness_ttl_seconds = 45
+        with self.assertRaisesRegex(ValueError, "INDEX_WORKER_READINESS_TTL_SECONDS"):
+            settings.validate_startup()
+
+    def test_production_cannot_disable_durable_indexing_worker_gate(self):
+        settings = make_settings(secret="x" * 40, environment="production")
+        settings.worker.indexing_worker_required = False
+        with self.assertRaisesRegex(ValueError, "INDEX_WORKER_REQUIRED"):
+            settings.validate_startup()
+
+    def test_relative_upload_dir_is_anchored_to_project_root(self):
+        storage = StorageSettings(_env_file=None, UPLOAD_DIR="shared/documents")
+
+        self.assertEqual(
+            (PROJECT_ROOT / "shared/documents").resolve(),
+            storage.upload_dir,
+        )
 
 
 if __name__ == "__main__":

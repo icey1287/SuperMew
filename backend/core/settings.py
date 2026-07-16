@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -426,9 +426,19 @@ class StorageSettings(_EnvSettings):
         validation_alias="MAX_COMPRESSION_RATIO",
     )
 
+    @field_validator("upload_dir", mode="after")
+    @classmethod
+    def resolve_upload_dir(cls, value: Path) -> Path:
+        path = value.expanduser()
+        return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
 
 class WorkerSettings(_EnvSettings):
     worker_id: str = Field(default="", validation_alias="WORKER_ID")
+    indexing_worker_id: str = Field(
+        default="",
+        validation_alias="INDEX_WORKER_ID",
+    )
     max_concurrent_runs: int = Field(
         default=8,
         ge=1,
@@ -444,6 +454,46 @@ class WorkerSettings(_EnvSettings):
         validation_alias="WORKER_HEARTBEAT_SECONDS",
     )
     max_attempts: int = Field(default=3, ge=1, validation_alias="WORKER_MAX_ATTEMPTS")
+    indexing_worker_required: bool = Field(
+        default=True,
+        validation_alias="INDEX_WORKER_REQUIRED",
+    )
+    indexing_poll_seconds: float = Field(
+        default=1.0,
+        ge=0.05,
+        validation_alias="INDEX_WORKER_POLL_SECONDS",
+    )
+    indexing_lease_seconds: int = Field(
+        default=90,
+        ge=10,
+        validation_alias="INDEX_WORKER_LEASE_SECONDS",
+    )
+    indexing_heartbeat_seconds: int = Field(
+        default=15,
+        ge=1,
+        validation_alias="INDEX_WORKER_HEARTBEAT_SECONDS",
+    )
+    indexing_retry_base_seconds: float = Field(
+        default=5.0,
+        ge=0.1,
+        validation_alias="INDEX_WORKER_RETRY_BASE_SECONDS",
+    )
+    indexing_retry_max_seconds: float = Field(
+        default=300.0,
+        ge=1.0,
+        validation_alias="INDEX_WORKER_RETRY_MAX_SECONDS",
+    )
+    indexing_retry_jitter_ratio: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        validation_alias="INDEX_WORKER_RETRY_JITTER_RATIO",
+    )
+    indexing_readiness_ttl_seconds: int = Field(
+        default=45,
+        ge=5,
+        validation_alias="INDEX_WORKER_READINESS_TTL_SECONDS",
+    )
 
 
 class ObservabilitySettings(_EnvSettings):
@@ -496,6 +546,26 @@ class AppSettings(BaseModel):
         if self.security.jwt_algorithm not in {"HS256", "HS384", "HS512"}:
             problems.append("JWT_ALGORITHM 只能使用 HS256、HS384 或 HS512")
 
+        if self.worker.indexing_heartbeat_seconds >= self.worker.indexing_lease_seconds:
+            problems.append(
+                "INDEX_WORKER_HEARTBEAT_SECONDS 必须小于 INDEX_WORKER_LEASE_SECONDS"
+            )
+        if (
+            self.worker.indexing_retry_base_seconds
+            > self.worker.indexing_retry_max_seconds
+        ):
+            problems.append(
+                "INDEX_WORKER_RETRY_BASE_SECONDS 不能大于 INDEX_WORKER_RETRY_MAX_SECONDS"
+            )
+        readiness_interval = max(
+            self.worker.indexing_poll_seconds,
+            float(self.worker.indexing_heartbeat_seconds),
+        )
+        if self.worker.indexing_readiness_ttl_seconds <= readiness_interval * 2:
+            problems.append(
+                "INDEX_WORKER_READINESS_TTL_SECONDS 必须大于 worker 最大心跳间隔的两倍"
+            )
+
         origins = self.security.cors_origins
         if not origins:
             problems.append("CORS_ORIGINS 不能为空")
@@ -503,10 +573,17 @@ class AppSettings(BaseModel):
             problems.append("CORS_ORIGINS 禁止使用通配符 *")
 
         if self.app.environment == "production":
+            if not self.worker.indexing_worker_required:
+                problems.append("生产环境必须启用 INDEX_WORKER_REQUIRED")
             database_url = self.storage.database_url.get_secret_value()
             parsed = urlsplit(
                 database_url.replace("postgresql+psycopg2", "postgresql", 1)
             )
+            if parsed.scheme.split("+", 1)[0] not in {"postgres", "postgresql"}:
+                problems.append(
+                    "生产环境 DATABASE_URL 必须使用 PostgreSQL，"
+                    "持久 worker 依赖 FOR UPDATE SKIP LOCKED"
+                )
             if (parsed.username or "") == "postgres" and (
                 parsed.password or ""
             ) == "postgres":

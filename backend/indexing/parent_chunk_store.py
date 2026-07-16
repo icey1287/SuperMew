@@ -380,23 +380,27 @@ class ParentChunkStore:
         finally:
             db.close()
 
-    def delete_by_filename(self, filename: str) -> int:
-        """按文件名删除父级分块，返回删除条数。"""
+    def delete_legacy_by_filename(self, filename: str) -> int:
+        """Delete only pre-Catalog rows for one legacy filename."""
 
         if not filename:
             return 0
 
         db = SessionLocal()
         try:
-            rows = db.query(ParentChunk).filter(ParentChunk.filename == filename).all()
+            query = db.query(ParentChunk).filter(
+                ParentChunk.filename == filename,
+                ParentChunk.knowledge_base_id == "",
+                ParentChunk.document_id == "",
+                ParentChunk.document_version_id == "",
+            )
+            rows = query.all()
             chunk_ids = [row.chunk_id for row in rows]
             deleted = len(chunk_ids)
             if deleted > 0:
                 for chunk_id in chunk_ids:
                     cache.delete_strict(self._cache_key(chunk_id))
-                db.query(ParentChunk).filter(ParentChunk.filename == filename).delete(
-                    synchronize_session=False
-                )
+                query.delete(synchronize_session=False)
                 db.commit()
             return deleted
         except Exception:

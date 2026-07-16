@@ -37,29 +37,11 @@ document_retrieval_scope = DocumentRetrievalScope(document_catalog)
 
 def delete_document_transactionally(
     filename: str,
-    job_manager=None,
-    job_id=None,
     owner_id: int | None = None,
 ) -> DocumentRetirementOutcome:
-    """先原子撤销 Catalog current scope，再物理清理对应版本。"""
+    """原子撤销 Catalog scope，并把物理清理留给持久 worker。"""
 
-    if job_manager and job_id:
-        job_manager.update_step(
-            job_id,
-            "prepare",
-            50,
-            "running",
-            "正在原子撤销文档的可检索版本",
-        )
-    outcome = document_publication.retire(filename, owner_id=owner_id)
-
-    if job_manager and job_id:
-        job_manager.complete_step(
-            job_id,
-            "prepare",
-            "Catalog scope 与 legacy 删除封印均已持久化",
-        )
-    return outcome
+    return document_publication.retire(filename, owner_id=owner_id)
 
 
 def ensure_upload_dir() -> None:

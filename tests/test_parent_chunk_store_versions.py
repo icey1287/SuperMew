@@ -199,6 +199,35 @@ class ParentChunkStoreVersionTests(unittest.TestCase):
             self.assertIsNotNone(db.get(ParentChunk, "other-tenant"))
             self.assertIsNotNone(db.get(ParentChunk, "other-index"))
 
+    def test_legacy_filename_cleanup_never_deletes_versioned_reupload(self):
+        legacy = parent_chunk(
+            "legacy-parent",
+            version="",
+            tenant="default",
+            index="v1",
+        )
+        legacy.knowledge_base_id = ""
+        legacy.document_id = ""
+        legacy.section_id = ""
+        legacy.acl_tags = []
+        legacy.content_hash = ""
+        current = parent_chunk("current-parent", version="version-current")
+        with self.session_factory() as db:
+            db.add_all([legacy, current])
+            db.commit()
+        for row in (legacy, current):
+            self.cache.values[f"parent_chunk:{row.chunk_id}"] = {
+                "chunk_id": row.chunk_id
+            }
+
+        deleted = self.store.delete_legacy_by_filename("doc.pdf")
+
+        self.assertEqual(1, deleted)
+        with self.session_factory() as db:
+            self.assertIsNone(db.get(ParentChunk, "legacy-parent"))
+            self.assertIsNotNone(db.get(ParentChunk, "current-parent"))
+        self.assertEqual(["parent_chunk:legacy-parent"], self.cache.deleted)
+
     def test_verify_version_checks_ids_count_and_artifact_metadata(self):
         with self.session_factory() as db:
             db.add_all([parent_chunk("chunk-1"), parent_chunk("chunk-2")])
