@@ -205,9 +205,9 @@ npm run build
 - **纠错型 RAG（Corrective RAG）与单选查询重写**：检索后由独立的 GRADE_MODEL 结构化判断证据相关性、可回答性与歧义。证据不足时，FAST_MODEL 在一次结构化调用中选择 Step-back 或 HyDE，只执行选中的一次重写检索和一次复评。
 - **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
 - **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
-- **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果。
-- **实时 RAG 过程可视化**：检索过程在模型"思考中"阶段就开始展示，通过 `asyncio.Queue` + 后台任务架构实现工具执行期间的实时推送。
-- **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答。
+- **可恢复流式输出**：Run Event 先写入持久 Journal，再通过 SSE 投影；前端使用 sequence 去重、`Last-Event-ID` 重连与 `/events` 补放实现打字机效果。
+- **实时 RAG 过程可视化**：检索、评分与重写通过 `tool.progress`、`retrieval.*` 等 Event v1 事件展示，刷新或断网后仍可重放。
+- **真实回答终止**：前端调用 `POST /v1/runs/{run_id}/cancel` 请求取消后端 Run，并等待 `run.cancelled` 或其他权威 terminal Event。
 - **会话摘要记忆**：自动摘要旧消息并注入系统提示，维持上下文且控制 token。
 - **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
 - **Milvus 2.5+ 原生 BM25 混合检索**：彻底摒弃本地客户端手写 BM25 序列化和统计同步的繁琐设计。通过在 Milvus 集合 schema 中为 `text` 字段绑定 `FunctionType.BM25` 计算函数，由向量数据库在服务端原生提取稀疏特征，保证高效率的 Dense + Sparse 混合检索与完美的统计对齐。
@@ -217,7 +217,7 @@ npm run build
 - **RAG 过程可观测**：记录检索、评分、重写与来源信息，前端可展开查看每一步细节。
 - **查询重写体系**：证据不足时由 FAST_MODEL 在 Step-back 与 HyDE 中单选一种，并只执行一次二次检索，控制模型调用次数与最坏延迟。
 - **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
-- **实时思考链路展示**：通过 `asyncio` 事件循环穿透技术，实现 Agent 在执行 RAG、评分、重写等同步工具时，实时向前端推送思考步骤（Searching -> Grading -> Rewriting），彻底解决"静默思考"问题。
+- **实时执行链路展示**：Agent 的工具与 RAG 阶段统一写入 Event Journal，再由前端 reducer 投影 Searching → Grading → Rewriting 等操作性步骤，不展示模型私有推理。
 
 ## 未来迭代（Todo Lists）
 
@@ -290,13 +290,14 @@ npm run build
   - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
   - `api/`：HTTP 层
     - [router.py](backend/api/router.py)：路由聚合。
-    - `routes/`：`auth`、`sessions`、`chat`、`documents` 分文件。
+    - `routes/`：`auth`、`sessions`、`runs`、`documents` 分文件；`chat` 仅保留返回 `410 Gone` 的退役入口。
     - [resources.py](backend/api/resources.py)：Milvus / 上传目录等共享资源。
-  - `chat/`：对话域
-    - [service.py](backend/chat/service.py)：非流式 / 流式聊天入口。
-    - [runtime.py](backend/chat/runtime.py)：模型客户端与每请求 Agent 创建。
-    - [request_context.py](backend/chat/request_context.py)：每请求 RAG step、RAG trace、工具预算上下文。
-    - [storage.py](backend/chat/storage.py)：会话 PostgreSQL + Redis。
+  - `runs/`：持久化 Run 创建、幂等与 Thread 并发、owner lease/fencing、取消、HITL resume 和执行调度。
+  - `events/`：Event v1 contract、PostgreSQL Journal/outbox、Redis 通知与可恢复 SSE Adapter。
+  - `agent/`：`AgentRuntimeFactory`、固定中间件链与 Run-local Runtime Context。
+  - `chat/`：历史对话 Implementation 与会话投影；不再作为公开执行 Interface，`service.py` 仅供内部兼容测试。
+    - [request_context.py](backend/chat/request_context.py)：Run-local RAG step、RAG trace 与工具预算上下文。
+    - [storage.py](backend/chat/storage.py)：append-only 消息与 Thread 历史读取。
   - `guardrails/`：Tool 调用前的确定性 policy、Run-bound approval 与 destination capability。
   - `sandbox/`：隔离执行契约、进程级 Runtime，以及 disabled/Docker Adapter。
   - `rag/`：检索增强
@@ -319,14 +320,16 @@ npm run build
     - **Pinia 状态存储**：
       - `stores/auth.ts`：处理 JWT 鉴权状态、用户注册与登录，维持 Bearer 鉴权请求。
       - `stores/sessions.ts`：负责多会话历史的创建、异步载入、删除与切换。
-      - `stores/chat.ts`：缓存消息流，承载 RAG 各个阶段执行步骤的响应式更新。
+      - `stores/runs.ts`：管理 durable Run、Event cursor、重放、HITL resume 与真实取消。
+      - `stores/chat.ts`：把 Run Event 投影到对应 Thread 的 assistant 消息与 RAG 步骤。
       - `stores/documents.ts`：实现知识库文档的展示并配合接口轮询监听上传异步任务进度。
     - **精细化组件设计**：
       - `ThinkingTrace.vue` & `RetrievalTraceDetails.vue`：动态渲染子/主 Agent 思考状态（Searching, Grading, Rewriting 等步骤），支持展示每路子问题的合并与召回详情。
       - `References.vue`：折叠卡片展示知识库来源信息，含 RRF Rank、Rerank 语义得分、合并叶子块数、所处层级和页码。
       - `UploadSection.vue` & `DocumentSettings.vue`：管理员控制面板，动态轮询监听并步进展示上传的多阶段状态机进度。
-    - **流式解包与主动终止**：
-      - `utils/api.ts`：底层采用 `fetch` API 的 `response.body.getReader()` 流式逐块（chunk）解包 SSE 数据，并配合 `AbortController` 绑定终止按钮实现前端主动切断长连接。
+    - **可恢复流与主动终止**：
+      - `events/runEventStream.ts`：解析 Event v1 SSE，使用 `Last-Event-ID` 恢复并只在 reducer 成功后推进 cursor。
+      - Stop 调用 `POST /v1/runs/{run_id}/cancel`；关闭本地 stream 只影响订阅，不等价于取消后端 Run。
   - 在 `frontend/` 目录下运行 `npm run dev` 即可开始开发联调（运行于 http://localhost:3000）。
   - 在 `frontend/` 目录下运行 `npm run build` 会生成生产环境编译产物输出至 `frontend/dist/`，供 FastAPI 后端无缝进行静态托管。
 - 数据：`data/`
@@ -336,15 +339,16 @@ npm run build
 ## 核心流程
 
 ### 1) 项目全链路（端到端）
-1. 用户在前端输入问题，调用 `POST /chat/stream`（流式）。
-2. FastAPI `api/routes/chat.py` 返回 `StreamingResponse(media_type="text/event-stream")`。
-3. LangChain Agent 根据问题类型决定是否调用工具：
+1. 客户端创建或复用 Thread，再调用 `POST /v1/threads/{thread_id}/runs`，携带 `idempotency_key`、期望 Thread version 与断连策略；响应返回 durable `run_id`。
+2. `RunAgentExecutor` 使用 owner lease 与 fencing token 领取 Run，通过 `AgentRuntimeFactory` 构建固定中间件链。
+3. Agent 根据问题类型决定是否调用工具：
   - 天气问题 → `get_current_weather`
   - 知识问答 → `search_knowledge_base`
-4. 若命中知识库工具，进入 `backend/rag/pipeline.py` 执行检索工作流，各阶段通过 `ChatRequestContext` 实时推送到前端。
-5. 检索结果与 RAG Trace 一起返回，Agent 流式生成最终回答（逐 token 推送）。
-6. 前端 ReadableStream 逐块解析 SSE，打字机效果实时渲染。
-7. 同时消息持久化到 PostgreSQL，并通过 Redis 缓存加速历史会话回放。
+4. 若命中知识库工具，进入 `backend/rag/pipeline.py`；tool progress、message delta、HITL 与 terminal 都先追加到持久 Event Journal。
+5. 客户端通过 `GET /v1/runs/{run_id}/stream` 订阅 SSE；断线后携带 `Last-Event-ID` 重连，或先调用 `/events?after={sequence}` 补放缺失事件。
+6. `message.completed` 是最终正文与 `rag_trace` 的权威来源；消息与 Run 终态提交后才发布 `run.completed`、`run.failed` 或 `run.cancelled`。
+7. `hitl.required` 把 Run 置为 `waiting_input`，客户端调用 `/resume` 恢复同一 checkpoint；Stop 调用 `/cancel` 并继续监听权威 terminal Event。
+8. 旧 `POST /chat` 与 `POST /chat/stream` 已退役，统一返回 typed `410 ENDPOINT_RETIRED`，不会再执行 Agent 或 Tool。
 
 ### 2) RAG 全链路（重点）
 1. **复杂度规划**：`classify_complexity`
@@ -388,10 +392,10 @@ npm run build
 - **自动对齐**：当新文本 chunk 插入或删除时，Milvus 在服务端自动进行分词、统计、稀疏特征向量计算。这实现了高效率、零客户端统计负担的密集 + 稀疏混合双塔检索。
 
 ### 5) 会话记忆链路
-1. 每轮问答按当前登录用户 + `session_id` 写入 PostgreSQL。
-2. 当消息过长时触发摘要压缩，保留长期上下文。
-3. Redis 缓存会话列表与会话消息，减少高频读取数据库压力。
-4. 前端可通过会话接口读取、删除当前用户自己的历史对话。
+1. 用户消息与 assistant placeholder 在创建 Run 时 append-only 写入 PostgreSQL，并绑定 `thread_id`、`run_id` 与单调 sequence。
+2. 流式 delta 只作为 Event 投影；完成、失败或取消时一次落定 assistant 消息状态，避免整段历史删除重插。
+3. 当消息过长时，Runtime 在 token budget 内加载派生摘要；原始消息始终保留为事实来源。
+4. 前端通过带 cursor 的会话接口分页读取自己的 Thread 历史；Thread version 负责并发写保护。
 
 ## 技术栈
 - 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn、SQLAlchemy、PostgreSQL、Redis。
@@ -423,9 +427,15 @@ npm run build
   - `POST /auth/register`：注册（支持普通用户/管理员邀请码模式）。
   - `POST /auth/login`：登录，返回 Bearer Token。
   - `GET /auth/me`：获取当前登录用户信息。
-- 聊天
-  - `POST /chat`：聊天（非流式），入参 `message`、`session_id`。
-  - `POST /chat/stream`：聊天（流式 SSE），入参同上，返回 `text/event-stream`。
+- Thread / Run / Event
+  - `POST /v1/threads`：创建 Thread。
+  - `POST /v1/threads/{thread_id}/runs`：幂等创建 durable Run，返回 `run_id` 与 `thread_version`。
+  - `GET /v1/runs/{run_id}`：读取 Run 当前状态。
+  - `GET /v1/runs/{run_id}/events?after={sequence}`：分页重放持久 Event。
+  - `GET /v1/runs/{run_id}/stream`：订阅 Event v1 SSE；重连时发送 `Last-Event-ID: <sequence>`。
+  - `POST /v1/runs/{run_id}/resume`：携带一次性 `hitl_token` 与幂等键恢复同一 checkpoint。
+  - `POST /v1/runs/{run_id}/cancel`：请求取消真实后端 Run；客户端应等待 `run.cancelled` 或其他权威 terminal Event。
+  - `POST /chat`、`POST /chat/stream`：已退役，认证后返回 JSON `410 ENDPOINT_RETIRED`，不会执行 legacy Chat Implementation。
 - 会话（用户隔离）
   - `GET /sessions`：列出当前用户会话。
   - `GET /sessions/{session_id}`：拉取当前用户某会话消息。
@@ -440,40 +450,81 @@ npm run build
   - `GET /documents/delete/jobs/{job_id}`：查询物理清理进度或 dead-letter。
   - 兼容路径 `POST /documents/upload` 与 `DELETE /documents/{filename}` 已改为 `202 Accepted` 并返回 durable `job_id`：前者只持久化提交任务，后者只原子撤销检索 scope；二者都不再表示物理索引/清理已同步完成。旧客户端升级前必须改为轮询 durable job 接口。
 
-## 流式输出与实时检索过程 — 技术细节
+## 持久化 Run/Event 与可恢复流 — 技术细节
 
-#### 1. 跨线程事件调度（Cross-Thread Event Scheduling）
-这是一个解决 **"同步工具阻塞异步事件循环"** 问题的关键架构设计，常用于 Python 异步 Web 服务与 CPU 密集型/IO 密集型任务的混合场景。
+### 1. 创建 durable Run
 
-**痛点**：
-FastAPI 运行在单线程的 asyncio Event Loop 上。为了不阻塞主线程，LangChain 通常将同步工具（如 `search_knowledge_base`）放到 `ThreadPoolExecutor` 中运行。但在子线程中，无法直接访问主线程的 `asyncio.Queue`，且 `asyncio.get_event_loop()` 通常会失败。
+客户端先创建 Thread，再用独立请求创建 Run；不要用一个长连接同时承担“创建工作”和“观察工作”：
 
-**解决方案**：
-我们采用了 **"Request Context + Threadsafe Callback"** 模式：
+```http
+POST /v1/threads/{thread_id}/runs
+Authorization: Bearer <token>
+Content-Type: application/json
 
-1.  **请求上下文创建 (Service Layer)**:
-    `chat_with_agent_stream()` 为每个请求创建独立的 `ChatRequestContext`，其中保存本请求的 `output_queue` 与主事件循环。
-2.  **显式依赖注入 (Tool/RAG Layer)**:
-    运行时使用 `create_agent_for_request(ctx)` 为本请求创建 agent，并通过 `make_search_knowledge_base(ctx)` 创建捕获该 `ctx` 的专属工具。RAG pipeline 入口为 `run_rag_graph(question, ctx)`。
-3.  **跨线程发射 (Worker Thread)**:
-    RAG 节点调用 `ctx.emit_rag_step(...)`，内部使用本请求保存的 `loop.call_soon_threadsafe(queue.put_nowait, event)` 将事件投递回主 Loop。
-4.  **隔离保证**:
-    RAG step、RAG trace、知识库工具调用计数都存放在请求上下文对象中。
-
-```python
-# 核心代码摘要
-ctx = ChatRequestContext.for_stream(
-    user_id=user_id,
-    session_id=session_id,
-    output_queue=output_queue,
-)
-agent = create_agent_for_request(ctx)
-
-# RAG 节点内
-ctx.emit_rag_step("🔍", "正在检索知识库...", "初始检索")
+{
+  "message": "请比较两份文档的结论",
+  "idempotency_key": "client-generated-key",
+  "expected_thread_version": 3,
+  "multitask_strategy": "reject",
+  "on_disconnect": "continue",
+  "approved_tools": []
+}
 ```
 
-### 2. 混合检索（Hybrid Search）深度实现
+响应中的 `run.id`、assistant message identity 与 `thread_version` 是后续重放、取消和 HITL 恢复的稳定身份。相同用户、Thread 与幂等键只创建一个 Run；同一 Thread 的并发写入由 version、数据库约束、owner lease 与 fencing token 共同保护。
+
+### 2. Event v1 Interface
+
+`RunAgentExecutor` 驱动 `AgentRuntimeFactory`，并把规划、工具、检索、消息、HITL、usage 与 terminal 状态追加到 Event Journal。SSE 只是 Journal 的可恢复投影：
+
+```text
+id: 42
+event: message.delta
+data: {"schema_version":1,"event_id":"evt_xxx","sequence":42,"run_id":"run_xxx","thread_id":"thread_xxx","type":"message.delta","timestamp":"...","data":{}}
+```
+
+关键不变量：
+
+- `sequence` 在单个 Run 内严格单调，客户端 reducer 按 `(run_id, sequence)` 去重并检测 gap。
+- `message.delta` 只负责临时展示；`message.completed` 是最终正文与 `rag_trace` 的权威来源。
+- `run.completed`、`run.failed`、`run.cancelled` 是终止事件，不再使用非结构化 `[DONE]`。
+- assistant 消息与 Run 终态必须先在持久化事务中落定，再发布 terminal Event。
+- Event Envelope 不暴露模型私有推理、密钥或未脱敏 ToolAudit 参数。
+
+### 3. 重放、重连与 heartbeat
+
+首次订阅使用：
+
+```http
+GET /v1/runs/{run_id}/stream
+```
+
+若连接中断，客户端保留最后一个已成功应用的 sequence，并通过以下任一方式恢复：
+
+```http
+GET /v1/runs/{run_id}/events?after=42
+GET /v1/runs/{run_id}/stream
+Last-Event-ID: 42
+```
+
+服务端先从 PostgreSQL Journal 重放缺失事件，再通过 Redis transport 等待新事件；Redis 只负责低延迟通知，不是事实来源。空闲期间发送 SSE heartbeat。客户端遇到 sequence gap 时不得推进 cursor，应先补放缺失事件；terminal 后关闭该 Run 的本地订阅。
+
+### 4. RAG 进度与前端投影
+
+知识库工具仍由 `backend/rag/pipeline.py` 执行 Dense + BM25 + RRF、Auto-merging、Rerank、证据评判与一次重写。不同阶段通过 `tool.started`、`tool.progress`、`retrieval.*` 与 `message.*` Event 表达，前端 `runs` store 维护 Run 状态，`chat` store 只把同一 `thread_id/run_id` 的事件投影到对应 assistant 消息，避免不同 Thread 串写。
+
+### 5. HITL 与取消
+
+- 收到 `hitl.required` 后，Run 已在同一事务中保存 checkpoint 并进入 `waiting_input`。客户端持久保存 `run_id`、`hitl_token` 与 `checkpoint_id`，调用 `POST /v1/runs/{run_id}/resume` 恢复同一图节点；刷新页面不需要重新执行原问题。
+- Stop 调用 `POST /v1/runs/{run_id}/cancel`。响应表示“取消请求已接受或 Run 已终止”，客户端继续监听直到收到权威 terminal Event。
+- 关闭页面、切换账号或断开 SSE 默认只关闭观察连接；`on_disconnect=continue` 的 Run 会在后端继续。网络断开不能冒充用户取消。
+
+### 6. 公开 legacy Chat 入口退役
+
+`POST /chat` 与 `POST /chat/stream` 不再是 compatibility execution Adapter。二者认证后对任意 legacy body 返回 JSON `410 ENDPOINT_RETIRED`，并给出 create/stream/resume/cancel 迁移路径；它们不会创建模型调用、ToolAudit、消息或后台任务。所有公开工具执行因此只跨越 durable Run 的 Guardrail 与 Sandbox Seam。
+
+### 7. 混合检索（Hybrid Search）深度实现
+
 项目并非在客户端手写复杂的 BM25 特征序列化，而是利用 Milvus 2.5+ 服务端原生分析器构建了极致的双塔检索：
 
 - **Dense Pathway**：使用 `langchain_huggingface.HuggingFaceEmbeddings`（默认 `BAAI/bge-m3`）生成稠密向量，维度由 `DENSE_EMBEDDING_DIM` 与集合 schema 对齐（默认 1024），向量可做 L2 归一化后与 Milvus `IP` 度量配合。
@@ -483,115 +534,6 @@ ctx.emit_rag_step("🔍", "正在检索知识库...", "初始检索")
 - **Milvus 融合**：
     - 使用 Milvus 的 `AnnSearchRequest` 同时发起稠密和稀疏的两个多路检索请求。
     - **RRFRanker (Reciprocal Rank Fusion)**: 采用 `k=60` 的倒数排名融合算法，将两路召回结果无参数化地合并，避免了加权求和中调节 `alpha` 参数的困难。
-
-### 3. 前端 "Thinking State Machine"
-前端 `stores/chat.ts` 结合响应式组件 `ThinkingTrace.vue` 维护了一个微型状态机来处理通过 SSE 传回的复杂混合流：
-
-1.  **Idle**: 等待用户输入。
-2.  **Thinking (Initial)**: 收到请求，创建消息气泡并置其 `isThinking=true`。
-3.  **Thinking (Active RAG)**: 收到 `type: "rag_step"` 事件。
-    - 状态机保持 `isThinking=true`。
-    - 动态更新当前 RAG 步进文字与状态细节卡片（例如显示 "正在重写查询..."、"Auto-merging 合并完成" 等）。
-    - 往消息项的 `ragSteps` 数组追加步骤，实时推送到组件渲染。
-4.  **Streaming**: 收到首个 `type: "content"` 事件。
-    - **立即切换**: 标记并设置 `isThinking=false`。
-    - 并不销毁或重建气泡，而是隐藏思考详情头部，开始在同一个气泡内流式追加 Markdown 正文文本。
-    - 这样实现了从 "动态检索步骤思考" 到 "大模型流式回答" 的无缝视觉过渡，视觉上极为顺滑。
-
-## 整体架构
-
-```
-用户发送消息
-    │
-    ▼
-POST /chat/stream → StreamingResponse(text/event-stream)
-    │
-    ▼
-chat_with_agent_stream()
-    │
-    ├── 创建统一输出队列 (asyncio.Queue)
-    ├── 创建 ChatRequestContext.for_stream(...)
-    ├── create_agent_for_request(ctx) 绑定本请求专属 tool
-    ├── 启动 _agent_worker 后台任务 (asyncio.create_task)
-    │     └── agent.astream(stream_mode="messages") 逐 token 产出
-    │           ├── AIMessageChunk (文本) → {"type": "content"} 入队
-    │           └── tool_call_chunks (工具调用) → 跳过
-    │
-    └── 主循环：await output_queue.get() → yield SSE
-          ▲
-          │ (并发) RAG 工具在线程池中执行
-          │ ctx.emit_rag_step() → loop.call_soon_threadsafe → 入队
-          │ {"type": "rag_step"} 立即从队列取出并推送到前端
-```
-
-### 后端实现
-
-#### 1) 流式生成 (`backend/chat/service.py`)
-- 使用 LangGraph `agent.astream(stream_mode="messages")` 获取逐 token 的 `AIMessageChunk`。
-- 过滤 `tool_call_chunks`，只转发文本内容给前端。
-- **关键设计**：Agent 流式循环运行在 `asyncio.create_task` 后台任务中，主生成器只负责从统一 `output_queue` 取事件并 yield。这样 RAG 步骤在工具执行期间（agent 阻塞等待工具返回时）仍然可以实时推送到前端。
-
-#### 2) 实时 RAG 步骤推送 (`backend/tools/knowledge.py` + `backend/rag/pipeline.py`)
-- `ChatRequestContext.emit_rag_step(icon, label, detail)` 通过请求创建时捕获的 `loop.call_soon_threadsafe()` 将步骤从同步线程安全地推送到本请求的异步队列。
-- `make_search_knowledge_base(ctx)` 创建本请求专属 tool，LLM 仍只看到 `query` 参数；Python closure 持有当前请求的 `ctx`。
-- `backend/rag/pipeline.py` 通过 `run_rag_graph(question, ctx)` 接收上下文，子问题进度使用安全标签（如 `子问题 1`）分组。
-- `backend/rag/pipeline.py` 在每个关键节点发射步骤：
-  - `retrieve_initial` → "正在检索知识库..."
-  - `grade_documents` → "正在评估文档相关性..."
-  - `rewrite_question` → "选择 Step-back / HyDE 重写方式"
-  - `retrieve_rewritten` → 使用本轮选中的唯一方式重新检索
-
-#### 3) SSE 协议格式
-每个事件格式：`data: {JSON}\n\n`，类型字段：
-- `content`：文本 token（打字机效果）
-- `rag_step`：实时检索步骤（`{icon, label, detail}`）
-- `trace`：完整 RAG 追踪信息（回答完成后发送）
-- `error`：错误信息
-- `[DONE]`：流结束标记
-
-#### 4) StreamingResponse 配置 (`backend/api/routes/chat.py`)
-```python
-StreamingResponse(
-    event_generator(),
-    media_type="text/event-stream",
-    headers={
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
-    },
-)
-```
-
-### 前端实现
-
-#### 1) ReadableStream 解析 (`utils/api.ts`)
-- 使用 `response.body.getReader()` + `TextDecoder` 逐块读取。
-- 手动按 `\n\n` 分割 SSE 事件，解析 `data: ` 前缀后的 JSON。
-- `content` 事件追加到消息文本；`rag_step` 事件追加到检索步骤数组并同步更新思考状态文字。
-
-#### 2) 思考气泡二合一
-- 发送消息后立即创建带 `isThinking: true` 的气泡，显示跳动圆点 + 动态文字。
-- 收到 `rag_step` 时，`thinkingLabel` 更新为当前步骤（如"正在检索知识库..."）。
-- 收到第一个 `content` token 时，`isThinking = false`，同一气泡无缝切换为正常文本流。
-- **不存在两个分离的气泡**，从思考 → 检索 → 回答全程在同一个气泡内完成。
-
-#### 3) Vue 3 响应式注意事项
-- 通过 `this.messages[botMsgIdx]` 索引访问（而非缓存对象引用），确保拿到 Vue 的 reactive proxy。
-- `ragSteps` 数组通过 `push()` 触发响应式更新。
-
-### 终止功能
-
-#### 前端
-- 发送按钮在 `isLoading` 期间切换为红色终止按钮（`v-if/v-else`）。
-- 点击调用 `AbortController.abort()`，取消正在进行的 `fetch` 请求。
-- 捕获 `AbortError`，在气泡中显示"(已终止回答)"。
-
-#### 后端
-- FastAPI 的 `StreamingResponse` 在客户端断开连接（如浏览器触发 `abort()` 或关闭标签页）时，会检测到 socket 断开。
-- Python 的生成器协议会向响应生成器抛出 `GeneratorExit` 异常。
-- **实现细节**：采用**主动防御式编程**，显式捕获 `GeneratorExit` 并执行 `agent_task.cancel()`。
-- **为什么不依赖框架自动取消？**：虽然 Starlette/FastAPI 拥有基于 `BaseHTTPMiddleware` 的级联取消机制（Cascading Cancellation），但在复杂的后台任务结构或特定中间件配置下，取消信号可能延迟或在传递链中丢失。显式调用 `.cancel()` 提供了**确定性的资源回收**保证。
-- **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
 
 ## 更新日志
 

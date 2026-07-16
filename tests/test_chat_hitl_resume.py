@@ -14,7 +14,6 @@ from backend.providers import (
     ProviderExecutor,
     ProviderOperation,
 )
-from backend.schemas.chat import ChatRequest
 from backend.skills import ActivatedSkill, SkillPin
 
 service = importlib.import_module("backend.chat.service")
@@ -803,30 +802,6 @@ class ChatHitlResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("VECTOR_STORE_UNAVAILABLE", result["response"])
         self.assertNotIn("没有找到可靠", result["response"])
         answer_model.assert_not_called()
-
-    async def test_route_timeout_uses_the_shared_typed_error_wire(self):
-        chat_route = importlib.import_module("backend.api.routes.chat")
-
-        async def failing_stream(*args, **kwargs):
-            raise TimeoutError("secret timeout from outer generator")
-            yield
-
-        with patch.object(chat_route, "chat_with_agent_stream", failing_stream):
-            response = await chat_route.chat_stream_endpoint(
-                ChatRequest(message="超时", session_id="s"),
-                Mock(username="u"),
-            )
-            chunks = []
-            async for chunk in response.body_iterator:
-                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
-
-        events = _parse_sse_events(chunks)
-        error = next(item for item in events if item.get("type") == "error")
-        self.assertEqual("PROVIDER_TIMEOUT", error["error"]["code"])
-        self.assertEqual("PROVIDER_TIMEOUT", error["code"])
-        self.assertEqual("PROVIDER_TIMEOUT", error["error_code"])
-        self.assertIn("运行截止时间", error["content"])
-        self.assertNotIn("secret timeout", str(error))
 
 
 if __name__ == "__main__":

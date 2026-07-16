@@ -48,6 +48,7 @@ class ErrorCode(StrEnum):
     RUN_EXECUTION_FAILED = "RUN_EXECUTION_FAILED"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
     THREAD_VERSION_CONFLICT = "THREAD_VERSION_CONFLICT"
+    ENDPOINT_RETIRED = "ENDPOINT_RETIRED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -113,6 +114,8 @@ def _status_for_code(code: ErrorCode | str) -> int:
         return 502
     if value in {ErrorCode.PERMISSION_DENIED.value, ErrorCode.POLICY_DENIED.value}:
         return 403
+    if value == ErrorCode.ENDPOINT_RETIRED.value:
+        return 410
     return 500
 
 
@@ -400,6 +403,8 @@ def _http_error_code(status_code: int) -> ErrorCode:
         return ErrorCode.NOT_FOUND
     if status_code == 409:
         return ErrorCode.CONFLICT
+    if status_code == 410:
+        return ErrorCode.ENDPOINT_RETIRED
     if status_code == 429:
         return ErrorCode.RATE_LIMITED
     if 400 <= status_code < 500:

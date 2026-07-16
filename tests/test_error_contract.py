@@ -56,6 +56,21 @@ class ErrorContractTests(unittest.TestCase):
         self.assertNotIn("secret", encoded)
         self.assertNotIn("token=abc", error_payload(error)["error"]["message"])
 
+    def test_retired_endpoint_round_trip_preserves_gone_status(self):
+        encoded = serialize_public_error(
+            PublicError(
+                code=ErrorCode.ENDPOINT_RETIRED,
+                message="接口已退役",
+                status_code=410,
+            )
+        )
+
+        restored = deserialize_public_error(encoded)
+
+        self.assertIsNotNone(restored)
+        self.assertEqual("ENDPOINT_RETIRED", restored.code)
+        self.assertEqual(410, restored.status_code)
+
     def test_http_handler_preserves_typed_fields_and_retry_after(self):
         app = FastAPI()
         install_exception_handlers(app)
