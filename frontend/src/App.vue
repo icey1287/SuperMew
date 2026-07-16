@@ -20,17 +20,20 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
 import Sidebar from '@/components/Sidebar.vue';
 import AuthPanel from '@/components/AuthPanel.vue';
-import HistorySidebar from '@/components/HistorySidebar.vue';
-import ChatArea from '@/components/Chat/ChatArea.vue';
-import DocumentSettings from '@/components/Documents/DocumentSettings.vue';
 
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
 import { useSessionStore } from '@/stores/sessions';
 import { useRunsStore } from '@/stores/runs';
+
+const HistorySidebar = defineAsyncComponent(() => import('@/components/HistorySidebar.vue'));
+const ChatArea = defineAsyncComponent(() => import('@/components/Chat/ChatArea.vue'));
+const DocumentSettings = defineAsyncComponent(
+  () => import('@/components/Documents/DocumentSettings.vue')
+);
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
@@ -70,11 +73,11 @@ const handleUnauthorized = () => {
 
 onMounted(async () => {
   window.addEventListener('unauthorized', handleUnauthorized);
-  
+
   if (authStore.token) {
     try {
       await authStore.fetchMe();
-    } catch (_) {
+    } catch {
       authStore.handleLogout();
     }
   }
