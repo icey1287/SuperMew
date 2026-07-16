@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import create_engine, event
@@ -6,9 +7,26 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.chat.repository import ConversationRepository, MessageAppend
+import backend.chat.storage as storage_module
 from backend.chat.storage import ConversationStorage
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import Base, ChatMessage, ChatSession, User
+from backend.runs.repository import RunRepository
+from backend.runs.state import RunStatus
+
+
+class _MemoryCache:
+    def __init__(self):
+        self.values = {}
+
+    def get_json(self, key):
+        return self.values.get(key)
+
+    def set_json(self, key, value):
+        self.values[key] = value
+
+    def delete(self, key):
+        self.values.pop(key, None)
 
 
 class MessageRepositoryTests(unittest.TestCase):
@@ -164,6 +182,48 @@ class MessageRepositoryTests(unittest.TestCase):
                 for statement in statements
             )
         )
+
+    def test_session_reads_reflect_durable_run_writes_after_list_warmup(self):
+        storage = ConversationStorage(self.repository)
+        run_repository = RunRepository(self.Session)
+        cache = _MemoryCache()
+
+        with patch.object(storage_module, "cache", cache, create=True):
+            storage.save(
+                "alice",
+                "thread-1",
+                [HumanMessage(content="legacy message")],
+            )
+            warmed = storage.list_session_infos("alice")
+            self.assertEqual(1, warmed[0]["message_count"])
+
+            reservation = run_repository.reserve(
+                username="alice",
+                thread_id="thread-1",
+                message="durable question",
+                idempotency_key="request-1",
+            )
+            claimed = run_repository.claim(
+                run_id=reservation.run.id,
+                worker_id="worker-1",
+            )
+            run_repository.finalize(
+                run_id=reservation.run.id,
+                target_status=RunStatus.SUCCEEDED,
+                content="durable answer",
+                fencing_token=claimed.fencing_token,
+            )
+
+            messages = storage.get_session_messages("alice", "thread-1")
+            sessions = storage.list_session_infos("alice")
+
+        self.assertEqual(
+            ["legacy message", "durable question", "durable answer"],
+            [message["content"] for message in messages],
+        )
+        self.assertEqual("completed", messages[-1]["status"])
+        self.assertEqual(3, sessions[0]["message_count"])
+        self.assertEqual(4, sessions[0]["version"])
 
 
 if __name__ == "__main__":

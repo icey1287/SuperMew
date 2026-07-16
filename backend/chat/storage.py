@@ -8,7 +8,6 @@ from backend.chat.repository import (
     UserAccessSnapshot,
     repository,
 )
-from backend.infra.cache import cache
 
 
 class ConversationStorage:
@@ -16,14 +15,6 @@ class ConversationStorage:
 
     def __init__(self, conversation_repository: ConversationRepository = repository):
         self.repository = conversation_repository
-
-    @staticmethod
-    def _sessions_cache_key(user_id: str) -> str:
-        return f"chat_sessions:v2:{user_id}"
-
-    @staticmethod
-    def _legacy_messages_cache_key(user_id: str, session_id: str) -> str:
-        return f"chat_messages:{user_id}:{session_id}"
 
     @staticmethod
     def _to_langchain_messages(records: list[dict]) -> list:
@@ -50,10 +41,6 @@ class ConversationStorage:
             "rag_trace": record.rag_trace,
         }
 
-    def _invalidate(self, user_id: str, session_id: str) -> None:
-        cache.delete(self._sessions_cache_key(user_id))
-        cache.delete(self._legacy_messages_cache_key(user_id, session_id))
-
     def save(
         self,
         user_id: str,
@@ -69,7 +56,6 @@ class ConversationStorage:
             metadata=metadata,
             extra_message_data=extra_message_data,
         )
-        self._invalidate(user_id, session_id)
 
     def load(self, user_id: str, session_id: str) -> list:
         return self._to_langchain_messages(
@@ -88,12 +74,7 @@ class ConversationStorage:
         return [item["session_id"] for item in self.list_session_infos(user_id)]
 
     def list_session_infos(self, user_id: str) -> list[dict]:
-        cached = cache.get_json(self._sessions_cache_key(user_id))
-        if cached is not None:
-            return cached
-        result = self.repository.list_threads(user_id)
-        cache.set_json(self._sessions_cache_key(user_id), result)
-        return result
+        return self.repository.list_threads(user_id)
 
     def get_session_messages(
         self,
@@ -114,10 +95,7 @@ class ConversationStorage:
         ]
 
     def delete_session(self, user_id: str, session_id: str) -> bool:
-        deleted = self.repository.delete_thread(user_id, session_id)
-        if deleted:
-            self._invalidate(user_id, session_id)
-        return deleted
+        return self.repository.delete_thread(user_id, session_id)
 
 
 storage = ConversationStorage()
