@@ -1,13 +1,8 @@
-from importlib import import_module
+"""Thread history primitives and an internal-only legacy Chat Implementation.
 
-__all__ = [
-    "chat_with_agent",
-    "chat_with_agent_stream",
-]
+Public Agent execution enters through ``backend.runs``.  The historical
+``backend.chat.service`` module remains importable only by explicit path for
+compatibility tests; package-level execution helpers are intentionally absent.
+"""
 
-
-def __getattr__(name: str):
-    if name in __all__:
-        service = import_module("backend.chat.service")
-        return getattr(service, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__: list[str] = []

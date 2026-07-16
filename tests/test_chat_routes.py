@@ -4,6 +4,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import backend.chat as chat_package
 from backend.api.routes.chat import router
 from backend.core.errors import install_exception_handlers
 from backend.infra.auth import get_current_user
@@ -71,3 +72,8 @@ def test_legacy_chat_tombstones_still_require_authentication(path: str) -> None:
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
     assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_chat_package_does_not_reexport_legacy_execution_helpers() -> None:
+    assert not hasattr(chat_package, "chat_with_agent")
+    assert not hasattr(chat_package, "chat_with_agent_stream")
