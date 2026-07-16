@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+from functools import partial
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.core.settings import SqlAssistantSettings
+from backend.core.settings import SqlAssistantSettings, WebResearchSettings
 from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA
 from backend.tools.knowledge import make_search_knowledge_base
 from backend.tools.registry import (
@@ -18,6 +19,11 @@ from backend.tools.sql import (
     SQL_SCHEMA_METADATA_KEYS,
     make_sql_query,
     make_sql_schema,
+)
+from backend.tools.web import (
+    WEB_RESEARCH_METADATA_KEYS,
+    make_web_fetch,
+    make_web_search,
 )
 from backend.tools.weather import make_weather_tool
 
@@ -63,6 +69,15 @@ class SqlQueryInput(_StrictInput):
     sql: str = Field(min_length=1, max_length=100_000)
 
 
+class WebSearchInput(_StrictInput):
+    query: str = Field(min_length=1, max_length=16_384)
+    max_results: int = Field(default=5, ge=1, le=50)
+
+
+class WebFetchInput(_StrictInput):
+    evidence_id: str = Field(pattern=r"^web_ev_[0-9a-f]{64}$")
+
+
 _STRING_OUTPUT_SCHEMA = {"type": "string"}
 
 
@@ -76,8 +91,16 @@ def _control_placeholder(name: str):
 def build_default_tool_registry(
     *,
     sql_assistant_settings: SqlAssistantSettings | None = None,
+    web_research_settings: WebResearchSettings | None = None,
 ) -> ToolRegistry:
     sql_settings = sql_assistant_settings or SqlAssistantSettings()
+    web_settings = web_research_settings or WebResearchSettings()
+    web_search_schema = WebSearchInput.model_json_schema()
+    web_search_schema["properties"]["query"]["maxLength"] = web_settings.max_query_bytes
+    web_search_schema["properties"]["max_results"].update(
+        default=web_settings.default_search_results,
+        maximum=web_settings.max_search_results,
+    )
     registry = ToolRegistry()
     registry.register(
         ToolDescriptor(
@@ -222,6 +245,57 @@ def build_default_tool_registry(
         make_sql_query,
         exposure=ToolExposure.DEFERRED,
     )
+    registry.register(
+        ToolDescriptor(
+            name="web_search",
+            description=(
+                "Search the public web for bounded evidence with stable citation "
+                "identities."
+            ),
+            group="web-research",
+            version="1.0.0",
+            input_schema=web_search_schema,
+            output_schema=TOOL_RESULT_V1_SCHEMA,
+            timeout=web_settings.request_timeout_seconds + 1.0,
+            max_concurrency=web_settings.max_concurrency,
+            idempotent=True,
+            required_roles=frozenset(),
+            required_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            requires_approval=False,
+            network_policy="restricted",
+            result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
+            observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
+        ),
+        partial(
+            make_web_search,
+            default_results=web_settings.default_search_results,
+        ),
+        exposure=ToolExposure.DEFERRED,
+    )
+    registry.register(
+        ToolDescriptor(
+            name="web_fetch",
+            description=(
+                "Fetch and extract one public page previously authorized by "
+                "web_search in this Run."
+            ),
+            group="web-research",
+            version="1.0.0",
+            input_schema=WebFetchInput.model_json_schema(),
+            output_schema=TOOL_RESULT_V1_SCHEMA,
+            timeout=web_settings.request_timeout_seconds + 1.0,
+            max_concurrency=web_settings.max_concurrency,
+            idempotent=True,
+            required_roles=frozenset(),
+            required_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            requires_approval=False,
+            network_policy="restricted",
+            result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
+            observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
+        ),
+        make_web_fetch,
+        exposure=ToolExposure.DEFERRED,
+    )
     registry.freeze()
     return registry
 
@@ -230,6 +304,7 @@ def configured_secret_names(
     registry: ToolRegistry,
     *,
     sql_assistant_settings: SqlAssistantSettings | None = None,
+    web_research_settings: WebResearchSettings | None = None,
 ) -> frozenset[str]:
     required: set[str] = set()
     for name in registry.names:
@@ -241,6 +316,11 @@ def configured_secret_names(
         if name == "SQL_ASSISTANT_DSN":
             sql_settings = sql_assistant_settings or SqlAssistantSettings()
             if sql_settings.enabled and sql_settings.dsn.get_secret_value().strip():
+                configured.add(name)
+            continue
+        if name == "BRAVE_SEARCH_API_KEY":
+            web_settings = web_research_settings or WebResearchSettings()
+            if web_settings.search_configured:
                 configured.add(name)
             continue
         if os.getenv(name, "").strip():

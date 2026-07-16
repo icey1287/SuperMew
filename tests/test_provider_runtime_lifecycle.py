@@ -165,6 +165,13 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             def close(self):
                 events.append("sql.close")
 
+        class WebRuntime:
+            def start(self):
+                events.append("web.start")
+
+            def close(self):
+                events.append("web.close")
+
         class Publisher:
             async def run(self, stop_event):
                 events.append("publisher.run")
@@ -187,6 +194,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 cors_allow_credentials=True,
             ),
             sql_assistant=SimpleNamespace(enabled=True),
+            web_research=SimpleNamespace(enabled=True),
             validate_startup=lambda: events.append("settings.validate"),
         )
 
@@ -202,6 +210,21 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "get_sql_assistant_runtime",
                 return_value=SqlRuntime(),
             ),
+            patch.object(
+                app_module,
+                "build_web_research_runtime",
+                return_value=WebRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "install_web_research_runtime",
+                side_effect=lambda _runtime: events.append("web.install"),
+            ),
+            patch.object(
+                app_module,
+                "clear_web_research_runtime",
+                side_effect=lambda _runtime: events.append("web.clear"),
+            ),
             patch.object(app_module, "run_agent_executor", Executor()),
             patch.object(app_module, "default_publisher", Publisher()),
             patch.object(app_module, "cancellation_registry", Cancellation()),
@@ -215,11 +238,22 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertLess(
                     events.index("sql.start"),
+                    events.index("web.start"),
+                )
+                self.assertLess(
+                    events.index("web.start"),
+                    events.index("web.install"),
+                )
+                self.assertLess(
+                    events.index("web.install"),
                     events.index("runs.start"),
                 )
 
         self.assertLess(events.index("runs.close"), events.index("provider.close"))
         self.assertLess(events.index("runs.close"), events.index("sql.close"))
+        self.assertLess(events.index("runs.close"), events.index("web.clear"))
+        self.assertLess(events.index("web.clear"), events.index("web.close"))
+        self.assertLess(events.index("web.close"), events.index("sql.close"))
         self.assertLess(events.index("sql.close"), events.index("provider.close"))
         self.assertLess(events.index("publisher.close"), events.index("provider.close"))
         self.assertLess(
@@ -317,6 +351,60 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             ["provider.start", "sql.start", "sql.close", "provider.close"],
+            events,
+        )
+
+    async def test_partial_web_start_is_closed_without_installing_runtime(self):
+        import backend.app as app_module
+
+        events: list[str] = []
+
+        class Provider:
+            async def start(self):
+                events.append("provider.start")
+
+            async def aclose(self):
+                events.append("provider.close")
+
+        class FailingWebRuntime:
+            def start(self):
+                events.append("web.start")
+                raise RuntimeError("web startup failed")
+
+            def close(self):
+                events.append("web.close")
+
+        settings = SimpleNamespace(
+            security=SimpleNamespace(
+                cors_origins=["http://localhost:5173"],
+                cors_allow_credentials=True,
+            ),
+            web_research=SimpleNamespace(enabled=True),
+            validate_startup=lambda: None,
+        )
+
+        with (
+            patch.object(app_module, "get_settings", return_value=settings),
+            patch.object(app_module, "init_db"),
+            patch.object(app_module, "provider_runtime", Provider()),
+            patch.object(
+                app_module,
+                "build_web_research_runtime",
+                return_value=FailingWebRuntime(),
+            ),
+            patch.object(
+                app_module,
+                "install_web_research_runtime",
+                side_effect=lambda _runtime: events.append("web.install"),
+            ),
+        ):
+            app = app_module.create_app()
+            with self.assertRaisesRegex(RuntimeError, "web startup failed"):
+                async with app.router.lifespan_context(app):
+                    self.fail("lifespan should not yield after failed web startup")
+
+        self.assertEqual(
+            ["provider.start", "web.start", "web.close", "provider.close"],
             events,
         )
 

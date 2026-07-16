@@ -327,6 +327,10 @@ class AgentSettings(_EnvSettings):
         tool_rounds = min(self.max_tool_calls, max(self.max_model_calls - 1, 0))
         return 8 + (tool_rounds * 5)
 
+    @property
+    def input_token_budget(self) -> int:
+        return self.max_context_tokens - self.response_reserve_tokens
+
 
 class SecuritySettings(_EnvSettings):
     jwt_secret_key: SecretStr = Field(
@@ -760,6 +764,145 @@ class SqlAssistantSettings(_EnvSettings):
         return tuple(filter(None, self.sensitive_columns_raw.split(",")))
 
 
+class WebResearchSettings(_EnvSettings):
+    """Fail-closed configuration for bounded public Web Research."""
+
+    enabled: bool = Field(
+        default=False,
+        validation_alias="WEB_RESEARCH_ENABLED",
+    )
+    brave_search_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="BRAVE_SEARCH_API_KEY",
+    )
+    request_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="WEB_RESEARCH_REQUEST_TIMEOUT_SECONDS",
+    )
+    dns_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+        allow_inf_nan=False,
+        validation_alias="WEB_RESEARCH_DNS_TIMEOUT_SECONDS",
+    )
+    dns_max_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        validation_alias="WEB_RESEARCH_DNS_MAX_CONCURRENCY",
+    )
+    max_dns_addresses: int = Field(
+        default=8,
+        ge=1,
+        le=32,
+        validation_alias="WEB_RESEARCH_MAX_DNS_ADDRESSES",
+    )
+    max_query_bytes: int = Field(
+        default=4_096,
+        ge=1,
+        le=16_384,
+        validation_alias="WEB_RESEARCH_MAX_QUERY_BYTES",
+    )
+    max_url_bytes: int = Field(
+        default=4_096,
+        ge=1,
+        le=16_384,
+        validation_alias="WEB_RESEARCH_MAX_URL_BYTES",
+    )
+    max_title_bytes: int = Field(
+        default=512,
+        ge=1,
+        le=4_096,
+        validation_alias="WEB_RESEARCH_MAX_TITLE_BYTES",
+    )
+    max_snippet_bytes: int = Field(
+        default=1_024,
+        ge=1,
+        le=32_768,
+        validation_alias="WEB_RESEARCH_MAX_SNIPPET_BYTES",
+    )
+    max_content_bytes: int = Field(
+        default=3_072,
+        ge=1,
+        le=2_097_152,
+        validation_alias="WEB_RESEARCH_MAX_CONTENT_BYTES",
+    )
+    max_total_evidence_bytes: int = Field(
+        default=4_096,
+        ge=1,
+        le=8_388_608,
+        validation_alias="WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES",
+    )
+    max_response_bytes: int = Field(
+        default=2_097_152,
+        ge=1_024,
+        le=8_388_608,
+        validation_alias="WEB_RESEARCH_MAX_RESPONSE_BYTES",
+    )
+    max_compressed_bytes: int = Field(
+        default=1_000_000,
+        ge=1_024,
+        le=8_388_608,
+        validation_alias="WEB_RESEARCH_MAX_COMPRESSED_BYTES",
+    )
+    default_search_results: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        validation_alias="WEB_RESEARCH_DEFAULT_SEARCH_RESULTS",
+    )
+    max_search_results: int = Field(
+        default=12,
+        ge=1,
+        le=50,
+        validation_alias="WEB_RESEARCH_MAX_SEARCH_RESULTS",
+    )
+    max_citations: int = Field(
+        default=32,
+        ge=1,
+        le=100,
+        validation_alias="WEB_RESEARCH_MAX_CITATIONS",
+    )
+    max_redirects: int = Field(
+        default=5,
+        ge=0,
+        le=10,
+        validation_alias="WEB_RESEARCH_MAX_REDIRECTS",
+    )
+    max_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        validation_alias="WEB_RESEARCH_MAX_CONCURRENCY",
+    )
+    user_agent: str = Field(
+        default="SuperMew-WebResearch/1.0",
+        min_length=1,
+        max_length=256,
+        validation_alias="WEB_RESEARCH_USER_AGENT",
+    )
+
+    @field_validator("user_agent")
+    @classmethod
+    def validate_user_agent(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(
+            marker in normalized for marker in ("\r", "\n", "\x00")
+        ):
+            raise ValueError("WEB_RESEARCH_USER_AGENT 必须是安全的单行字符串")
+        return normalized
+
+    @property
+    def search_configured(self) -> bool:
+        return self.enabled and not _is_placeholder(
+            self.brave_search_api_key.get_secret_value()
+        )
+
+
 _WEAK_SECRETS = {
     "",
     "change-this-secret",
@@ -783,6 +926,7 @@ class AppSettings(BaseModel):
     observability: ObservabilitySettings
     skills: SkillSettings
     sql_assistant: SqlAssistantSettings
+    web_research: WebResearchSettings
 
     def validate_startup(self) -> None:
         problems: list[str] = []
@@ -841,6 +985,9 @@ class AppSettings(BaseModel):
                 problems.append("生产环境必须配置 MODEL")
             if not self.embedding.warmup_on_start:
                 problems.append("生产环境必须启用 EMBEDDING_WARMUP_ON_START")
+
+        if self.web_research.enabled and not self.web_research.search_configured:
+            problems.append("启用 Web Research 时必须配置 BRAVE_SEARCH_API_KEY")
 
         if self.app.config_version != 1:
             problems.append(
@@ -962,6 +1109,42 @@ class AppSettings(BaseModel):
                 "SQL_ASSISTANT_MAX_ESTIMATED_BYTES"
             )
 
+        web = self.web_research
+        if web.default_search_results > web.max_search_results:
+            problems.append(
+                "WEB_RESEARCH_DEFAULT_SEARCH_RESULTS 不能大于 "
+                "WEB_RESEARCH_MAX_SEARCH_RESULTS"
+            )
+        if web.dns_timeout_seconds > web.request_timeout_seconds:
+            problems.append(
+                "WEB_RESEARCH_DNS_TIMEOUT_SECONDS 不能大于 "
+                "WEB_RESEARCH_REQUEST_TIMEOUT_SECONDS"
+            )
+        if web.max_search_results > web.max_citations:
+            problems.append(
+                "WEB_RESEARCH_MAX_SEARCH_RESULTS 不能大于 WEB_RESEARCH_MAX_CITATIONS"
+            )
+        if web.max_title_bytes > web.max_content_bytes:
+            problems.append(
+                "WEB_RESEARCH_MAX_TITLE_BYTES 不能大于 WEB_RESEARCH_MAX_CONTENT_BYTES"
+            )
+        if web.max_snippet_bytes > web.max_content_bytes:
+            problems.append(
+                "WEB_RESEARCH_MAX_SNIPPET_BYTES 不能大于 WEB_RESEARCH_MAX_CONTENT_BYTES"
+            )
+        if web.max_content_bytes > web.max_total_evidence_bytes:
+            problems.append(
+                "WEB_RESEARCH_MAX_CONTENT_BYTES 不能大于 "
+                "WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES"
+            )
+        if (
+            web.enabled
+            and web.max_total_evidence_bytes > self.agent.input_token_budget // 2
+        ):
+            problems.append(
+                "WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES 不能大于 "
+                "Agent 输入 token 预算的一半"
+            )
         if problems:
             raise ValueError("；".join(problems))
 
@@ -980,6 +1163,7 @@ class AppSettings(BaseModel):
         payload["sql_assistant"]["dsn"] = _redact_url(
             self.sql_assistant.dsn.get_secret_value()
         )
+        payload["web_research"]["brave_search_api_key"] = "***"
         return payload
 
 
@@ -1010,6 +1194,7 @@ def get_settings() -> AppSettings:
         observability=ObservabilitySettings(),
         skills=SkillSettings(),
         sql_assistant=SqlAssistantSettings(),
+        web_research=WebResearchSettings(),
     )
 
 

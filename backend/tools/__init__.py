@@ -9,6 +9,7 @@ from backend.tools.registry import (
     ToolSession,
 )
 from backend.tools.sql import make_sql_query, make_sql_schema
+from backend.tools.web import make_web_fetch, make_web_search
 from backend.tools.weather import get_current_weather_tool as get_current_weather
 
 __all__ = [
@@ -16,6 +17,8 @@ __all__ = [
     "make_search_knowledge_base",
     "make_sql_query",
     "make_sql_schema",
+    "make_web_fetch",
+    "make_web_search",
     "ToolAccess",
     "ToolDescriptor",
     "ToolExposure",

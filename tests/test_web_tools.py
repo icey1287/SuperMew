@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from backend.chat.request_context import ChatRequestContext
+from backend.core.settings import WebResearchSettings
+from backend.tools.catalog import (
+    build_default_tool_registry,
+    configured_secret_names,
+)
+from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA, ToolResultV1
+from backend.tools.registry import ToolAccess, ToolExposure
+from backend.web_research.contracts import WebEvidence, WebResearchResult
+from backend.web_research.runtime import WebResearchError, WebResearchErrorCode
+
+
+def _settings(
+    *,
+    enabled: bool = True,
+    api_key: str = "brave-test-secret",
+) -> WebResearchSettings:
+    return WebResearchSettings(
+        _env_file=None,
+        WEB_RESEARCH_ENABLED=enabled,
+        BRAVE_SEARCH_API_KEY=api_key,
+    )
+
+
+def _access(
+    *,
+    role: str = "user",
+    secrets: frozenset[str] = frozenset({"BRAVE_SEARCH_API_KEY"}),
+) -> ToolAccess:
+    return ToolAccess(
+        roles=frozenset({role}),
+        available_secrets=secrets,
+        caller_allowed_tools=frozenset({"web_search", "web_fetch"}),
+        approved_tools=frozenset(),
+        allowed_network_policies=frozenset({"restricted"}),
+    )
+
+
+def _result(
+    *,
+    url: str = "https://www.example.edu/research",
+    content: str = "Verified public evidence.",
+) -> WebResearchResult:
+    evidence = WebEvidence.create(
+        canonical_url=url,
+        title="Research source",
+        snippet="Verified evidence",
+        content=content,
+        retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+    )
+    return WebResearchResult.create([evidence])
+
+
+def test_catalog_registers_web_tools_as_secret_gated_deferred_adapters():
+    settings = _settings()
+    registry = build_default_tool_registry(web_research_settings=settings)
+
+    for role in ("user", "admin"):
+        for name in ("web_search", "web_fetch"):
+            descriptor = registry.describe(name, _access(role=role))
+            assert descriptor is not None
+            assert descriptor.output_schema == TOOL_RESULT_V1_SCHEMA
+            assert descriptor.required_roles == frozenset()
+            assert descriptor.required_secrets == frozenset({"BRAVE_SEARCH_API_KEY"})
+            assert descriptor.network_policy == "restricted"
+            assert descriptor.observability_metadata_keys == frozenset(
+                {
+                    "citation_count",
+                    "evidence_count",
+                    "output_bytes",
+                    "truncated",
+                }
+            )
+            assert registry.exposure(name) is ToolExposure.DEFERRED
+
+    fetch_schema = registry.descriptor("web_fetch").input_schema
+    assert set(fetch_schema["properties"]) == {"evidence_id"}
+    assert "url" not in str(fetch_schema).casefold()
+
+
+def test_feature_flag_and_configured_secret_intersection_fail_closed():
+    disabled = _settings(enabled=False)
+    registry = build_default_tool_registry(web_research_settings=disabled)
+
+    assert "BRAVE_SEARCH_API_KEY" not in configured_secret_names(
+        registry,
+        web_research_settings=disabled,
+    )
+    assert registry.describe("web_search", _access(secrets=frozenset())) is None
+
+    placeholder = _settings(enabled=True, api_key="your_brave_search_api_key")
+    assert "BRAVE_SEARCH_API_KEY" not in configured_secret_names(
+        registry,
+        web_research_settings=placeholder,
+    )
+
+    enabled = _settings()
+    assert "BRAVE_SEARCH_API_KEY" in configured_secret_names(
+        registry,
+        web_research_settings=enabled,
+    )
+
+
+def test_tool_envelope_budget_does_not_reuse_http_response_budget(monkeypatch):
+    settings = WebResearchSettings(
+        _env_file=None,
+        WEB_RESEARCH_ENABLED=True,
+        BRAVE_SEARCH_API_KEY="brave-test-secret",
+        WEB_RESEARCH_MAX_CONTENT_BYTES=75_000,
+        WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES=80_000,
+        WEB_RESEARCH_MAX_RESPONSE_BYTES=1_024,
+        WEB_RESEARCH_MAX_COMPRESSED_BYTES=2_048,
+    )
+    result = _result(content="x" * 74_000)
+
+    class Runtime:
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            return result
+
+    monkeypatch.setattr(
+        "backend.tools.web.get_web_research_runtime",
+        lambda: Runtime(),
+    )
+    registry = build_default_tool_registry(web_research_settings=settings)
+    assert registry.descriptor("web_search").result_size_limit == 145_536
+
+    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-envelope")
+    session = registry.bind(ctx, _access())
+    session.apply_skill({"web_search"})
+    session.search("public web evidence")
+
+    payload = session.resolve("web_search").invoke({"query": "public research"})
+    tool_result = ToolResultV1.model_validate_json(payload)
+
+    assert tool_result.success is True
+    assert len(payload.encode("utf-8")) > settings.max_response_bytes
+    assert len(payload.encode("utf-8")) < (settings.max_total_evidence_bytes + 65_536)
+    ctx.close()
+
+
+def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
+    calls: list[dict] = []
+    result = _result()
+
+    class Runtime:
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            calls.append(
+                {
+                    "query": query,
+                    "limit": limit,
+                    "deadline_at": deadline_at,
+                    "cancellation_probe": cancellation_probe,
+                }
+            )
+            return result
+
+    monkeypatch.setattr(
+        "backend.tools.web.get_web_research_runtime",
+        lambda: Runtime(),
+    )
+
+    def cancelled() -> bool:
+        return False
+
+    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-search")
+    ctx.configure_provider_runtime(
+        deadline_at=1234.5,
+        cancellation_probe=cancelled,
+    )
+    registry = build_default_tool_registry(web_research_settings=_settings())
+    session = registry.bind(ctx, _access())
+    session.apply_skill({"web_search", "web_fetch"})
+    session.search("public web evidence")
+
+    payload = session.resolve("web_search").invoke(
+        {"query": "current public research", "max_results": 3}
+    )
+    tool_result = ToolResultV1.model_validate_json(payload)
+    evidence = result.evidence[0]
+
+    assert tool_result.success is True
+    assert tool_result.data == result.to_public_dict()
+    assert result.observability_metadata().items() <= (
+        tool_result.observability_metadata.items()
+    )
+    assert ctx.resolve_web_evidence(evidence.evidence_id) == evidence.canonical_url
+    assert calls == [
+        {
+            "query": "current public research",
+            "limit": 3,
+            "deadline_at": 1234.5,
+            "cancellation_probe": cancelled,
+        }
+    ]
+    assert "current public research" not in str(tool_result.observability_metadata)
+    assert evidence.canonical_url not in str(tool_result.observability_metadata)
+    ctx.close()
+
+
+def test_web_fetch_accepts_only_run_local_search_evidence(monkeypatch):
+    calls: list[dict] = []
+    search_result = _result()
+    fetched_result = _result(
+        url="https://www.example.edu/research",
+        content="Full verified public page.",
+    )
+
+    class Runtime:
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            return search_result
+
+        def fetch(self, url, *, deadline_at, cancellation_probe):
+            calls.append(
+                {
+                    "url": url,
+                    "deadline_at": deadline_at,
+                    "cancellation_probe": cancellation_probe,
+                }
+            )
+            return fetched_result
+
+    monkeypatch.setattr(
+        "backend.tools.web.get_web_research_runtime",
+        lambda: Runtime(),
+    )
+    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-fetch")
+    ctx.configure_provider_runtime(deadline_at=55.0, cancellation_probe=lambda: False)
+    registry = build_default_tool_registry(web_research_settings=_settings())
+    session = registry.bind(ctx, _access())
+    session.apply_skill({"web_search", "web_fetch"})
+    session.search("public web evidence fetch")
+
+    unknown_payload = session.resolve("web_fetch").invoke(
+        {"evidence_id": f"web_ev_{'0' * 64}"}
+    )
+    unknown = ToolResultV1.model_validate_json(unknown_payload)
+    assert unknown.success is False
+    assert unknown.error_code == "WEB_EVIDENCE_NOT_AUTHORIZED"
+    assert calls == []
+
+    session.resolve("web_search").invoke({"query": "public source"})
+    evidence = search_result.evidence[0]
+    fetched_payload = session.resolve("web_fetch").invoke(
+        {"evidence_id": evidence.evidence_id}
+    )
+    fetched = ToolResultV1.model_validate_json(fetched_payload)
+
+    assert fetched.success is True
+    assert calls[0]["url"] == evidence.canonical_url
+    assert calls[0]["deadline_at"] == 55.0
+    ctx.close()
+
+
+def test_web_runtime_stable_error_is_preserved_without_sensitive_details(monkeypatch):
+    class Runtime:
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            raise WebResearchError(
+                WebResearchErrorCode.SEARCH_UNAVAILABLE,
+                retryable=True,
+                safe_details={"source_count": 0},
+            )
+
+    monkeypatch.setattr(
+        "backend.tools.web.get_web_research_runtime",
+        lambda: Runtime(),
+    )
+    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-failure")
+    registry = build_default_tool_registry(web_research_settings=_settings())
+    session = registry.bind(ctx, _access())
+    session.apply_skill({"web_search"})
+    session.search("public web evidence")
+
+    payload = session.resolve("web_search").invoke(
+        {"query": "secret-shaped query must not enter the failure"}
+    )
+    result = ToolResultV1.model_validate_json(payload)
+
+    assert result.success is False
+    assert result.error_code == "WEB_SEARCH_UNAVAILABLE"
+    assert result.retryable is True
+    assert "secret-shaped" not in payload
+    assert "source_count" not in payload
+    ctx.close()

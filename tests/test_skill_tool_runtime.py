@@ -259,6 +259,41 @@ def test_project_sql_assistant_skill_is_admin_and_secret_gated():
     assert "search_knowledge_base" not in activated.allowed_tools
 
 
+def test_project_web_research_skill_allows_user_and_admin_but_requires_secret():
+    registry = build_default_tool_registry()
+    skills = _load_project_skills(registry)
+
+    for role in ("user", "admin"):
+        without_secret = skills.catalog(SkillAccess(roles=frozenset({role})))
+        with_secret = skills.catalog(
+            SkillAccess(
+                roles=frozenset({role}),
+                available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            )
+        )
+
+        assert "web-research" not in {item.name for item in without_secret}
+        assert "web-research" in {item.name for item in with_secret}
+
+    activated = skills.activate(
+        "web-research",
+        SkillAccess(
+            roles=frozenset({"user"}),
+            available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+        ),
+        source="test",
+    )
+    assert activated.allowed_tools == frozenset({"web_search", "web_fetch"})
+    assert "search_knowledge_base" not in activated.allowed_tools
+    assert "sql_query" not in activated.allowed_tools
+    instructions = activated.instructions.casefold()
+    assert "untrusted evidence" in instructions
+    assert "markdown link" in instructions
+    assert "source conflicts" in instructions
+    assert "coverage gaps" in instructions
+    assert "example.com" not in instructions
+
+
 def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
     registry = build_default_tool_registry()
     factory = AgentRuntimeFactory(
@@ -324,6 +359,73 @@ def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
     assert "sql_query" not in runtime.context.tool_session.authorized_names
     assert "sql_schema" not in {item.name for item in built["tools"]}
     assert "sql_query" not in {item.name for item in built["tools"]}
+
+
+def test_factory_authorizes_web_only_with_configured_and_caller_secret():
+    registry = build_default_tool_registry()
+    factory = AgentRuntimeFactory(
+        settings=_settings(),
+        models=_FixedModels(ScriptedChatModel(responses=[AIMessage(content="ok")])),
+        agent_builder=lambda **_kwargs: object(),
+        tools=registry,
+        skills=_load_project_skills(registry),
+        secret_names_provider=lambda _registry: frozenset({"BRAVE_SEARCH_API_KEY"}),
+    )
+    request_context = ChatRequestContext.for_sync(
+        user_id="alice",
+        session_id="web-enabled",
+    )
+    try:
+        runtime = factory.create(
+            request_context,
+            roles=frozenset({"user"}),
+            allowed_tools=factory.tool_ceiling,
+            available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            allowed_network_policies=frozenset({"none", "restricted"}),
+            routed_skill="web-research",
+        )
+
+        assert runtime.context.skill_session.active.name == "web-research"
+        assert {"web_search", "web_fetch"}.issubset(
+            runtime.context.tool_session.authorized_names
+        )
+        assert not runtime.context.tool_session.is_allowed("web_search")
+        runtime.context.tool_session.search("public web evidence")
+        assert runtime.context.tool_session.is_allowed("web_search")
+    finally:
+        request_context.close()
+
+
+def test_factory_disabled_web_cannot_be_enabled_by_a_forged_secret_name():
+    registry = build_default_tool_registry()
+    built: dict[str, object] = {}
+    factory = AgentRuntimeFactory(
+        settings=_settings(),
+        models=_FixedModels(ScriptedChatModel(responses=[AIMessage(content="ok")])),
+        agent_builder=lambda **kwargs: built.update(kwargs) or object(),
+        tools=registry,
+        skills=_load_project_skills(registry),
+        secret_names_provider=lambda _registry: frozenset(),
+    )
+    request_context = ChatRequestContext.for_sync(
+        user_id="alice",
+        session_id="web-disabled",
+    )
+    try:
+        runtime = factory.create(
+            request_context,
+            roles=frozenset({"user"}),
+            allowed_tools=factory.tool_ceiling,
+            available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            allowed_network_policies=frozenset({"none", "restricted"}),
+        )
+    finally:
+        request_context.close()
+
+    assert "web_search" not in runtime.context.tool_session.authorized_names
+    assert "web_fetch" not in runtime.context.tool_session.authorized_names
+    assert "web_search" not in {item.name for item in built["tools"]}
+    assert "web_fetch" not in {item.name for item in built["tools"]}
 
 
 def test_factory_excludes_secret_gated_weather_and_sets_explicit_allowed_tools():

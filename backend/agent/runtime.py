@@ -92,6 +92,17 @@ class AgentRuntime:
     def _config(self) -> dict:
         return {"recursion_limit": self.context.budget.recursion_limit}
 
+    def _requires_terminal_buffering(self) -> bool:
+        active = (
+            getattr(self.context.skill_session, "active", None)
+            if self.context.skill_session is not None
+            else None
+        )
+        return bool(
+            getattr(active, "name", None) == "web-research"
+            or self.context.request_context.web_research_requires_terminal_validation()
+        )
+
     def _prepare(self, request: AgentRuntimeInput) -> AgentRuntimeInput:
         try:
             user_text = self.context.prepare_user_text(request.user_text)
@@ -183,8 +194,10 @@ class AgentRuntime:
     async def astream(self, request: AgentRuntimeInput):
         full_response = ""
         final_state = None
+        terminal_buffering = False
         try:
             request = await self._aprepare(request)
+            terminal_buffering = self._requires_terminal_buffering()
             self.context.check_deadline()
             async with asyncio.timeout(self.context.remaining_seconds()):
                 async for item in self.agent.astream(
@@ -221,7 +234,11 @@ class AgentRuntime:
                     if _is_hitl_trace(normalize_rag_trace(stored.get("rag_trace"))):
                         continue
                     full_response += content
-                    yield AgentRuntimeEvent(type="content", content=content)
+                    terminal_buffering = (
+                        terminal_buffering or self._requires_terminal_buffering()
+                    )
+                    if not terminal_buffering:
+                        yield AgentRuntimeEvent(type="content", content=content)
         except TimeoutError as exc:
             raise self._timeout_error(exc) from exc
 
@@ -230,5 +247,14 @@ class AgentRuntime:
             if final_state is not None
             else full_response
         )
+        if terminal_buffering and final_state is None:
+            self.context.record_trace(
+                "web.citation_rejected",
+                error_code="WEB_CITATION_FINAL_STATE_MISSING",
+                evidence_count=self.context.request_context.web_evidence_count(),
+            )
+            authoritative_content = "网页引用校验未完成，本次回答未发布。请稍后重试。"
         result = self._finish(authoritative_content)
+        if terminal_buffering and authoritative_content:
+            yield AgentRuntimeEvent(type="content", content=authoritative_content)
         yield AgentRuntimeEvent(type="completed", result=result)

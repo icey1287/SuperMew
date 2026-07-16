@@ -33,6 +33,7 @@ from backend.providers import (
     provider_executor,
 )
 from backend.tools.contracts import ToolResultV1, new_tool_failure
+from backend.web_research.citations import WebCitationLedgerError
 
 
 DEFAULT_MIDDLEWARE_ORDER = (
@@ -50,6 +51,8 @@ DEFAULT_MIDDLEWARE_ORDER = (
 
 _DYNAMIC_CONTEXT_MARKER = "supermew_dynamic_context"
 _ACTIVE_SKILL_MARKER = "supermew_active_skill"
+_WEB_TOOL_NAMES = frozenset({"web_fetch", "web_search"})
+_WEB_CONTEXT_BUDGET_ERROR = "WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED"
 
 
 def _runtime_context(runtime) -> AgentRuntimeContext:
@@ -118,11 +121,9 @@ def _tool_audit_key(tool_call: dict) -> str:
         {
             "id": str(tool_call.get("id") or ""),
             "name": str(tool_call.get("name") or ""),
-            "args": tool_call.get("args") or {},
         },
         ensure_ascii=False,
         sort_keys=True,
-        default=str,
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -150,6 +151,12 @@ class ContextPackingResult:
     removed_count: int
     truncated_count: int
     estimated_tokens: int
+
+
+class _ContextPackingError(RuntimeError):
+    def __init__(self, *, atomic_web_tool_result: bool) -> None:
+        super().__init__("Agent context cannot fit within the configured token budget")
+        self.atomic_web_tool_result = atomic_web_tool_result
 
 
 def _conversation_turns(messages: Sequence[BaseMessage]) -> list[list[BaseMessage]]:
@@ -198,6 +205,28 @@ def _is_atomic_dynamic_context(message: BaseMessage) -> bool:
     )
 
 
+def _atomic_web_tool_result_ids(
+    messages: Sequence[BaseMessage],
+) -> frozenset[str]:
+    web_call_ids = {
+        str(tool_call.get("id"))
+        for message in messages
+        if isinstance(message, AIMessage)
+        for tool_call in (message.tool_calls or [])
+        if tool_call.get("id") and str(tool_call.get("name") or "") in _WEB_TOOL_NAMES
+    }
+    return frozenset(
+        message.tool_call_id
+        for message in messages
+        if isinstance(message, ToolMessage)
+        and (
+            message.tool_call_id in web_call_ids
+            or str(getattr(message, "name", "") or "") in _WEB_TOOL_NAMES
+        )
+        and _typed_tool_result(message) is not None
+    )
+
+
 def _compact_to_budget(
     messages: list[BaseMessage],
     *,
@@ -206,6 +235,7 @@ def _compact_to_budget(
     tools: list | None,
 ) -> tuple[list[BaseMessage], int, int]:
     compacted = list(messages)
+    atomic_web_tool_result_ids = _atomic_web_tool_result_ids(compacted)
     truncated_indexes: set[int] = set()
     estimated = estimate_request_tokens(
         compacted,
@@ -218,6 +248,10 @@ def _compact_to_budget(
                 index
                 for index in range(len(compacted))
                 if not _is_atomic_dynamic_context(compacted[index])
+                and not (
+                    isinstance(compacted[index], ToolMessage)
+                    and compacted[index].tool_call_id in atomic_web_tool_result_ids
+                )
             ),
             key=lambda index: (
                 0 if isinstance(compacted[index], ToolMessage) else 1,
@@ -291,8 +325,8 @@ def trim_messages_to_budget(
         tools=tools,
     )
     if estimated > token_budget:
-        raise RuntimeError(
-            "Agent context cannot fit within the configured token budget"
+        raise _ContextPackingError(
+            atomic_web_tool_result=bool(_atomic_web_tool_result_ids(retained)),
         )
     _assert_tool_protocol(retained)
     return ContextPackingResult(
@@ -649,6 +683,18 @@ class ContextBudgetMiddleware(AgentMiddleware):
                 tools=visible_tools,
             )
         except RuntimeError as exc:
+            if isinstance(exc, _ContextPackingError) and exc.atomic_web_tool_result:
+                context.record_trace(
+                    "web.context_rejected",
+                    error_code=_WEB_CONTEXT_BUDGET_ERROR,
+                )
+                raise AppError(
+                    ErrorCode.POLICY_DENIED,
+                    "Web Research 证据结果无法完整放入当前上下文预算。",
+                    status_code=403,
+                    category="web_research",
+                    stage="context_budget",
+                ) from exc
             active_skill_required = any(
                 bool(message.additional_kwargs.get(_ACTIVE_SKILL_MARKER))
                 for message in request.messages
@@ -817,6 +863,33 @@ class TerminalResponseMiddleware(AgentMiddleware):
                     AIMessage(content="任务未能生成有效的最终回答，请稍后重试。")
                 ]
             }
+        content = _message_text(last)
+        if context.request_context.web_research_requires_terminal_validation():
+            try:
+                rendered = context.request_context.finalize_web_citations(content)
+            except WebCitationLedgerError as exc:
+                context.record_trace(
+                    "web.citation_rejected",
+                    error_code=exc.code.value,
+                    evidence_count=context.request_context.web_evidence_count(),
+                )
+                return {
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                "网页证据引用未通过校验，本次回答未发布。"
+                                "请重试或缩小检索范围。"
+                            )
+                        )
+                    ]
+                }
+            context.record_trace(
+                "web.citation_validated",
+                evidence_count=context.request_context.web_evidence_count(),
+            )
+            if rendered != content:
+                context.record_trace("agent.completed")
+                return {"messages": [AIMessage(content=rendered)]}
         context.record_trace("agent.completed")
         return None
 

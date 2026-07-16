@@ -1,0 +1,11 @@
+schema_version: 1
+name: web-research
+version: 1.0.0
+description: Research current public-web information with bounded evidence and citations.
+allowed_tools:
+  - web_fetch
+  - web_search
+required_roles: []
+required_secrets:
+  - BRAVE_SEARCH_API_KEY
+entrypoint: SKILL.md

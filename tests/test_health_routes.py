@@ -13,6 +13,7 @@ def _runtime(
     warmup: bool,
     worker_required: bool = True,
     sql_enabled: bool = False,
+    web_enabled: bool = False,
 ):
     snapshot = SimpleNamespace(
         running=running,
@@ -34,6 +35,7 @@ def _runtime(
                 indexing_readiness_ttl_seconds=45,
             ),
             sql_assistant=SimpleNamespace(enabled=sql_enabled),
+            web_research=SimpleNamespace(enabled=web_enabled),
         ),
         readiness=lambda: snapshot,
     )
@@ -256,6 +258,52 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
                 "catalog_hash": "b" * 64,
             },
             payload["sql_assistant"],
+        )
+
+    async def test_ready_gates_enabled_web_runtime_and_exposes_only_safe_state(self):
+        runtime = _runtime(
+            running=True,
+            embedding_ready=True,
+            warmup=True,
+            web_enabled=True,
+        )
+        snapshots = iter(
+            (
+                {
+                    "ready": False,
+                    "search_ready": False,
+                    "api_key": "must-not-escape",
+                },
+                {
+                    "ready": True,
+                    "search_ready": True,
+                    "query": "must-not-escape",
+                },
+            )
+        )
+        web_runtime = SimpleNamespace(readiness=lambda: next(snapshots))
+        with (
+            patch.object(health, "provider_runtime", runtime),
+            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(
+                health,
+                "get_web_research_runtime",
+                return_value=web_runtime,
+            ),
+        ):
+            unavailable = await health.ready()
+            ready = await health.ready()
+
+        self.assertEqual(503, unavailable.status_code)
+        self.assertEqual(200, ready.status_code)
+        payload = json.loads(ready.body)
+        self.assertEqual(
+            {
+                "enabled": True,
+                "ready": True,
+                "search_ready": True,
+            },
+            payload["web_research"],
         )
 
     async def test_ready_is_read_only_and_fails_when_catalog_state_is_missing(self):

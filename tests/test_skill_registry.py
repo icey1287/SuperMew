@@ -573,9 +573,19 @@ def test_registry_rejects_missing_skill_and_example_skill_loads() -> None:
     project_root = Path(__file__).resolve().parents[1]
     registry = SkillRegistry.load(
         project_root / "skills",
-        {"search_knowledge_base", "sql_schema", "sql_query"},
+        {
+            "search_knowledge_base",
+            "sql_schema",
+            "sql_query",
+            "web_search",
+            "web_fetch",
+        },
     )
-    assert registry.names == ("knowledge-base", "sql-assistant")
+    assert registry.names == (
+        "knowledge-base",
+        "sql-assistant",
+        "web-research",
+    )
     assert registry.activate(
         "knowledge-base",
         SkillAccess(),

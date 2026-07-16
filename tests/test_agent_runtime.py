@@ -1,5 +1,7 @@
 import asyncio
+import json
 import unittest
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -28,6 +30,7 @@ from backend.agent.middleware import (
     RuntimeTracingMiddleware,
     TerminalResponseMiddleware,
     ToolPolicyMiddleware,
+    _tool_audit_key,
     build_default_middleware,
     estimate_request_tokens,
     trim_messages_to_budget,
@@ -44,6 +47,26 @@ from backend.providers import (
     ProviderPolicy,
 )
 from backend.tools.contracts import new_tool_success
+from backend.web_research.contracts import WebEvidence, WebResearchResult
+
+
+def test_tool_audit_key_never_fingerprints_argument_values():
+    first = _tool_audit_key(
+        {
+            "id": "call-private",
+            "name": "web_search",
+            "args": {"query": "private acquisition target"},
+        }
+    )
+    second = _tool_audit_key(
+        {
+            "id": "call-private",
+            "name": "web_search",
+            "args": {"query": "different low entropy query"},
+        }
+    )
+
+    assert first == second
 
 
 def _budget(**overrides):
@@ -82,6 +105,25 @@ def _context(*, note="", allowed_tools=None, budget=None):
         current_date="2026-07-14",
     )
     return request_context, context
+
+
+def _web_result(*, content_bytes: int = 20 * 1024) -> WebResearchResult:
+    evidence = WebEvidence.create(
+        canonical_url="https://example.com/research",
+        title="Architecture research",
+        snippet="Bounded public evidence",
+        content="x" * content_bytes,
+        retrieved_at=datetime(2026, 7, 16, tzinfo=UTC),
+    )
+    return WebResearchResult.create([evidence])
+
+
+def _web_tool_result(*, content_bytes: int = 20 * 1024) -> str:
+    result = _web_result(content_bytes=content_bytes)
+    return new_tool_success(
+        data=result.to_public_dict(),
+        observability_metadata=result.observability_metadata(),
+    ).model_dump_json()
 
 
 class ModelRegistryTests(unittest.TestCase):
@@ -378,6 +420,92 @@ class RuntimeMiddlewareTests(unittest.TestCase):
             1000,
         )
 
+    def test_context_packing_keeps_large_web_tool_result_as_atomic_json(self):
+        web_result = _web_tool_result()
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "web_fetch",
+                    "args": {"evidence_id": "web_ev_" + ("a" * 64)},
+                    "id": "call-web",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        tool_message = ToolMessage(
+            content=web_result,
+            tool_call_id="call-web",
+        )
+        messages = [
+            HumanMessage(content="background " * 2_000),
+            tool_call,
+            tool_message,
+        ]
+        minimum_complete_bundle = [
+            HumanMessage(content="q" * 96),
+            tool_call,
+            tool_message,
+        ]
+        token_budget = estimate_request_tokens(minimum_complete_bundle) + 100
+
+        packed = trim_messages_to_budget(messages, token_budget)
+
+        self.assertLessEqual(packed.estimated_tokens, token_budget)
+        self.assertGreaterEqual(packed.truncated_count, 1)
+        self.assertEqual(web_result, packed.messages[-1].content)
+        self.assertGreater(len(web_result.encode("utf-8")), 20_000)
+        self.assertEqual(1, json.loads(packed.messages[-1].content)["schema_version"])
+
+    def test_context_budget_rejects_oversized_web_tool_result_before_model_call(self):
+        request_context, context = _context(
+            budget=_budget(max_context_tokens=1_256, response_reserve_tokens=256),
+        )
+        web_result = _web_tool_result()
+        request = ModelRequest(
+            model=Mock(),
+            messages=[
+                HumanMessage(content="summarize the evidence"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "web_search",
+                            "args": {"query": "public topic"},
+                            "id": "call-web",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                ToolMessage(content=web_result, tool_call_id="call-web"),
+            ],
+            system_message=SystemMessage(content="stable base prompt"),
+            runtime=SimpleNamespace(context=context),
+        )
+        handler = Mock(return_value="must not run")
+
+        try:
+            with self.assertRaises(AppError) as rejected:
+                ContextBudgetMiddleware().wrap_model_call(request, handler)
+        finally:
+            request_context.close()
+
+        self.assertEqual(ErrorCode.POLICY_DENIED, rejected.exception.code)
+        self.assertEqual("web_research", rejected.exception.category)
+        self.assertEqual("context_budget", rejected.exception.stage)
+        self.assertIn("无法完整放入", rejected.exception.message)
+        handler.assert_not_called()
+        rejected_traces = [
+            item
+            for item in context.trace_events
+            if item["stage"] == "web.context_rejected"
+        ]
+        self.assertEqual(1, len(rejected_traces))
+        self.assertEqual(
+            "WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED",
+            rejected_traces[0]["error_code"],
+        )
+
     def test_tool_policy_filters_schema_before_model_call(self):
         request_context, context = _context(
             allowed_tools=frozenset({"search_knowledge_base"})
@@ -634,6 +762,62 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertIsInstance(update["messages"][0], AIMessage)
         self.assertIn("最终回答", update["messages"][0].content)
 
+    def test_terminal_guard_renders_only_current_run_web_citations(self):
+        request_context, context = _context()
+        result = _web_result(content_bytes=32)
+        evidence = result.evidence[0]
+        request_context.record_web_search_result(result)
+        try:
+            update = TerminalResponseMiddleware().after_agent(
+                {
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                "Verified claim "
+                                f"[invented](webcite:{evidence.evidence_id})."
+                            )
+                        )
+                    ]
+                },
+                SimpleNamespace(context=context),
+            )
+        finally:
+            request_context.close()
+
+        rendered = update["messages"][0].content
+        self.assertIn("[Architecture research]", rendered)
+        self.assertIn(evidence.canonical_url, rendered)
+        self.assertNotIn("webcite:", rendered)
+        self.assertIn(
+            "web.citation_validated",
+            [item["stage"] for item in context.trace_events],
+        )
+
+    def test_terminal_guard_replaces_raw_or_cross_run_web_links(self):
+        request_context, context = _context()
+        request_context.record_web_search_result(_web_result(content_bytes=32))
+        try:
+            update = TerminalResponseMiddleware().after_agent(
+                {
+                    "messages": [
+                        AIMessage(content="Unsafe https://untrusted.example/result")
+                    ]
+                },
+                SimpleNamespace(context=context),
+            )
+        finally:
+            request_context.close()
+
+        rendered = update["messages"][0].content
+        self.assertIn("引用未通过校验", rendered)
+        self.assertNotIn("https://", rendered)
+        rejected = [
+            item
+            for item in context.trace_events
+            if item["stage"] == "web.citation_rejected"
+        ]
+        self.assertEqual("WEB_CITATION_RAW_URL", rejected[-1]["error_code"])
+
 
 class AgentRuntimeFactoryTests(unittest.TestCase):
     def test_factory_hides_agent_construction_behind_one_interface(self):
@@ -720,6 +904,43 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("stream answer", events[-1].result.content)
         self.assertEqual(32, agent.invocations[0][1]["recursion_limit"])
         self.assertIs(context, agent.invocations[0][2])
+
+    async def test_web_stream_buffers_unvalidated_deltas_until_terminal_state(self):
+        result = _web_result(content_bytes=32)
+        evidence = result.evidence[0]
+        safe_content = (
+            f"Verified claim [Architecture research](<{evidence.canonical_url}>)."
+        )
+
+        class WebCompiledAgent(FakeCompiledAgent):
+            async def astream(self, payload, *, stream_mode, config, context):
+                self.invocations.append((payload, config, context))
+                context.request_context.record_web_search_result(result)
+                yield (
+                    "messages",
+                    (
+                        AIMessageChunk(content="leaked https://untrusted.example"),
+                        {},
+                    ),
+                )
+                yield "values", {"messages": [AIMessage(content=safe_content)]}
+
+        request_context, context = _context()
+        runtime = AgentRuntime(agent=WebCompiledAgent(), context=context)
+        try:
+            events = [
+                event
+                async for event in runtime.astream(
+                    AgentRuntimeInput(history=[], user_text="research")
+                )
+            ]
+        finally:
+            request_context.close()
+
+        content_events = [item.content for item in events if item.type == "content"]
+        self.assertEqual([safe_content], content_events)
+        self.assertEqual(safe_content, events[-1].result.content)
+        self.assertNotIn("untrusted.example", "".join(content_events))
 
 
 class ScriptedChatModel(BaseChatModel):

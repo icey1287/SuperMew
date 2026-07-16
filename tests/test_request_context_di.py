@@ -57,6 +57,23 @@ class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
             ctx_a.close()
             ctx_b.close()
 
+    async def test_web_fetch_capabilities_are_request_owned_and_cannot_rebind(self):
+        ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
+        ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
+        evidence_id = f"web_ev_{'a' * 64}"
+        url = "https://research.dev/article"
+
+        ctx_a.record_web_evidence({evidence_id: url})
+
+        self.assertEqual(url, ctx_a.resolve_web_evidence(evidence_id))
+        self.assertIsNone(ctx_b.resolve_web_evidence(evidence_id))
+        self.assertNotIn(url, repr(ctx_a))
+        with self.assertRaisesRegex(ValueError, "cannot be rebound"):
+            ctx_a.record_web_evidence({evidence_id: "https://research.dev/other"})
+
+        ctx_a.close()
+        self.assertIsNone(ctx_a.resolve_web_evidence(evidence_id))
+
 
 class KnowledgeToolFactoryTests(unittest.TestCase):
     def test_knowledge_tool_counter_is_per_context(self):
@@ -132,7 +149,9 @@ class RouteImportTests(unittest.TestCase):
 class ImportShapeTests(unittest.TestCase):
     def test_backend_imports_do_not_pull_child_modules_from_packages(self):
         backend_root = REPO_ROOT / "backend"
-        files = list(backend_root.rglob("*.py")) + list((REPO_ROOT / "tests").glob("test_*.py"))
+        files = list(backend_root.rglob("*.py")) + list(
+            (REPO_ROOT / "tests").glob("test_*.py")
+        )
         offenders = []
 
         for path in files:
@@ -150,7 +169,9 @@ class ImportShapeTests(unittest.TestCase):
                     child_file = package_path / f"{alias.name}.py"
                     child_package = package_path / alias.name / "__init__.py"
                     if child_file.exists() or child_package.exists():
-                        offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.module}.{alias.name}")
+                        offenders.append(
+                            f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.module}.{alias.name}"
+                        )
 
         self.assertEqual([], offenders)
 

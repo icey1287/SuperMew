@@ -10,6 +10,7 @@ from backend.api.resources import (
 )
 from backend.providers.runtime import provider_runtime
 from backend.sql_assistant.runtime import get_sql_assistant_runtime
+from backend.web_research.runtime import get_web_research_runtime
 
 
 router = APIRouter(tags=["health"])
@@ -40,6 +41,22 @@ async def ready() -> JSONResponse:
             sql_catalog_hash = sql_snapshot.catalog_hash
         except Exception:
             sql_ready = False
+    web_enabled = bool(
+        getattr(
+            getattr(provider_runtime.settings, "web_research", None),
+            "enabled",
+            False,
+        )
+    )
+    web_ready = False
+    web_search_ready = False
+    if web_enabled:
+        try:
+            web_snapshot = get_web_research_runtime().readiness()
+            web_ready = bool(web_snapshot.get("ready"))
+            web_search_ready = bool(web_snapshot.get("search_ready"))
+        except Exception:
+            web_ready = False
     try:
         catalog_state = await asyncio.to_thread(
             document_catalog.legacy_adoption_state,
@@ -80,6 +97,7 @@ async def ready() -> JSONResponse:
         and catalog_collection_matches
         and catalog_target_matches
         and (not sql_enabled or sql_ready)
+        and (not web_enabled or web_ready)
         and (
             not worker_settings.indexing_worker_required
             or bool(worker_state and worker_state.ready)
@@ -108,6 +126,11 @@ async def ready() -> JSONResponse:
                 "enabled": sql_enabled,
                 "ready": sql_ready,
                 "catalog_hash": sql_catalog_hash,
+            },
+            "web_research": {
+                "enabled": web_enabled,
+                "ready": web_ready,
+                "search_ready": web_search_ready,
             },
             "document_catalog": {
                 "available": catalog_available,

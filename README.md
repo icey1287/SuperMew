@@ -134,6 +134,22 @@ SQL_ASSISTANT_SENSITIVE_COLUMNS=analytics.customers.email
 `docs/runbooks/sql-assistant.md`。启用后由管理员使用 `/sql-assistant` 激活；Skill 只允许读取
 授权 catalog 和执行单条有界只读查询，不提供任何写操作。
 
+Web Research 同样默认关闭。启用后，`user` 与 `admin` 可用 `/web-research` 激活；
+`web_search` / `web_fetch` 仍是 deferred Tool，只有 feature flag、已配置的 Brave Search
+Secret、active Skill 和 `restricted` network policy 同时满足时才披露。Secret 只在进程级
+Runtime 内使用，不进入 prompt、Run state、checkpoint、事件或审计：
+
+```dotenv
+WEB_RESEARCH_ENABLED=true
+BRAVE_SEARCH_API_KEY=<由 Secret 管理系统注入>
+```
+
+`web_fetch` 不接受模型提供的任意 URL，只接受同一 Run 内 `web_search` 返回的不可变
+`evidence_id`；Runtime 再通过 SSRF policy、DNS pin、逐跳 redirect 复核、内容类型与字节预算
+抓取公网页面。模型只输出 Run-local `webcite:` token，服务端终态校验后才渲染 canonical
+Markdown 链接；事实必须就近引用，并披露来源冲突、检索时间与覆盖缺口。
+完整预算、上线验证、轮换和紧急禁用见 `docs/runbooks/web-research.md`。
+
 浏览器访问：
 - 前端页面：`http://127.0.0.1:8000/` （后端静态托管编译后的 `frontend/dist` 资源）
 - API 文档：`http://127.0.0.1:8000/docs`
@@ -212,7 +228,7 @@ npm run build
 1. 开发 SQL assistant Skill
 2. 实现暂停功能与人工介入机制 --done
 3. 新增问题类型判断，简单问题跳过复杂处理流程
-4. 扩展网络搜索能力
+4. 扩展网络搜索能力 --done
 5. 支持多步骤规划与任务并行执行
 6. 搭建路由器节点，由 LLM 自主判断下一步动作
 7. 优化 memory 管理：集成 MemO、LangMem 等方案

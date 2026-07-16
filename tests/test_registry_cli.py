@@ -56,3 +56,57 @@ def test_registry_cli_requires_explicit_private_data_policy(monkeypatch, capsys)
     assert {"sql_schema", "sql_query"}.issubset(
         {item["name"] for item in private_tools}
     )
+
+
+def test_registry_cli_web_catalog_uses_configured_secret_intersection(
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setattr(
+        registry_cli,
+        "configured_secret_names",
+        lambda _registry: frozenset({"BRAVE_SEARCH_API_KEY"}),
+    )
+
+    assert main(["list-tools", "--role", "user"]) == 0
+    configured_tools = json.loads(capsys.readouterr().out)["tools"]
+    assert {"web_search", "web_fetch"}.issubset(
+        {item["name"] for item in configured_tools}
+    )
+    assert "BRAVE_SEARCH_API_KEY" not in json.dumps(configured_tools)
+
+    assert (
+        main(
+            [
+                "list-tools",
+                "--role",
+                "user",
+                "--secret-name",
+                "NOT_CONFIGURED",
+            ]
+        )
+        == 0
+    )
+    narrowed_tools = json.loads(capsys.readouterr().out)["tools"]
+    assert {"web_search", "web_fetch"}.isdisjoint(
+        {item["name"] for item in narrowed_tools}
+    )
+
+    assert (
+        main(
+            [
+                "list-tools",
+                "--role",
+                "user",
+                "--secret-name",
+                "BRAVE_SEARCH_API_KEY",
+                "--network-policy",
+                "none",
+            ]
+        )
+        == 0
+    )
+    no_network_tools = json.loads(capsys.readouterr().out)["tools"]
+    assert {"web_search", "web_fetch"}.isdisjoint(
+        {item["name"] for item in no_network_tools}
+    )
