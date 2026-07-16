@@ -4,6 +4,8 @@ import {
   type PublicErrorInfo,
 } from '@/types/publicError';
 
+type UnknownRecord = Record<string, unknown>;
+
 export type RunLifecycleStatus =
   | 'idle'
   | 'creating'
@@ -14,20 +16,49 @@ export type RunLifecycleStatus =
   | 'cancelling'
   | 'cancelled'
   | 'failed'
-  | 'completed'
-  | 'reconnecting';
+  | 'completed';
+
+export type RunTransportStatus =
+  | 'idle'
+  | 'connecting'
+  | 'open'
+  | 'reconnecting'
+  | 'closed';
+
+export interface RunHitlState {
+  hitlToken: string | null;
+  checkpointId: string | null;
+  prompt: string;
+  options: string[];
+  route: string | null;
+  retrievalStatus: string | null;
+  originalQuestion: string | null;
+}
 
 export interface RunEventState {
   runId: string;
   threadId: string;
+  idempotencyKey: string | null;
   status: RunLifecycleStatus;
+  transportStatus: RunTransportStatus;
+  reconnectAttempt: number;
+  transportError: PublicErrorInfo | null;
   lastSequence: number;
   terminal: boolean;
+  terminalSequence: number | null;
   hasGap: boolean;
+  userMessageId: number | null;
+  assistantMessageId: number | null;
   messageText: string;
   messageStatus: string | null;
-  pendingHitl: Record<string, unknown> | null;
-  usage: Record<string, unknown>;
+  ragTrace: UnknownRecord | null;
+  pendingHitl: RunHitlState | null;
+  lastResumeAnswer: string | null;
+  usage: UnknownRecord;
+  toolProgress: Array<{
+    toolName: string | null;
+    step: UnknownRecord;
+  }>;
   error: PublicErrorInfo | null;
   warnings: PublicErrorInfo[];
   toolFailures: Array<{
@@ -38,20 +69,90 @@ export interface RunEventState {
   unknownEventTypes: string[];
 }
 
-type RuntimeEvent = Omit<RunEventV1, 'type'> & { type: RunEventType | string };
+export type RuntimeRunEvent = Omit<RunEventV1, 'type'> & {
+  type: RunEventType | string;
+};
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as UnknownRecord)
+    : null;
+}
+
+function safeString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function safeInteger(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : null;
+}
+
+function lifecycleStatus(value: unknown): RunLifecycleStatus {
+  const status = String(value || 'pending');
+  if (status === 'succeeded') return 'completed';
+  if (
+    [
+      'idle',
+      'creating',
+      'queued',
+      'pending',
+      'running',
+      'waiting_input',
+      'cancelling',
+      'cancelled',
+      'failed',
+      'completed',
+    ].includes(status)
+  ) {
+    return status as RunLifecycleStatus;
+  }
+  return 'pending';
+}
+
+function eventError(
+  data: UnknownRecord,
+  defaults: Partial<PublicErrorInfo>
+): PublicErrorInfo {
+  return normalizePublicErrorInfo(data, defaults);
+}
+
+function hitlState(data: UnknownRecord): RunHitlState {
+  const rawOptions = Array.isArray(data.options) ? data.options : [];
+  return {
+    hitlToken: safeString(data.hitl_token),
+    checkpointId: safeString(data.checkpoint_id),
+    prompt: safeString(data.prompt) || '请补充一个关键信息后继续。',
+    options: rawOptions
+      .map((value) => safeString(value))
+      .filter((value): value is string => value !== null),
+    route: safeString(data.route),
+    retrievalStatus: safeString(data.retrieval_status),
+    originalQuestion: safeString(data.original_question),
+  };
+}
 
 export function initialRunEventState(runId: string, threadId: string): RunEventState {
   return {
     runId,
     threadId,
+    idempotencyKey: null,
     status: 'idle',
+    transportStatus: 'idle',
+    reconnectAttempt: 0,
+    transportError: null,
     lastSequence: 0,
     terminal: false,
+    terminalSequence: null,
     hasGap: false,
+    userMessageId: null,
+    assistantMessageId: null,
     messageText: '',
     messageStatus: null,
+    ragTrace: null,
     pendingHitl: null,
+    lastResumeAnswer: null,
     usage: {},
+    toolProgress: [],
     error: null,
     warnings: [],
     toolFailures: [],
@@ -59,32 +160,34 @@ export function initialRunEventState(runId: string, threadId: string): RunEventS
   };
 }
 
-function eventError(
-  data: Record<string, unknown>,
-  defaults: Partial<PublicErrorInfo>
-): PublicErrorInfo {
-  return normalizePublicErrorInfo(data, defaults);
-}
-
-export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEventState {
-  if (event.run_id !== state.runId || event.sequence <= state.lastSequence) {
+export function applyRunEvent(
+  state: RunEventState,
+  event: RuntimeRunEvent
+): RunEventState {
+  if (
+    event.run_id !== state.runId ||
+    event.thread_id !== state.threadId ||
+    event.sequence <= state.lastSequence ||
+    state.terminalSequence !== null
+  ) {
     return state;
+  }
+
+  if (event.sequence !== state.lastSequence + 1) {
+    return state.hasGap ? state : { ...state, hasGap: true };
   }
 
   const next: RunEventState = {
     ...state,
     lastSequence: event.sequence,
-    hasGap: state.hasGap || (state.lastSequence > 0 && event.sequence !== state.lastSequence + 1),
   };
-  const data = event.data || {};
-
-  if (state.terminal && event.type === 'message.delta') {
-    return next;
-  }
+  const data = asRecord(event.data) || {};
 
   switch (event.type) {
     case 'run.created':
-      next.status = String(data.status || 'pending') as RunLifecycleStatus;
+      next.status = lifecycleStatus(data.status);
+      next.userMessageId = safeInteger(data.user_message_id);
+      next.assistantMessageId = safeInteger(data.assistant_message_id);
       next.error = null;
       break;
     case 'run.started':
@@ -97,11 +200,15 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
     case 'run.completed':
       next.status = 'completed';
       next.terminal = true;
+      next.terminalSequence = event.sequence;
+      next.pendingHitl = null;
       next.error = null;
       break;
     case 'run.failed':
       next.status = 'failed';
       next.terminal = true;
+      next.terminalSequence = event.sequence;
+      next.pendingHitl = null;
       next.error = eventError(data, {
         code: 'RUN_EXECUTION_FAILED',
       });
@@ -109,6 +216,8 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
     case 'run.cancelled':
       next.status = 'cancelled';
       next.terminal = true;
+      next.terminalSequence = event.sequence;
+      next.pendingHitl = null;
       next.error = eventError(data, {
         code: 'RUN_CANCELLED',
         retryable: false,
@@ -123,37 +232,53 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
     case 'message.completed':
       next.messageText = String(data.content ?? next.messageText);
       next.messageStatus = String(data.status ?? 'completed');
+      next.ragTrace = asRecord(data.rag_trace);
       break;
     case 'hitl.required':
-      next.pendingHitl = { ...data };
+      next.pendingHitl = hitlState(data);
       next.status = 'waiting_input';
       break;
     case 'hitl.resumed':
       next.pendingHitl = null;
+      next.lastResumeAnswer = safeString(data.answer);
       next.status = 'running';
       break;
     case 'usage.updated':
       next.usage = { ...next.usage, ...data };
       break;
     case 'warning.created':
+      if (data.code === 'CANCEL_REQUESTED') {
+        next.status = 'cancelling';
+      }
       next.warnings = [
         ...next.warnings,
         eventError(data, { code: 'INTERNAL_ERROR', retryable: false }),
       ];
       break;
-    case 'planner.started':
-    case 'planner.completed':
-    case 'tool.started':
-    case 'tool.progress':
-    case 'tool.completed':
+    case 'tool.progress': {
+      const step = asRecord(data.step);
+      if (step) {
+        next.toolProgress = [
+          ...next.toolProgress,
+          {
+            toolName: safeString(data.tool_name),
+            step,
+          },
+        ];
+      }
       break;
+    }
     case 'tool.failed':
+    case 'tool.denied':
       next.toolFailures = [
         ...next.toolFailures,
         {
-          toolName: typeof data.tool_name === 'string' ? data.tool_name : null,
+          toolName: safeString(data.tool_name),
           error: eventError(data, {
-            code: 'TOOL_EXECUTION_FAILED',
+            code:
+              event.type === 'tool.denied'
+                ? 'POLICY_DENIED'
+                : 'TOOL_EXECUTION_FAILED',
             retryable: false,
             stage: 'tool',
           }),
@@ -161,7 +286,10 @@ export function applyRunEvent(state: RunEventState, event: RuntimeEvent): RunEve
         },
       ];
       break;
-    case 'tool.denied':
+    case 'planner.started':
+    case 'planner.completed':
+    case 'tool.started':
+    case 'tool.completed':
     case 'retrieval.started':
     case 'retrieval.candidates':
     case 'retrieval.rerank_completed':
