@@ -43,6 +43,7 @@ from backend.providers import (
     ProviderExecutor,
     ProviderPolicy,
 )
+from backend.tools.contracts import new_tool_success
 
 
 def _budget(**overrides):
@@ -549,6 +550,48 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertEqual("error", denied.status)
         self.assertIn("TOOL_POLICY_DENIED", denied.content)
         handler.assert_not_called()
+
+    def test_tool_tracing_separates_allowlisted_audit_metadata(self):
+        request_context, context = _context(allowed_tools=frozenset({"sql_query"}))
+        request = ToolCallRequest(
+            tool_call={
+                "name": "sql_query",
+                "args": {"sql": "SELECT 1"},
+                "id": "call-sql",
+                "type": "tool_call",
+            },
+            tool=None,
+            state={"messages": []},
+            runtime=SimpleNamespace(context=context),
+        )
+        response = ToolMessage(
+            content=new_tool_success(
+                data={"rows": [[1]]},
+                observability_metadata={
+                    "statement_fingerprint": "a" * 64,
+                    "tool_name": "sql_query",
+                    "result_size": 12,
+                },
+            ).model_dump_json(),
+            tool_call_id="call-sql",
+        )
+
+        try:
+            returned = RuntimeTracingMiddleware().wrap_tool_call(
+                request,
+                lambda _request: response,
+            )
+        finally:
+            request_context.close()
+
+        self.assertIs(returned, response)
+        trace = context.trace_events[-1]
+        self.assertEqual("tool.completed", trace["stage"])
+        self.assertEqual(12, trace["result_size"])
+        self.assertEqual(
+            {"statement_fingerprint": "a" * 64},
+            trace["audit_metadata"],
+        )
 
     def test_loop_detection_blocks_third_identical_tool_call(self):
         request_context, context = _context()

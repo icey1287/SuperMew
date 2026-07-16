@@ -21,6 +21,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("name", nargs="?")
     parser.add_argument("--role", action="append", default=[])
     parser.add_argument("--secret-name", action="append", default=[])
+    parser.add_argument(
+        "--network-policy",
+        action="append",
+        choices=("none", "restricted", "private-data"),
+        default=[],
+        help=(
+            "Explicitly allow a network policy while inspecting tools. "
+            "private-data is never enabled by default."
+        ),
+    )
     return parser
 
 
@@ -45,7 +55,9 @@ def _access(args) -> tuple[ToolAccess, SkillAccess]:
             available_secrets=available,
             caller_allowed_tools=frozenset(tool_registry.names),
             approved_tools=frozenset(),
-            allowed_network_policies=frozenset({"none", "restricted"}),
+            allowed_network_policies=frozenset(
+                args.network_policy or {"none", "restricted"}
+            ),
         ),
         SkillAccess(roles=roles, available_secrets=available),
     )

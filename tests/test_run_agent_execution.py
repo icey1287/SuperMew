@@ -55,6 +55,9 @@ class FakeRuntime:
                         "stage": "tool.completed",
                         "tool_name": "fake_tool",
                         "elapsed_ms": 1,
+                        "audit_metadata": {
+                            "statement_fingerprint": "a" * 64,
+                        },
                     }
                 )
                 await asyncio.sleep(0)
@@ -623,13 +626,11 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(task)
         await task
 
-        event_types = [
-            item.type.value
-            for item in self.journal.read_after(
-                username="alice",
-                run_id=reservation.run.id,
-            )
-        ]
+        events = self.journal.read_after(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        event_types = [item.type.value for item in events]
         self.assertLess(
             event_types.index("tool.completed"),
             event_types.index("message.delta"),
@@ -642,6 +643,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("allowed", audit.decision)
             self.assertTrue(audit.success)
             self.assertNotIn("先调用工具", str(audit.metadata_json))
+            self.assertEqual(
+                {"statement_fingerprint": "a" * 64},
+                audit.metadata_json["tool_observability"],
+            )
+        tool_event = next(
+            item for item in events if item.type.value == "tool.completed"
+        )
+        self.assertNotIn("audit_metadata", tool_event.data)
 
     async def test_owned_event_append_rejects_stale_writer_after_terminal(self):
         self.runtime_factory.release_after_first = asyncio.Event()

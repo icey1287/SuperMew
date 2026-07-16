@@ -92,6 +92,27 @@ def _typed_result_size(result: ToolResultV1 | None) -> int:
     return 0
 
 
+def _typed_audit_metadata(result: ToolResultV1 | None) -> dict[str, Any]:
+    if result is None:
+        return {}
+    metadata = {
+        key: value
+        for key, value in result.observability_metadata.items()
+        if key not in {"tool_name", "tool_version", "result_size"}
+    }
+    try:
+        encoded = json.dumps(
+            metadata,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return {}
+    return metadata if len(encoded) <= 16_384 else {}
+
+
 def _tool_audit_key(tool_call: dict) -> str:
     payload = json.dumps(
         {
@@ -450,6 +471,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 retryable=typed_result.retryable,
                 fallback_applied=False,
                 result_size=_typed_result_size(typed_result),
+                audit_metadata=_typed_audit_metadata(typed_result),
             )
             return response
         context.record_trace(
@@ -459,6 +481,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             tool_audit_key=tool_audit_key,
             duration_ms=int((time.monotonic() - started) * 1000),
             result_size=_typed_result_size(typed_result),
+            audit_metadata=_typed_audit_metadata(typed_result),
         )
         return response
 
@@ -498,6 +521,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 retryable=typed_result.retryable,
                 fallback_applied=False,
                 result_size=_typed_result_size(typed_result),
+                audit_metadata=_typed_audit_metadata(typed_result),
             )
             return response
         context.record_trace(
@@ -507,6 +531,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             tool_audit_key=tool_audit_key,
             duration_ms=int((time.monotonic() - started) * 1000),
             result_size=_typed_result_size(typed_result),
+            audit_metadata=_typed_audit_metadata(typed_result),
         )
         return response
 

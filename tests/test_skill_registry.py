@@ -286,7 +286,9 @@ def test_manifest_rejects_invalid_contract_values(
         SkillRegistry.load(root, {"query_data"})
 
 
-def test_skill_version_and_activation_source_fit_the_run_snapshot(tmp_path: Path) -> None:
+def test_skill_version_and_activation_source_fit_the_run_snapshot(
+    tmp_path: Path,
+) -> None:
     oversized_version_root = tmp_path / "oversized-version"
     oversized_version_root.mkdir()
     _write_skill(
@@ -339,7 +341,9 @@ def test_manifest_schema_version_does_not_coerce_yaml_scalars(
         encoding="utf-8",
     )
 
-    with pytest.raises(SkillRegistryError, match="schema_version must be the integer 1"):
+    with pytest.raises(
+        SkillRegistryError, match="schema_version must be the integer 1"
+    ):
         SkillRegistry.load(root, {"query_data"})
 
 
@@ -569,9 +573,9 @@ def test_registry_rejects_missing_skill_and_example_skill_loads() -> None:
     project_root = Path(__file__).resolve().parents[1]
     registry = SkillRegistry.load(
         project_root / "skills",
-        {"search_knowledge_base"},
+        {"search_knowledge_base", "sql_schema", "sql_query"},
     )
-    assert registry.names == ("knowledge-base",)
+    assert registry.names == ("knowledge-base", "sql-assistant")
     assert registry.activate(
         "knowledge-base",
         SkillAccess(),

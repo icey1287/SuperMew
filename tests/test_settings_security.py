@@ -15,6 +15,7 @@ from backend.core.settings import (
     RunSettings,
     SecuritySettings,
     SkillSettings,
+    SqlAssistantSettings,
     StorageSettings,
     WorkerSettings,
 )
@@ -46,6 +47,7 @@ def make_settings(
         worker=WorkerSettings(_env_file=None),
         observability=ObservabilitySettings(_env_file=None),
         skills=SkillSettings(_env_file=None),
+        sql_assistant=SqlAssistantSettings(_env_file=None),
     )
 
 
@@ -155,6 +157,146 @@ class SettingsSecurityTests(unittest.TestCase):
             (PROJECT_ROOT / "shared/documents").resolve(),
             storage.upload_dir,
         )
+
+    def test_sql_assistant_is_disabled_and_secretless_by_default(self):
+        sql = SqlAssistantSettings(_env_file=None)
+
+        self.assertFalse(sql.enabled)
+        self.assertEqual("", sql.dsn.get_secret_value())
+        self.assertEqual(("public",), sql.allowed_schemas)
+        self.assertEqual((), sql.allowed_tables)
+
+    def test_enabled_sql_assistant_requires_fail_closed_connection_policy(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant.enabled = True
+
+        with self.assertRaisesRegex(ValueError, "SQL_ASSISTANT_DSN"):
+            settings.validate_startup()
+
+        settings.sql_assistant.dsn = SecretStr("mysql://reader:secret@db/analytics")
+        settings.sql_assistant.expected_role = "analytics_reader"
+        settings.sql_assistant.allowed_tables_raw = "public.orders"
+        with self.assertRaisesRegex(ValueError, "PostgreSQL DSN"):
+            settings.validate_startup()
+
+    def test_enabled_sql_assistant_accepts_explicit_read_only_scope(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant = SqlAssistantSettings(
+            _env_file=None,
+            SQL_ASSISTANT_ENABLED=True,
+            SQL_ASSISTANT_DSN=("postgresql://analytics_reader:secret@db/analytics"),
+            SQL_ASSISTANT_EXPECTED_ROLE="analytics_reader",
+            SQL_ASSISTANT_ALLOWED_SCHEMAS="analytics",
+            SQL_ASSISTANT_ALLOWED_TABLES="analytics.orders,analytics.customers",
+            SQL_ASSISTANT_SENSITIVE_COLUMNS="analytics.customers.email",
+        )
+
+        settings.validate_startup()
+
+        self.assertEqual(("analytics",), settings.sql_assistant.allowed_schemas)
+        self.assertEqual(
+            ("analytics.orders", "analytics.customers"),
+            settings.sql_assistant.allowed_tables,
+        )
+
+        settings.sql_assistant.dsn = SecretStr(
+            "postgresql://different_reader:secret@db/analytics"
+        )
+        with self.assertRaisesRegex(ValueError, "EXPECTED_ROLE 一致"):
+            settings.validate_startup()
+
+    def test_sql_assistant_rejects_unsafe_role_and_scope_relationships(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant = SqlAssistantSettings(
+            _env_file=None,
+            SQL_ASSISTANT_ENABLED=True,
+            SQL_ASSISTANT_DSN=("postgresql://analytics_reader:secret@db/analytics"),
+            SQL_ASSISTANT_EXPECTED_ROLE="postgres",
+            SQL_ASSISTANT_ALLOWED_SCHEMAS="analytics",
+            SQL_ASSISTANT_ALLOWED_TABLES="private.orders",
+        )
+
+        with self.assertRaisesRegex(ValueError, "高权限角色"):
+            settings.validate_startup()
+
+        settings.sql_assistant.expected_role = "analytics_reader"
+        with self.assertRaisesRegex(ValueError, "allowlist 内的 schema"):
+            settings.validate_startup()
+
+    def test_sql_assistant_budget_and_pool_relationships_are_validated(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant.lock_timeout_seconds = 10
+        settings.sql_assistant.statement_timeout_seconds = 10
+        with self.assertRaisesRegex(ValueError, "LOCK_TIMEOUT"):
+            settings.validate_startup()
+
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant.pool_min_size = 5
+        settings.sql_assistant.pool_max_size = 4
+        with self.assertRaisesRegex(ValueError, "POOL_MIN_SIZE"):
+            settings.validate_startup()
+
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant.max_cell_bytes = (
+            settings.sql_assistant.max_result_bytes + 1
+        )
+        with self.assertRaisesRegex(ValueError, "MAX_CELL_BYTES"):
+            settings.validate_startup()
+
+    def test_sql_assistant_requires_a_distinct_database_identity(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant = SqlAssistantSettings(
+            _env_file=None,
+            SQL_ASSISTANT_ENABLED=True,
+            SQL_ASSISTANT_DSN="postgresql://app:other@analytics/warehouse",
+            SQL_ASSISTANT_EXPECTED_ROLE="analytics_reader",
+            SQL_ASSISTANT_ALLOWED_SCHEMAS="analytics",
+            SQL_ASSISTANT_ALLOWED_TABLES="analytics.orders",
+        )
+
+        with self.assertRaisesRegex(ValueError, "不同 username"):
+            settings.validate_startup()
+
+    def test_enabled_sql_assistant_requires_strict_privilege_checks(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant = SqlAssistantSettings(
+            _env_file=None,
+            SQL_ASSISTANT_ENABLED=True,
+            SQL_ASSISTANT_DSN=(
+                "postgresql://analytics_reader:secret@analytics/warehouse"
+            ),
+            SQL_ASSISTANT_EXPECTED_ROLE="analytics_reader",
+            SQL_ASSISTANT_ALLOWED_SCHEMAS="analytics",
+            SQL_ASSISTANT_ALLOWED_TABLES="analytics.orders",
+            SQL_ASSISTANT_STRICT_PRIVILEGE_CHECK=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "STRICT_PRIVILEGE_CHECK"):
+            settings.validate_startup()
+
+    def test_sql_assistant_allowlists_reject_duplicates_and_unsafe_identifiers(self):
+        with self.assertRaises(ValidationError):
+            SqlAssistantSettings(
+                _env_file=None,
+                SQL_ASSISTANT_ALLOWED_TABLES="PUBLIC.Orders,public.orders",
+            )
+
+        with self.assertRaises(ValidationError):
+            SqlAssistantSettings(
+                _env_file=None,
+                SQL_ASSISTANT_SENSITIVE_COLUMNS="public.users.email;drop table x",
+            )
+
+    def test_sql_assistant_dsn_is_redacted_from_settings_dump(self):
+        settings = make_settings(secret="x" * 40)
+        settings.sql_assistant.dsn = SecretStr(
+            "postgresql://sql_reader:sql-password@db/analytics"
+        )
+
+        dumped = str(settings.redacted_dict())
+
+        self.assertNotIn("sql-password", dumped)
+        self.assertIn("sql_reader:***@db", dumped)
 
 
 if __name__ == "__main__":

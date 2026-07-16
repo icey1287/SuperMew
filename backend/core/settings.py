@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -525,6 +526,240 @@ class SkillSettings(_EnvSettings):
     sandbox_enabled: bool = Field(default=False, validation_alias="SANDBOX_ENABLED")
 
 
+_POSTGRES_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
+_QUALIFIED_TABLE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_$]{0,62}\."
+    r"(?:[A-Za-z_][A-Za-z0-9_$]{0,62}|\*)$"
+)
+_QUALIFIED_COLUMN = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_$]{0,62}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,62}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,62}$"
+)
+
+
+def _normalize_allowlist(
+    value: str,
+    *,
+    label: str,
+    pattern: re.Pattern[str],
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} 必须是逗号分隔的字符串")
+    entries = [entry.strip().casefold() for entry in value.split(",") if entry.strip()]
+    if len(entries) > 512:
+        raise ValueError(f"{label} 最多允许 512 项")
+    if len(set(entries)) != len(entries):
+        raise ValueError(f"{label} 不能包含重复项")
+    invalid = [entry for entry in entries if pattern.fullmatch(entry) is None]
+    if invalid:
+        raise ValueError(f"{label} 包含非法标识符")
+    return ",".join(entries)
+
+
+class SqlAssistantSettings(_EnvSettings):
+    """Fail-closed configuration for the read-only SQL Assistant Module."""
+
+    enabled: bool = Field(
+        default=False,
+        validation_alias="SQL_ASSISTANT_ENABLED",
+    )
+    dsn: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="SQL_ASSISTANT_DSN",
+    )
+    expected_role: str = Field(
+        default="",
+        max_length=63,
+        validation_alias="SQL_ASSISTANT_EXPECTED_ROLE",
+    )
+    allowed_schemas_raw: str = Field(
+        default="public",
+        validation_alias="SQL_ASSISTANT_ALLOWED_SCHEMAS",
+    )
+    allowed_tables_raw: str = Field(
+        default="",
+        validation_alias="SQL_ASSISTANT_ALLOWED_TABLES",
+    )
+    sensitive_columns_raw: str = Field(
+        default="",
+        validation_alias="SQL_ASSISTANT_SENSITIVE_COLUMNS",
+    )
+    connect_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=60,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_CONNECT_TIMEOUT_SECONDS",
+    )
+    schema_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_SCHEMA_TIMEOUT_SECONDS",
+    )
+    statement_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_STATEMENT_TIMEOUT_SECONDS",
+    )
+    lock_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        le=30,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_LOCK_TIMEOUT_SECONDS",
+    )
+    max_rows: int = Field(
+        default=200,
+        ge=1,
+        le=10_000,
+        validation_alias="SQL_ASSISTANT_MAX_ROWS",
+    )
+    max_result_bytes: int = Field(
+        default=262_144,
+        ge=1_024,
+        le=16_777_216,
+        validation_alias="SQL_ASSISTANT_MAX_RESULT_BYTES",
+    )
+    max_cell_bytes: int = Field(
+        default=65_536,
+        ge=1,
+        le=1_048_576,
+        validation_alias="SQL_ASSISTANT_MAX_CELL_BYTES",
+    )
+    max_estimated_cost: float = Field(
+        default=100_000.0,
+        gt=0,
+        le=1_000_000_000,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_MAX_ESTIMATED_COST",
+    )
+    max_estimated_rows: int = Field(
+        default=100_000,
+        ge=1,
+        le=1_000_000_000,
+        validation_alias="SQL_ASSISTANT_MAX_ESTIMATED_ROWS",
+    )
+    max_estimated_bytes: int = Field(
+        default=8_388_608,
+        ge=1_024,
+        le=1_073_741_824,
+        validation_alias="SQL_ASSISTANT_MAX_ESTIMATED_BYTES",
+    )
+    fetch_size: int = Field(
+        default=64,
+        ge=1,
+        le=10_000,
+        validation_alias="SQL_ASSISTANT_FETCH_SIZE",
+    )
+    pool_min_size: int = Field(
+        default=1,
+        ge=1,
+        le=32,
+        validation_alias="SQL_ASSISTANT_POOL_MIN_SIZE",
+    )
+    pool_max_size: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        validation_alias="SQL_ASSISTANT_POOL_MAX_SIZE",
+    )
+    pool_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_POOL_TIMEOUT_SECONDS",
+    )
+    pool_max_lifetime_seconds: float = Field(
+        default=1_800.0,
+        ge=60,
+        le=86_400,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_POOL_MAX_LIFETIME_SECONDS",
+    )
+    catalog_cache_ttl_seconds: float = Field(
+        default=300.0,
+        ge=1,
+        le=3_600,
+        allow_inf_nan=False,
+        validation_alias="SQL_ASSISTANT_CATALOG_CACHE_TTL_SECONDS",
+    )
+    max_sql_characters: int = Field(
+        default=20_000,
+        ge=1,
+        le=100_000,
+        validation_alias="SQL_ASSISTANT_MAX_SQL_CHARACTERS",
+    )
+    max_tables_per_query: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        validation_alias="SQL_ASSISTANT_MAX_TABLES_PER_QUERY",
+    )
+    max_ast_nodes: int = Field(
+        default=1_000,
+        ge=32,
+        le=10_000,
+        validation_alias="SQL_ASSISTANT_MAX_AST_NODES",
+    )
+    strict_privilege_check: bool = Field(
+        default=True,
+        validation_alias="SQL_ASSISTANT_STRICT_PRIVILEGE_CHECK",
+    )
+
+    @field_validator("expected_role")
+    @classmethod
+    def validate_expected_role(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized and _POSTGRES_IDENTIFIER.fullmatch(normalized) is None:
+            raise ValueError("SQL_ASSISTANT_EXPECTED_ROLE 必须是普通 PostgreSQL 标识符")
+        return normalized
+
+    @field_validator("allowed_schemas_raw")
+    @classmethod
+    def validate_allowed_schemas(cls, value: str) -> str:
+        return _normalize_allowlist(
+            value,
+            label="SQL_ASSISTANT_ALLOWED_SCHEMAS",
+            pattern=_POSTGRES_IDENTIFIER,
+        )
+
+    @field_validator("allowed_tables_raw")
+    @classmethod
+    def validate_allowed_tables(cls, value: str) -> str:
+        return _normalize_allowlist(
+            value,
+            label="SQL_ASSISTANT_ALLOWED_TABLES",
+            pattern=_QUALIFIED_TABLE,
+        )
+
+    @field_validator("sensitive_columns_raw")
+    @classmethod
+    def validate_sensitive_columns(cls, value: str) -> str:
+        return _normalize_allowlist(
+            value,
+            label="SQL_ASSISTANT_SENSITIVE_COLUMNS",
+            pattern=_QUALIFIED_COLUMN,
+        )
+
+    @property
+    def allowed_schemas(self) -> tuple[str, ...]:
+        return tuple(filter(None, self.allowed_schemas_raw.split(",")))
+
+    @property
+    def allowed_tables(self) -> tuple[str, ...]:
+        return tuple(filter(None, self.allowed_tables_raw.split(",")))
+
+    @property
+    def sensitive_columns(self) -> tuple[str, ...]:
+        return tuple(filter(None, self.sensitive_columns_raw.split(",")))
+
+
 _WEAK_SECRETS = {
     "",
     "change-this-secret",
@@ -547,6 +782,7 @@ class AppSettings(BaseModel):
     worker: WorkerSettings
     observability: ObservabilitySettings
     skills: SkillSettings
+    sql_assistant: SqlAssistantSettings
 
     def validate_startup(self) -> None:
         problems: list[str] = []
@@ -625,6 +861,107 @@ class AppSettings(BaseModel):
                 "RERANK_MAX_KEEPALIVE_CONNECTIONS 不能大于 RERANK_MAX_CONNECTIONS"
             )
 
+        sql = self.sql_assistant
+        if sql.enabled:
+            dsn = sql.dsn.get_secret_value().strip()
+            sql_username: str | None = None
+            if not dsn:
+                problems.append("启用 SQL Assistant 时必须配置 SQL_ASSISTANT_DSN")
+            else:
+                parsed = urlsplit(dsn)
+                if parsed.scheme not in {"postgres", "postgresql"}:
+                    problems.append("SQL_ASSISTANT_DSN 只能使用 PostgreSQL DSN")
+                if not parsed.username or not parsed.path.strip("/"):
+                    problems.append(
+                        "SQL_ASSISTANT_DSN 必须显式包含独立 username 与 database"
+                    )
+                elif parsed.username:
+                    sql_username = unquote(parsed.username).casefold()
+
+                application_url = self.storage.database_url.get_secret_value()
+                application_parsed = urlsplit(application_url)
+                application_username = application_parsed.username
+                if not application_username:
+                    problems.append(
+                        "启用 SQL Assistant 时必须能解析 DATABASE_URL username"
+                    )
+                elif (
+                    parsed.username
+                    and unquote(parsed.username).casefold()
+                    == unquote(application_username).casefold()
+                ):
+                    problems.append(
+                        "SQL_ASSISTANT_DSN 与 DATABASE_URL 必须使用不同 username"
+                    )
+            if not sql.expected_role:
+                problems.append(
+                    "启用 SQL Assistant 时必须配置 SQL_ASSISTANT_EXPECTED_ROLE"
+                )
+            elif sql.expected_role.casefold() in {
+                "postgres",
+                "rds_superuser",
+                "azure_pg_admin",
+                "cloudsqlsuperuser",
+            }:
+                problems.append("SQL_ASSISTANT_EXPECTED_ROLE 禁止使用高权限角色")
+            elif sql_username and sql_username != sql.expected_role:
+                problems.append(
+                    "SQL_ASSISTANT_DSN username 必须与 SQL_ASSISTANT_EXPECTED_ROLE 一致"
+                )
+            if not sql.allowed_schemas:
+                problems.append("SQL_ASSISTANT_ALLOWED_SCHEMAS 不能为空")
+            if not sql.allowed_tables:
+                problems.append("SQL_ASSISTANT_ALLOWED_TABLES 不能为空")
+            if not sql.strict_privilege_check:
+                problems.append(
+                    "启用 SQL Assistant 时必须启用 SQL_ASSISTANT_STRICT_PRIVILEGE_CHECK"
+                )
+
+            allowed_schemas = set(sql.allowed_schemas)
+            table_relations = set(sql.allowed_tables)
+            for table in sql.allowed_tables:
+                schema, _name = table.split(".", 1)
+                if schema not in allowed_schemas:
+                    problems.append(
+                        "SQL_ASSISTANT_ALLOWED_TABLES 只能引用 allowlist 内的 schema"
+                    )
+                    break
+            for column in sql.sensitive_columns:
+                schema, table, _name = column.split(".", 2)
+                if schema not in allowed_schemas or not (
+                    f"{schema}.{table}" in table_relations
+                    or f"{schema}.*" in table_relations
+                ):
+                    problems.append(
+                        "SQL_ASSISTANT_SENSITIVE_COLUMNS 只能引用 allowlist 内的表"
+                    )
+                    break
+
+        if sql.lock_timeout_seconds >= sql.statement_timeout_seconds:
+            problems.append(
+                "SQL_ASSISTANT_LOCK_TIMEOUT_SECONDS 必须小于 "
+                "SQL_ASSISTANT_STATEMENT_TIMEOUT_SECONDS"
+            )
+        if sql.pool_min_size > sql.pool_max_size:
+            problems.append(
+                "SQL_ASSISTANT_POOL_MIN_SIZE 不能大于 SQL_ASSISTANT_POOL_MAX_SIZE"
+            )
+        if sql.fetch_size > sql.max_rows:
+            problems.append("SQL_ASSISTANT_FETCH_SIZE 不能大于 SQL_ASSISTANT_MAX_ROWS")
+        if sql.max_rows > sql.max_estimated_rows:
+            problems.append(
+                "SQL_ASSISTANT_MAX_ROWS 不能大于 SQL_ASSISTANT_MAX_ESTIMATED_ROWS"
+            )
+        if sql.max_cell_bytes > sql.max_result_bytes:
+            problems.append(
+                "SQL_ASSISTANT_MAX_CELL_BYTES 不能大于 SQL_ASSISTANT_MAX_RESULT_BYTES"
+            )
+        if sql.max_result_bytes > sql.max_estimated_bytes:
+            problems.append(
+                "SQL_ASSISTANT_MAX_RESULT_BYTES 不能大于 "
+                "SQL_ASSISTANT_MAX_ESTIMATED_BYTES"
+            )
+
         if problems:
             raise ValueError("；".join(problems))
 
@@ -639,6 +976,9 @@ class AppSettings(BaseModel):
         )
         payload["storage"]["redis_url"] = _redact_url(
             self.storage.redis_url.get_secret_value()
+        )
+        payload["sql_assistant"]["dsn"] = _redact_url(
+            self.sql_assistant.dsn.get_secret_value()
         )
         return payload
 
@@ -669,6 +1009,7 @@ def get_settings() -> AppSettings:
         worker=WorkerSettings(),
         observability=ObservabilitySettings(),
         skills=SkillSettings(),
+        sql_assistant=SqlAssistantSettings(),
     )
 
 

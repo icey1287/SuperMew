@@ -37,6 +37,7 @@ _SEMVER_PATTERN = re.compile(
 _ROLE_PATTERN = re.compile(r"^[a-z][a-z0-9:_-]{0,127}$")
 _SECRET_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _POLICY_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_METADATA_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
 class ToolExposure(StrEnum):
@@ -86,6 +87,7 @@ class ToolDescriptor:
     requires_approval: bool
     network_policy: str
     result_size_limit: int
+    observability_metadata_keys: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _TOOL_NAME_PATTERN.fullmatch(
@@ -144,6 +146,14 @@ class ToolDescriptor:
             "required_secrets",
             _normalize_string_set(self.required_secrets, field_name="required_secrets"),
         )
+        object.__setattr__(
+            self,
+            "observability_metadata_keys",
+            _normalize_string_set(
+                self.observability_metadata_keys,
+                field_name="observability_metadata_keys",
+            ),
+        )
         if any(_ROLE_PATTERN.fullmatch(role) is None for role in self.required_roles):
             raise ValueError("required_roles contains an invalid role identifier")
         if any(
@@ -151,6 +161,13 @@ class ToolDescriptor:
             for secret in self.required_secrets
         ):
             raise ValueError("required_secrets contains an invalid secret identifier")
+        if any(
+            _METADATA_KEY_PATTERN.fullmatch(key) is None
+            for key in self.observability_metadata_keys
+        ):
+            raise ValueError(
+                "observability_metadata_keys contains an invalid identifier"
+            )
 
     def catalog_record(self, *, exposure: ToolExposure) -> dict[str, Any]:
         """Return a canonical JSON-compatible catalog representation."""
@@ -170,6 +187,9 @@ class ToolDescriptor:
             "requires_approval": self.requires_approval,
             "network_policy": self.network_policy,
             "result_size_limit": self.result_size_limit,
+            "observability_metadata_keys": sorted(
+                self.observability_metadata_keys
+            ),
             "exposure": exposure.value,
         }
 
@@ -362,7 +382,11 @@ def _validate_result(
                 message="工具结果超过当前 Run 的大小限制。",
                 result_size=len(encoded),
             )
-        observability_metadata = dict(result.observability_metadata)
+        observability_metadata = {
+            key: value
+            for key, value in result.observability_metadata.items()
+            if key in descriptor.observability_metadata_keys
+        }
         observability_metadata.update(
             {
                 "tool_name": descriptor.name,

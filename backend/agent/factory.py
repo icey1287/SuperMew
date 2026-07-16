@@ -114,10 +114,11 @@ class AgentRuntimeFactory:
         approved_tools: frozenset[str],
         allowed_network_policies: frozenset[str],
     ) -> tuple[ToolAccess, frozenset[str]]:
+        configured_secret_names = frozenset(self.secret_names_provider(self.tools))
         secret_names = (
-            self.secret_names_provider(self.tools)
+            configured_secret_names
             if available_secrets is None
-            else frozenset(available_secrets)
+            else configured_secret_names.intersection(available_secrets)
         )
         access = ToolAccess(
             roles=frozenset(roles),
@@ -155,7 +156,9 @@ class AgentRuntimeFactory:
         allowed_tools: frozenset[str] | None = None,
         available_secrets: frozenset[str] | None = None,
         approved_tools: frozenset[str] = frozenset(),
-        allowed_network_policies: frozenset[str] = frozenset({"none", "restricted"}),
+        allowed_network_policies: frozenset[str] = frozenset(
+            {"none", "restricted", "private-data"}
+        ),
         pinned_skill: SkillPin | None = None,
         pinned_skill_source: str | None = None,
         required_tools: frozenset[str] = frozenset(),
@@ -242,7 +245,9 @@ class AgentRuntimeFactory:
         allowed_tools: frozenset[str] | None = None,
         available_secrets: frozenset[str] | None = None,
         approved_tools: frozenset[str] = frozenset(),
-        allowed_network_policies: frozenset[str] = frozenset({"none", "restricted"}),
+        allowed_network_policies: frozenset[str] = frozenset(
+            {"none", "restricted", "private-data"}
+        ),
         deadline_seconds: float | None = None,
         tool_overrides: Mapping[str, object] | None = None,
         pinned_skill: SkillPin | None = None,

@@ -650,10 +650,15 @@ class RunAgentExecutor:
                     ):
                         await self._record_tool_audit(run, stage, item)
                 if event_type is not None:
+                    public_item = {
+                        key: value
+                        for key, value in item.items()
+                        if key != "audit_metadata"
+                    }
                     await self._publish_owned(
                         run,
                         event_type=event_type,
-                        data=dict(item),
+                        data=public_item,
                     )
                 elif stage in _WARNING_TRACE_STAGES:
                     await self._publish_owned(
@@ -693,6 +698,9 @@ class RunAgentExecutor:
             "skill_version": run.skill_version or "",
             "tool_catalog_hash": getattr(registry, "catalog_hash", ""),
         }
+        audit_metadata = item.get("audit_metadata")
+        if isinstance(audit_metadata, dict):
+            metadata["tool_observability"] = dict(audit_metadata)
         audit_key = str(item.get("tool_audit_key") or "")
         if len(audit_key) != 64:
             audit_key = hashlib.sha256(

@@ -9,6 +9,7 @@ from backend.api.resources import (
     milvus_manager,
 )
 from backend.providers.runtime import provider_runtime
+from backend.sql_assistant.runtime import get_sql_assistant_runtime
 
 
 router = APIRouter(tags=["health"])
@@ -23,6 +24,22 @@ async def live() -> dict[str, str]:
 async def ready() -> JSONResponse:
     snapshot = provider_runtime.readiness()
     worker_settings = provider_runtime.settings.worker
+    sql_enabled = bool(
+        getattr(
+            getattr(provider_runtime.settings, "sql_assistant", None),
+            "enabled",
+            False,
+        )
+    )
+    sql_ready = False
+    sql_catalog_hash = None
+    if sql_enabled:
+        try:
+            sql_snapshot = get_sql_assistant_runtime().readiness()
+            sql_ready = bool(sql_snapshot.ready)
+            sql_catalog_hash = sql_snapshot.catalog_hash
+        except Exception:
+            sql_ready = False
     try:
         catalog_state = await asyncio.to_thread(
             document_catalog.legacy_adoption_state,
@@ -62,6 +79,7 @@ async def ready() -> JSONResponse:
         and catalog_state.complete
         and catalog_collection_matches
         and catalog_target_matches
+        and (not sql_enabled or sql_ready)
         and (
             not worker_settings.indexing_worker_required
             or bool(worker_state and worker_state.ready)
@@ -85,6 +103,11 @@ async def ready() -> JSONResponse:
                     "enabled": snapshot.rerank_enabled,
                     "model": snapshot.rerank_model,
                 },
+            },
+            "sql_assistant": {
+                "enabled": sql_enabled,
+                "ready": sql_ready,
+                "catalog_hash": sql_catalog_hash,
             },
             "document_catalog": {
                 "available": catalog_available,

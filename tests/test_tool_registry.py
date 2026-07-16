@@ -507,13 +507,17 @@ def test_trusted_tool_result_preserves_adapter_observability_metadata():
             error_code="SKILL_NOT_AVAILABLE",
             retryable=False,
             data={"query": query},
-            observability_metadata={"activation_source": "trusted-router"},
+            observability_metadata={
+                "activation_source": "trusted-router",
+                "internal_debug": "must-not-escape",
+            },
         )
 
     registry.register(
         _runtime_descriptor(
             "control_result",
             output_schema=TOOL_RESULT_V1_SCHEMA,
+            observability_metadata_keys=frozenset({"activation_source"}),
         ),
         lambda _context: control_result,
         exposure=ToolExposure.RESIDENT,
@@ -527,6 +531,7 @@ def test_trusted_tool_result_preserves_adapter_observability_metadata():
     assert result.error_code == "SKILL_NOT_AVAILABLE"
     assert result.observability_metadata["activation_source"] == "trusted-router"
     assert result.observability_metadata["tool_name"] == "control_result"
+    assert "internal_debug" not in result.observability_metadata
 
 
 def test_tool_cannot_promote_a_json_string_into_a_trusted_envelope():

@@ -222,6 +222,110 @@ def test_factory_defaults_to_an_empty_tool_ceiling():
     assert runtime.context.tool_session.authorized_names == frozenset()
 
 
+def test_project_sql_assistant_skill_is_admin_and_secret_gated():
+    registry = build_default_tool_registry()
+    skills = _load_project_skills(registry)
+
+    user_catalog = skills.catalog(
+        SkillAccess(
+            roles=frozenset({"user"}),
+            available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
+        )
+    )
+    admin_without_secret_catalog = skills.catalog(
+        SkillAccess(roles=frozenset({"admin"}))
+    )
+    admin_catalog = skills.catalog(
+        SkillAccess(
+            roles=frozenset({"admin"}),
+            available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
+        )
+    )
+
+    assert "sql-assistant" not in {item.name for item in user_catalog}
+    assert "sql-assistant" not in {item.name for item in admin_without_secret_catalog}
+    assert "sql-assistant" in {item.name for item in admin_catalog}
+
+    activated = skills.activate(
+        "sql-assistant",
+        SkillAccess(
+            roles=frozenset({"admin"}),
+            available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
+        ),
+        source="test",
+    )
+    assert activated.allowed_tools == frozenset({"sql_schema", "sql_query"})
+    assert "get_current_weather" not in activated.allowed_tools
+    assert "search_knowledge_base" not in activated.allowed_tools
+
+
+def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
+    registry = build_default_tool_registry()
+    factory = AgentRuntimeFactory(
+        settings=_settings(),
+        models=_FixedModels(ScriptedChatModel(responses=[AIMessage(content="ok")])),
+        agent_builder=lambda **_kwargs: object(),
+        tools=registry,
+        skills=_load_project_skills(registry),
+        secret_names_provider=lambda _registry: frozenset({"SQL_ASSISTANT_DSN"}),
+    )
+    request_context = ChatRequestContext.for_sync(
+        user_id="admin",
+        session_id="sql-enabled",
+    )
+    try:
+        runtime = factory.create(
+            request_context,
+            roles=frozenset({"admin"}),
+            allowed_tools=factory.tool_ceiling,
+            available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
+            allowed_network_policies=frozenset({"none", "restricted", "private-data"}),
+            routed_skill="sql-assistant",
+        )
+
+        assert runtime.context.skill_session.active.name == "sql-assistant"
+        assert {"sql_schema", "sql_query"}.issubset(
+            runtime.context.tool_session.authorized_names
+        )
+        assert not runtime.context.tool_session.is_allowed("sql_query")
+        runtime.context.tool_session.search("read-only SQL query")
+        assert runtime.context.tool_session.is_allowed("sql_query")
+    finally:
+        request_context.close()
+
+
+def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
+    registry = build_default_tool_registry()
+    built: dict[str, object] = {}
+    factory = AgentRuntimeFactory(
+        settings=_settings(),
+        models=_FixedModels(ScriptedChatModel(responses=[AIMessage(content="ok")])),
+        agent_builder=lambda **kwargs: built.update(kwargs) or object(),
+        tools=registry,
+        skills=_load_project_skills(registry),
+        secret_names_provider=lambda _registry: frozenset(),
+    )
+    request_context = ChatRequestContext.for_sync(
+        user_id="admin",
+        session_id="sql-disabled",
+    )
+    try:
+        runtime = factory.create(
+            request_context,
+            roles=frozenset({"admin"}),
+            allowed_tools=factory.tool_ceiling,
+            available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
+            allowed_network_policies=frozenset({"none", "restricted", "private-data"}),
+        )
+    finally:
+        request_context.close()
+
+    assert "sql_schema" not in runtime.context.tool_session.authorized_names
+    assert "sql_query" not in runtime.context.tool_session.authorized_names
+    assert "sql_schema" not in {item.name for item in built["tools"]}
+    assert "sql_query" not in {item.name for item in built["tools"]}
+
+
 def test_factory_excludes_secret_gated_weather_and_sets_explicit_allowed_tools():
     registry = build_default_tool_registry()
     built: dict[str, object] = {}

@@ -117,6 +117,23 @@ uv run --frozen python -m backend.tools.registry_cli list-tools --role user
 
 新增或升级 Skill 的目录、manifest、hash pin、回滚和 Secret 规则见 `docs/runbooks/skill-tool-registry.md`。
 
+SQL Assistant 默认关闭。启用时必须使用与应用写库不同 username 的 PostgreSQL 只读账号、
+显式 schema/table allowlist、RLS 和 `admin` 角色；`sql_schema` / `sql_query` 以 deferred Tool
+按需披露，不满足开关、Secret 或 `private-data` policy 时不会进入模型上下文：
+
+```dotenv
+SQL_ASSISTANT_ENABLED=true
+SQL_ASSISTANT_DSN=postgresql://supermew_sql_reader:<secret>@db/analytics?sslmode=require
+SQL_ASSISTANT_EXPECTED_ROLE=supermew_sql_reader
+SQL_ASSISTANT_ALLOWED_SCHEMAS=analytics
+SQL_ASSISTANT_ALLOWED_TABLES=analytics.orders,analytics.customers
+SQL_ASSISTANT_SENSITIVE_COLUMNS=analytics.customers.email
+```
+
+配置独立 reader、验证权限/成本门禁、轮换和紧急禁用步骤见
+`docs/runbooks/sql-assistant.md`。启用后由管理员使用 `/sql-assistant` 激活；Skill 只允许读取
+授权 catalog 和执行单条有界只读查询，不提供任何写操作。
+
 浏览器访问：
 - 前端页面：`http://127.0.0.1:8000/` （后端静态托管编译后的 `frontend/dist` 资源）
 - API 文档：`http://127.0.0.1:8000/docs`

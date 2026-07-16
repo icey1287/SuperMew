@@ -158,6 +158,13 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def close(self):
                 events.append("runs.close")
 
+        class SqlRuntime:
+            def start(self):
+                events.append("sql.start")
+
+            def close(self):
+                events.append("sql.close")
+
         class Publisher:
             async def run(self, stop_event):
                 events.append("publisher.run")
@@ -179,6 +186,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 cors_origins=["http://localhost:5173"],
                 cors_allow_credentials=True,
             ),
+            sql_assistant=SimpleNamespace(enabled=True),
             validate_startup=lambda: events.append("settings.validate"),
         )
 
@@ -189,6 +197,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db", side_effect=init_db),
             patch.object(app_module, "provider_runtime", Provider()),
+            patch.object(
+                app_module,
+                "get_sql_assistant_runtime",
+                return_value=SqlRuntime(),
+            ),
             patch.object(app_module, "run_agent_executor", Executor()),
             patch.object(app_module, "default_publisher", Publisher()),
             patch.object(app_module, "cancellation_registry", Cancellation()),
@@ -198,10 +211,16 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 self.assertLess(
                     events.index("provider.start"),
+                    events.index("sql.start"),
+                )
+                self.assertLess(
+                    events.index("sql.start"),
                     events.index("runs.start"),
                 )
 
         self.assertLess(events.index("runs.close"), events.index("provider.close"))
+        self.assertLess(events.index("runs.close"), events.index("sql.close"))
+        self.assertLess(events.index("sql.close"), events.index("provider.close"))
         self.assertLess(events.index("publisher.close"), events.index("provider.close"))
         self.assertLess(
             events.index("cancellation.close"),
@@ -249,6 +268,55 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             ["provider.start", "runs.start", "runs.close", "provider.close"],
+            events,
+        )
+
+    async def test_partial_sql_start_is_closed_before_provider(self):
+        import backend.app as app_module
+
+        events: list[str] = []
+
+        class Provider:
+            async def start(self):
+                events.append("provider.start")
+
+            async def aclose(self):
+                events.append("provider.close")
+
+        class FailingSqlRuntime:
+            def start(self):
+                events.append("sql.start")
+                raise RuntimeError("sql startup failed")
+
+            def close(self):
+                events.append("sql.close")
+
+        settings = SimpleNamespace(
+            security=SimpleNamespace(
+                cors_origins=["http://localhost:5173"],
+                cors_allow_credentials=True,
+            ),
+            sql_assistant=SimpleNamespace(enabled=True),
+            validate_startup=lambda: None,
+        )
+
+        with (
+            patch.object(app_module, "get_settings", return_value=settings),
+            patch.object(app_module, "init_db"),
+            patch.object(app_module, "provider_runtime", Provider()),
+            patch.object(
+                app_module,
+                "get_sql_assistant_runtime",
+                return_value=FailingSqlRuntime(),
+            ),
+        ):
+            app = app_module.create_app()
+            with self.assertRaisesRegex(RuntimeError, "sql startup failed"):
+                async with app.router.lifespan_context(app):
+                    self.fail("lifespan should not yield after failed SQL startup")
+
+        self.assertEqual(
+            ["provider.start", "sql.start", "sql.close", "provider.close"],
             events,
         )
 

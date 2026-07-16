@@ -28,6 +28,7 @@ from backend.infra.database import init_db
 from backend.providers.runtime import provider_runtime
 from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
+from backend.sql_assistant.runtime import get_sql_assistant_runtime
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 
@@ -39,6 +40,8 @@ def create_app() -> FastAPI:
     async def lifespan(_: FastAPI):
         settings.validate_startup()
         provider_started = False
+        sql_start_attempted = False
+        sql_runtime = None
         executor_start_attempted = False
         stop_event: asyncio.Event | None = None
         publisher_task: asyncio.Task | None = None
@@ -47,6 +50,12 @@ def create_app() -> FastAPI:
             await asyncio.to_thread(init_db)
             await provider_runtime.start()
             provider_started = True
+            if bool(
+                getattr(getattr(settings, "sql_assistant", None), "enabled", False)
+            ):
+                sql_runtime = get_sql_assistant_runtime()
+                sql_start_attempted = True
+                await asyncio.to_thread(sql_runtime.start)
             executor_start_attempted = True
             await run_agent_executor.start()
             stop_event = asyncio.Event()
@@ -93,6 +102,11 @@ def create_app() -> FastAPI:
                         await closer()
                     except BaseException as exc:
                         cleanup_errors.append(exc)
+            if sql_start_attempted and sql_runtime is not None:
+                try:
+                    await asyncio.to_thread(sql_runtime.close)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
             if provider_started:
                 try:
                     await provider_runtime.aclose()

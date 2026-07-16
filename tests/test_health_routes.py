@@ -12,6 +12,7 @@ def _runtime(
     embedding_ready: bool,
     warmup: bool,
     worker_required: bool = True,
+    sql_enabled: bool = False,
 ):
     snapshot = SimpleNamespace(
         running=running,
@@ -32,6 +33,7 @@ def _runtime(
                 indexing_worker_required=worker_required,
                 indexing_readiness_ttl_seconds=45,
             ),
+            sql_assistant=SimpleNamespace(enabled=sql_enabled),
         ),
         readiness=lambda: snapshot,
     )
@@ -209,6 +211,52 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             response = await health.ready()
 
         self.assertEqual(200, response.status_code)
+
+    async def test_ready_gates_enabled_sql_runtime_and_exposes_only_safe_state(self):
+        runtime = _runtime(
+            running=True,
+            embedding_ready=True,
+            warmup=True,
+            sql_enabled=True,
+        )
+        sql_snapshots = iter(
+            (
+                SimpleNamespace(
+                    ready=False,
+                    catalog_hash=None,
+                    database={"role": "must-not-escape"},
+                ),
+                SimpleNamespace(
+                    ready=True,
+                    catalog_hash="b" * 64,
+                    database={"dsn": "must-not-escape"},
+                ),
+            )
+        )
+        sql_runtime = SimpleNamespace(readiness=lambda: next(sql_snapshots))
+        with (
+            patch.object(health, "provider_runtime", runtime),
+            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(
+                health,
+                "get_sql_assistant_runtime",
+                return_value=sql_runtime,
+            ),
+        ):
+            unavailable = await health.ready()
+            ready = await health.ready()
+
+        self.assertEqual(503, unavailable.status_code)
+        self.assertEqual(200, ready.status_code)
+        payload = json.loads(ready.body)
+        self.assertEqual(
+            {
+                "enabled": True,
+                "ready": True,
+                "catalog_hash": "b" * 64,
+            },
+            payload["sql_assistant"],
+        )
 
     async def test_ready_is_read_only_and_fails_when_catalog_state_is_missing(self):
         with (
