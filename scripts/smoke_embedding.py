@@ -1,3 +1,5 @@
+"""发布阶段真实 Embedding 模型离线烟测。"""
+
 from __future__ import annotations
 
 import math

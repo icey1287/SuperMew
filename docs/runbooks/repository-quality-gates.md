@@ -117,7 +117,7 @@ uv run --no-sync python -m scripts.benchmark_runtime \
 ```bash
 EMBEDDING_MODEL_REVISION=5617a9f61b028005a4858fdac845db406aefb181 \
   HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  uv run --no-sync python test_embedding.py
+  uv run --no-sync python scripts/smoke_embedding.py
 ```
 
 该 smoke 强制使用 40 位不可变模型 revision，同时调用 query/document 编码 Interface，校验
