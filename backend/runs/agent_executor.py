@@ -41,6 +41,7 @@ from backend.runs.repository import RunExecutionSnapshot, RunRecord, RunReposito
 from backend.runs.service import RunService, service
 from backend.runs.state import RunStatus
 from backend.skills import ActivatedSkill, SkillPin
+from backend.tools.contracts import ToolArtifactV1
 from backend.tools.knowledge import make_checkpointed_search_knowledge_base
 
 
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 _TRACE_EVENT_TYPES = {
+    "tool.started": RunEventType.TOOL_STARTED,
     "tool.completed": RunEventType.TOOL_COMPLETED,
     "tool.failed": RunEventType.TOOL_FAILED,
     "tool.denied": RunEventType.TOOL_DENIED,
@@ -60,6 +62,77 @@ _WARNING_TRACE_STAGES = {
     "web.citation_rejected",
     "web.context_rejected",
 }
+
+_PUBLIC_ARTIFACT_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "name",
+        "media_type",
+        "uri",
+        "size_bytes",
+        "sha256",
+    }
+)
+
+
+def _public_tool_event_data(stage: str, item: dict) -> dict:
+    data: dict[str, object] = {"stage": stage}
+    for field in ("tool_name", "tool_call_id", "error_code"):
+        value = item.get(field)
+        if isinstance(value, str) and value:
+            data[field] = value
+    for field in ("elapsed_ms", "duration_ms", "result_size"):
+        value = item.get(field)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            data[field] = value
+    for field in ("retryable", "fallback_applied"):
+        value = item.get(field)
+        if isinstance(value, bool):
+            data[field] = value
+
+    guardrail_audit = item.get("guardrail_audit")
+    if isinstance(guardrail_audit, dict):
+        decision = guardrail_audit.get("decision")
+        reason_code = guardrail_audit.get("reason_code")
+        if isinstance(decision, str) and decision:
+            data["guardrail_decision"] = decision
+        if isinstance(reason_code, str) and reason_code:
+            data["reason_code"] = reason_code
+    return data
+
+
+def _public_artifact_descriptor(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    candidate = {
+        field: value[field] for field in _PUBLIC_ARTIFACT_FIELDS if field in value
+    }
+    try:
+        artifact = ToolArtifactV1.model_validate(candidate)
+    except ValueError:
+        return None
+
+    descriptor = artifact.model_dump(
+        include=_PUBLIC_ARTIFACT_FIELDS,
+        exclude_none=True,
+    )
+    # A display name is public metadata, never a host or container path.
+    safe_name = artifact.name.replace("\\", "/").rsplit("/", 1)[-1]
+    descriptor["name"] = safe_name or artifact.artifact_id
+    if artifact.uri not in {
+        None,
+        f"artifact://{artifact.artifact_id}",
+        f"/api/artifacts/{artifact.artifact_id}",
+    }:
+        descriptor.pop("uri", None)
+    return descriptor
+
+
+def _public_artifact_descriptors(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    descriptors = (_public_artifact_descriptor(item) for item in value)
+    return [item for item in descriptors if item is not None]
 
 
 def _history_messages(snapshot: RunExecutionSnapshot) -> list[BaseMessage]:
@@ -675,16 +748,25 @@ class RunAgentExecutor:
                     ):
                         await self._record_tool_audit(run, stage, item)
                 if event_type is not None:
-                    public_item = {
-                        key: value
-                        for key, value in item.items()
-                        if key not in {"audit_metadata", "guardrail_audit"}
-                    }
+                    public_item = _public_tool_event_data(stage, item)
                     await self._publish_owned(
                         run,
                         event_type=event_type,
                         data=public_item,
                     )
+                    if stage in {"tool.completed", "tool.failed"}:
+                        for artifact in _public_artifact_descriptors(
+                            item.get("artifacts")
+                        ):
+                            artifact_event = dict(artifact)
+                            for field in ("tool_name", "tool_call_id"):
+                                if field in public_item:
+                                    artifact_event[field] = public_item[field]
+                            await self._publish_owned(
+                                run,
+                                event_type=RunEventType.ARTIFACT_CREATED,
+                                data=artifact_event,
+                            )
                 elif stage in _WARNING_TRACE_STAGES:
                     await self._publish_owned(
                         run,

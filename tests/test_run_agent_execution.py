@@ -53,9 +53,42 @@ class FakeRuntime:
             if self.factory.emit_tool_trace and self.trace_queue is not None:
                 await self.trace_queue.put(
                     {
+                        "stage": "tool.started",
+                        "tool_name": "fake_tool",
+                        "tool_call_id": "call-fake",
+                        "tool_audit_key": "d" * 64,
+                        "elapsed_ms": 0,
+                        "tool_args": {"query": "private acquisition target"},
+                    }
+                )
+                await self.trace_queue.put(
+                    {
                         "stage": "tool.completed",
                         "tool_name": "fake_tool",
+                        "tool_call_id": "call-fake",
+                        "tool_audit_key": "d" * 64,
                         "elapsed_ms": 1,
+                        "duration_ms": 1,
+                        "result_size": 128,
+                        "artifacts": [
+                            {
+                                "artifact_id": "art_report_1",
+                                "name": "/private/var/run/report.json",
+                                "media_type": "application/json",
+                                "uri": "/api/artifacts/art_report_1",
+                                "size_bytes": 128,
+                                "sha256": "c" * 64,
+                                "metadata": {
+                                    "host_path": "/private/var/run/report.json",
+                                },
+                            },
+                            {
+                                "artifact_id": "art_unsafe_1",
+                                "name": "unsafe.json",
+                                "media_type": "application/json",
+                                "uri": "/private/var/run/unsafe.json",
+                            },
+                        ],
                         "audit_metadata": {
                             "statement_fingerprint": "a" * 64,
                         },
@@ -67,8 +100,10 @@ class FakeRuntime:
                             "safe_metadata": {
                                 "context_complete": True,
                                 "tool_name": "fake_tool",
+                                "private_destination": "internal.example",
                             },
                         },
+                        "tool_args": {"query": "private acquisition target"},
                     }
                 )
                 await asyncio.sleep(0)
@@ -683,7 +718,15 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         event_types = [item.type.value for item in events]
         self.assertLess(
+            event_types.index("tool.started"),
             event_types.index("tool.completed"),
+        )
+        self.assertLess(
+            event_types.index("tool.completed"),
+            event_types.index("artifact.created"),
+        )
+        self.assertLess(
+            event_types.index("artifact.created"),
             event_types.index("message.delta"),
         )
         with self.Session() as db:
@@ -704,9 +747,45 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         tool_event = next(
             item for item in events if item.type.value == "tool.completed"
         )
+        started_event = next(
+            item for item in events if item.type.value == "tool.started"
+        )
+        artifact_event = next(
+            item for item in events if item.type.value == "artifact.created"
+        )
+        self.assertEqual(
+            {
+                "stage": "tool.started",
+                "elapsed_ms": 0,
+                "tool_name": "fake_tool",
+                "tool_call_id": "call-fake",
+            },
+            started_event.data,
+        )
+        self.assertEqual("ALLOW", tool_event.data["guardrail_decision"])
+        self.assertEqual("ALLOWED", tool_event.data["reason_code"])
         self.assertNotIn("audit_metadata", tool_event.data)
         self.assertNotIn("guardrail_audit", tool_event.data)
+        self.assertNotIn("tool_audit_key", tool_event.data)
+        self.assertNotIn("tool_args", tool_event.data)
         self.assertNotIn("b" * 64, str(tool_event.data))
+        self.assertNotIn("internal.example", str(tool_event.data))
+        self.assertEqual(
+            {
+                "artifact_id": "art_report_1",
+                "name": "report.json",
+                "media_type": "application/json",
+                "uri": "/api/artifacts/art_report_1",
+                "size_bytes": 128,
+                "sha256": "c" * 64,
+                "tool_name": "fake_tool",
+                "tool_call_id": "call-fake",
+            },
+            artifact_event.data,
+        )
+        self.assertNotIn("metadata", artifact_event.data)
+        self.assertNotIn("/private/", str(artifact_event.data))
+        self.assertEqual(1, event_types.count("artifact.created"))
 
     async def test_owned_event_append_rejects_stale_writer_after_terminal(self):
         self.runtime_factory.release_after_first = asyncio.Event()

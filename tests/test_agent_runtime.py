@@ -728,6 +728,20 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         response = ToolMessage(
             content=new_tool_success(
                 data={"rows": [[1]]},
+                artifacts=[
+                    {
+                        "artifact_id": "art_report_1",
+                        "name": "/private/var/run/report.json",
+                        "media_type": "application/json",
+                        "uri": "/api/artifacts/art_report_1",
+                        "size_bytes": 128,
+                        "sha256": "c" * 64,
+                        "metadata": {
+                            "host_path": "/private/var/run/report.json",
+                            "query": "SELECT private_value",
+                        },
+                    }
+                ],
                 observability_metadata={
                     "statement_fingerprint": "a" * 64,
                     "tool_name": "sql_query",
@@ -737,22 +751,89 @@ class RuntimeMiddlewareTests(unittest.TestCase):
             tool_call_id="call-sql",
         )
 
+        def handle(_request):
+            self.assertEqual("tool.started", context.trace_events[-1]["stage"])
+            self.assertNotIn("args", context.trace_events[-1])
+            return response
+
         try:
             returned = RuntimeTracingMiddleware().wrap_tool_call(
                 request,
-                lambda _request: response,
+                handle,
             )
         finally:
             request_context.close()
 
         self.assertIs(returned, response)
+        self.assertEqual(
+            ["tool.started", "tool.completed"],
+            [item["stage"] for item in context.trace_events[-2:]],
+        )
         trace = context.trace_events[-1]
-        self.assertEqual("tool.completed", trace["stage"])
         self.assertEqual(12, trace["result_size"])
         self.assertEqual(
             {"statement_fingerprint": "a" * 64},
             trace["audit_metadata"],
         )
+        self.assertEqual(
+            [
+                {
+                    "artifact_id": "art_report_1",
+                    "name": "report.json",
+                    "media_type": "application/json",
+                    "uri": "/api/artifacts/art_report_1",
+                    "size_bytes": 128,
+                    "sha256": "c" * 64,
+                }
+            ],
+            trace["artifacts"],
+        )
+        self.assertNotIn("private_value", json.dumps(trace["artifacts"]))
+        self.assertNotIn("/private/", json.dumps(trace["artifacts"]))
+
+    def test_async_tool_tracing_records_started_before_invocation(self):
+        async def exercise():
+            request_context, context = _context(allowed_tools=frozenset({"sql_query"}))
+            request = ToolCallRequest(
+                tool_call={
+                    "name": "sql_query",
+                    "args": {"sql": "SELECT private_async_value"},
+                    "id": "call-sql-async",
+                    "type": "tool_call",
+                },
+                tool=None,
+                state={"messages": []},
+                runtime=SimpleNamespace(context=context),
+            )
+            response = ToolMessage(
+                content=new_tool_success(data={"rows": [[1]]}).model_dump_json(),
+                tool_call_id="call-sql-async",
+            )
+
+            async def handle(_request):
+                self.assertEqual("tool.started", context.trace_events[-1]["stage"])
+                self.assertNotIn("args", context.trace_events[-1])
+                return response
+
+            try:
+                returned = await RuntimeTracingMiddleware().awrap_tool_call(
+                    request,
+                    handle,
+                )
+            finally:
+                request_context.close()
+
+            self.assertIs(returned, response)
+            self.assertEqual(
+                ["tool.started", "tool.completed"],
+                [item["stage"] for item in context.trace_events[-2:]],
+            )
+            self.assertNotIn(
+                "private_async_value",
+                json.dumps(context.trace_events, ensure_ascii=False),
+            )
+
+        asyncio.run(exercise())
 
     def test_loop_detection_blocks_third_identical_tool_call(self):
         request_context, context = _context()

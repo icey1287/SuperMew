@@ -123,6 +123,36 @@ def _typed_audit_metadata(result: ToolResultV1 | None) -> dict[str, Any]:
     return metadata if len(encoded) <= 16_384 else {}
 
 
+def _typed_artifact_descriptors(result: ToolResultV1 | None) -> list[dict[str, Any]]:
+    if result is None:
+        return []
+    public_fields = (
+        "artifact_id",
+        "name",
+        "media_type",
+        "uri",
+        "size_bytes",
+        "sha256",
+    )
+    descriptors: list[dict[str, Any]] = []
+    for artifact in result.artifacts:
+        descriptor = {
+            field: value
+            for field in public_fields
+            if (value := getattr(artifact, field)) is not None
+        }
+        safe_name = artifact.name.replace("\\", "/").rsplit("/", 1)[-1]
+        descriptor["name"] = safe_name or artifact.artifact_id
+        if artifact.uri not in {
+            None,
+            f"artifact://{artifact.artifact_id}",
+            f"/api/artifacts/{artifact.artifact_id}",
+        }:
+            descriptor.pop("uri", None)
+        descriptors.append(descriptor)
+    return descriptors
+
+
 def _tool_audit_key(tool_call: dict) -> str:
     payload = json.dumps(
         {
@@ -499,6 +529,12 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         tool_name = str(request.tool_call.get("name") or "unknown")
         tool_call_id = str(request.tool_call.get("id") or "")
         tool_audit_key = _tool_audit_key(dict(request.tool_call))
+        context.record_trace(
+            "tool.started",
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_audit_key=tool_audit_key,
+        )
         try:
             response = handler(request)
         except Exception as exc:
@@ -536,6 +572,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 retryable=typed_result.retryable,
                 fallback_applied=False,
                 result_size=_typed_result_size(typed_result),
+                artifacts=_typed_artifact_descriptors(typed_result),
                 audit_metadata=_typed_audit_metadata(typed_result),
                 **guardrail_fields,
             )
@@ -547,6 +584,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             tool_audit_key=tool_audit_key,
             duration_ms=int((time.monotonic() - started) * 1000),
             result_size=_typed_result_size(typed_result),
+            artifacts=_typed_artifact_descriptors(typed_result),
             audit_metadata=_typed_audit_metadata(typed_result),
             **guardrail_fields,
         )
@@ -559,6 +597,12 @@ class RuntimeTracingMiddleware(AgentMiddleware):
         tool_name = str(request.tool_call.get("name") or "unknown")
         tool_call_id = str(request.tool_call.get("id") or "")
         tool_audit_key = _tool_audit_key(dict(request.tool_call))
+        context.record_trace(
+            "tool.started",
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_audit_key=tool_audit_key,
+        )
         try:
             response = await handler(request)
         except Exception as exc:
@@ -596,6 +640,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
                 retryable=typed_result.retryable,
                 fallback_applied=False,
                 result_size=_typed_result_size(typed_result),
+                artifacts=_typed_artifact_descriptors(typed_result),
                 audit_metadata=_typed_audit_metadata(typed_result),
                 **guardrail_fields,
             )
@@ -607,6 +652,7 @@ class RuntimeTracingMiddleware(AgentMiddleware):
             tool_audit_key=tool_audit_key,
             duration_ms=int((time.monotonic() - started) * 1000),
             result_size=_typed_result_size(typed_result),
+            artifacts=_typed_artifact_descriptors(typed_result),
             audit_metadata=_typed_audit_metadata(typed_result),
             **guardrail_fields,
         )
