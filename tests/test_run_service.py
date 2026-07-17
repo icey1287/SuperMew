@@ -29,7 +29,7 @@ class RunServiceTests(unittest.TestCase):
                 ]
             )
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository)
+        self.service = RunService(self.repository, _allow_implicit_threads=True)
 
     def tearDown(self):
         self.engine.dispose()
@@ -75,6 +75,26 @@ class RunServiceTests(unittest.TestCase):
             fencing_token=claimed.fencing_token,
         )
         self.assertEqual(completed.id, repeated.id)
+
+    def test_completed_run_keeps_append_version_valid_for_the_next_turn(self):
+        first = self.create()
+        claimed = self.service.claim_run(run_id=first.run.id, worker_id="worker-1")
+        self.service.complete_run(
+            run_id=claimed.id,
+            content="first answer",
+            fencing_token=claimed.fencing_token,
+        )
+
+        second = self.service.create_run(
+            username="alice",
+            thread_id="thread-1",
+            message="second question",
+            idempotency_key="request-2",
+            expected_thread_version=first.thread_version,
+        )
+
+        self.assertTrue(second.created)
+        self.assertEqual(first.thread_version + 2, second.thread_version)
 
     def test_stale_fencing_token_cannot_finalize(self):
         reservation = self.create()

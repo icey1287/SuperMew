@@ -242,7 +242,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         with self.Session.begin() as db:
             db.add(User(username="alice", password_hash="hash", role="user"))
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository)
+        self.service = RunService(self.repository, _allow_implicit_threads=True)
         self.journal = RunEventJournal(self.Session)
         self.events = PersistentEventBus(self.journal, transport=None)
         self.registry = CancellationRegistry(transport=None)

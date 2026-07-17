@@ -55,6 +55,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.threads.contracts import ThreadId
+
 
 class RunEventType(StrEnum):
 {members}
@@ -67,7 +69,7 @@ class RunEventV1(BaseModel):
     event_id: str = Field(pattern=r"^evt_[A-Za-z0-9_-]+$", max_length=80)
     sequence: int = Field(ge=1)
     run_id: str = Field(pattern=r"^run_[A-Za-z0-9_-]+$", max_length=64)
-    thread_id: str = Field(min_length=1, max_length=120)
+    thread_id: ThreadId
     type: RunEventType
     timestamp: datetime
     data: dict[str, Any] = Field(default_factory=dict)

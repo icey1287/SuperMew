@@ -187,7 +187,10 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
                 ]
             )
         self.run_repository = RunRepository(self.Session)
-        self.run_service = RunService(self.run_repository)
+        self.run_service = RunService(
+            self.run_repository,
+            _allow_implicit_threads=True,
+        )
         self.checkpoints = HitlCheckpointRepository(self.Session)
         self.coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,

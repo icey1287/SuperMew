@@ -62,6 +62,17 @@ class RunEventContractTests(unittest.TestCase):
                 timestamp=datetime(2026, 7, 14),
             )
 
+    def test_invalid_thread_identity_is_rejected(self):
+        for thread_id in ("-leading", "space id", "bad$id", "x" * 121):
+            with self.subTest(thread_id=thread_id), self.assertRaises(ValidationError):
+                new_run_event(
+                    sequence=1,
+                    run_id="run_abc",
+                    thread_id=thread_id,
+                    event_type="run.created",
+                    timestamp=datetime(2026, 7, 14, tzinfo=UTC),
+                )
+
     def test_generated_files_are_current(self):
         result = subprocess.run(
             [sys.executable, "scripts/generate_contract_types.py", "--check"],

@@ -33,6 +33,7 @@ class RunReservationTests(unittest.TestCase):
             message=message,
             idempotency_key=key,
             request_hash=hash_run_request(message),
+            _allow_implicit_thread=True,
             **kwargs,
         )
 

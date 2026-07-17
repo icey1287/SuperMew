@@ -66,7 +66,7 @@ class EventBusTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository)
+        self.service = RunService(self.repository, _allow_implicit_threads=True)
         self.journal = RunEventJournal(self.Session)
 
     def tearDown(self):

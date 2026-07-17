@@ -4,12 +4,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Iterable
 
+from sqlalchemy import and_, case
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import ChatMessage, ChatSession, Run, User, utcnow
-from backend.runs.state import ACTIVE_RUN_STATUSES, RunStatus
+from backend.runs.state import TERMINAL_RUN_STATUSES, RunStatus
 from backend.infra.database import SessionLocal
 from backend.schemas.chat import normalize_rag_trace
 
@@ -50,6 +52,30 @@ class UserAccessSnapshot:
     role: str
 
 
+@dataclass(frozen=True)
+class ThreadSummaryRecord:
+    thread_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+    version: int
+    thread_status: str
+    active_run_id: str | None
+    active_run_status: str | None
+
+
+def _active_run_priority() -> ColumnElement[int]:
+    return case(
+        (Run.status == RunStatus.RUNNING.value, 0),
+        (Run.status == RunStatus.WAITING_INPUT.value, 1),
+        (Run.status == RunStatus.CANCELLING.value, 2),
+        (Run.status == RunStatus.PENDING.value, 3),
+        (Run.status == RunStatus.QUEUED.value, 4),
+        else_=5,
+    )
+
+
 class ConversationRepository:
     """Thread 与消息 journal 的唯一持久化 interface。"""
 
@@ -81,7 +107,11 @@ class ConversationRepository:
             db.close()
 
     @staticmethod
-    def _thread_query(db: Session, user_id: int, thread_id: str):
+    def _thread_query(
+        db: Session,
+        user_id: int,
+        thread_id: str,
+    ) -> Query[ChatSession]:
         return db.query(ChatSession).filter(
             ChatSession.user_id == user_id,
             ChatSession.session_id == thread_id,
@@ -274,7 +304,6 @@ class ConversationRepository:
                 row.status = status
                 row.rag_trace = normalized_trace
                 row.updated_at = utcnow()
-                thread.version += 1
                 thread.updated_at = row.updated_at
                 db.flush()
                 return self._record(row, thread_id)
@@ -390,6 +419,38 @@ class ConversationRepository:
         finally:
             db.close()
 
+    def list_messages_before(
+        self,
+        username: str,
+        thread_id: str,
+        *,
+        before: int | None,
+        limit: int,
+    ) -> list[MessageRecord] | None:
+        """Return one newest-first Message window, or ``None`` when not owned."""
+
+        db = self._session_factory()
+        try:
+            user = self._user(db, username)
+            if not user:
+                return None
+            thread = self._thread_query(db, user.id, thread_id).first()
+            if not thread:
+                return None
+            query = db.query(ChatMessage).filter(
+                ChatMessage.session_ref_id == thread.id
+            )
+            if before is not None:
+                query = query.filter(ChatMessage.sequence < before)
+            rows = (
+                query.order_by(ChatMessage.sequence.desc())
+                .limit(max(1, min(limit, 501)))
+                .all()
+            )
+            return [self._record(row, thread_id) for row in rows]
+        finally:
+            db.close()
+
     def thread_metadata(self, username: str, thread_id: str) -> dict:
         db = self._session_factory()
         try:
@@ -401,31 +462,135 @@ class ConversationRepository:
         finally:
             db.close()
 
-    def list_threads(self, username: str) -> list[dict]:
+    @staticmethod
+    def _summary_record(
+        thread: ChatSession,
+        active_run: Run | None,
+    ) -> ThreadSummaryRecord:
+        return ThreadSummaryRecord(
+            thread_id=thread.session_id,
+            title=str((thread.metadata_json or {}).get("title") or thread.session_id),
+            created_at=thread.created_at,
+            updated_at=thread.updated_at,
+            message_count=thread.message_count,
+            version=thread.version,
+            thread_status=thread.status,
+            active_run_id=active_run.id if active_run is not None else None,
+            active_run_status=active_run.status if active_run is not None else None,
+        )
+
+    def create_thread(
+        self,
+        *,
+        username: str,
+        thread_id: str,
+        title: str | None = None,
+    ) -> None:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                user = self._user(db, username)
+                if user is None:
+                    raise AppError(
+                        ErrorCode.AUTHENTICATION_REQUIRED,
+                        "用户不存在或已失效",
+                        status_code=401,
+                    )
+                thread = self._get_or_create_thread(
+                    db,
+                    user,
+                    thread_id,
+                    metadata={"title": title} if title else None,
+                    lock=True,
+                )
+                if title and not (thread.metadata_json or {}).get("title"):
+                    thread.metadata_json = {
+                        **(thread.metadata_json or {}),
+                        "title": title,
+                    }
+        finally:
+            db.close()
+
+    def get_thread_summary(
+        self,
+        username: str,
+        thread_id: str,
+    ) -> ThreadSummaryRecord | None:
         db = self._session_factory()
         try:
             user = self._user(db, username)
-            if not user:
-                return []
-            rows = (
-                db.query(ChatSession)
-                .filter(ChatSession.user_id == user.id)
-                .order_by(ChatSession.updated_at.desc())
-                .all()
+            if user is None:
+                return None
+            row = (
+                db.query(ChatSession, Run)
+                .outerjoin(
+                    Run,
+                    and_(
+                        Run.thread_ref_id == ChatSession.id,
+                        Run.status.notin_(tuple(TERMINAL_RUN_STATUSES)),
+                    ),
+                )
+                .filter(
+                    ChatSession.user_id == user.id,
+                    ChatSession.session_id == thread_id,
+                )
+                .order_by(_active_run_priority(), Run.created_at.asc(), Run.id.asc())
+                .first()
             )
-            return [
-                {
-                    "session_id": row.session_id,
-                    "title": (row.metadata_json or {}).get("title") or row.session_id,
-                    "updated_at": row.updated_at.isoformat(),
-                    "message_count": row.message_count,
-                    "version": row.version,
-                    "status": row.status,
-                }
-                for row in rows
-            ]
+            if row is None:
+                return None
+            thread, active_run = row
+            return self._summary_record(thread, active_run)
         finally:
             db.close()
+
+    def list_thread_summaries(self, username: str) -> list[ThreadSummaryRecord]:
+        db = self._session_factory()
+        try:
+            user = self._user(db, username)
+            if user is None:
+                return []
+            rows = (
+                db.query(ChatSession, Run)
+                .outerjoin(
+                    Run,
+                    and_(
+                        Run.thread_ref_id == ChatSession.id,
+                        Run.status.notin_(tuple(TERMINAL_RUN_STATUSES)),
+                    ),
+                )
+                .filter(ChatSession.user_id == user.id)
+                .order_by(
+                    ChatSession.updated_at.desc(),
+                    _active_run_priority(),
+                    Run.created_at.asc(),
+                    Run.id.asc(),
+                )
+                .all()
+            )
+            summaries: list[ThreadSummaryRecord] = []
+            seen: set[int] = set()
+            for thread, active_run in rows:
+                if thread.id in seen:
+                    continue
+                seen.add(thread.id)
+                summaries.append(self._summary_record(thread, active_run))
+            return summaries
+        finally:
+            db.close()
+
+    def list_threads(self, username: str) -> list[dict]:
+        return [
+            {
+                "session_id": record.thread_id,
+                "title": record.title,
+                "updated_at": record.updated_at.isoformat(),
+                "message_count": record.message_count,
+                "version": record.version,
+                "status": record.thread_status,
+            }
+            for record in self.list_thread_summaries(username)
+        ]
 
     def delete_thread(self, username: str, thread_id: str) -> bool:
         db = self._session_factory()
@@ -439,15 +604,11 @@ class ConversationRepository:
                 )
                 if not thread:
                     return False
-                nonterminal_statuses = {
-                    *ACTIVE_RUN_STATUSES,
-                    RunStatus.QUEUED.value,
-                }
                 active_run = (
-                    db.query(Run.id)
+                    db.query(Run.id, Run.status)
                     .filter(
                         Run.thread_ref_id == thread.id,
-                        Run.status.in_(nonterminal_statuses),
+                        Run.status.notin_(tuple(TERMINAL_RUN_STATUSES)),
                     )
                     .first()
                 )
@@ -456,6 +617,10 @@ class ConversationRepository:
                         ErrorCode.RUN_ACTIVE,
                         "Thread 仍有活跃 Run，请先取消或等待运行结束",
                         status_code=409,
+                        safe_details={
+                            "active_run_id": active_run.id,
+                            "active_run_status": active_run.status,
+                        },
                     )
                 db.delete(thread)
                 return True

@@ -50,7 +50,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository)
+        self.service = RunService(self.repository, _allow_implicit_threads=True)
         self.registry = CancellationRegistry(transport=None)
         self.manager = RunExecutionManager(self.service, self.registry)
 

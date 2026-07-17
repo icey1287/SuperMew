@@ -34,10 +34,17 @@ from backend.schemas.runs import (
     RunCreateRequest,
     RunCreateResponse,
     RunResponse,
-    ThreadCreateRequest,
-    ThreadResponse,
 )
 from backend.schemas.events import RunEventsResponse
+from backend.schemas.threads import (
+    ThreadCreateRequest,
+    ThreadDeleteResponse,
+    ThreadInfo,
+    ThreadListResponse,
+    ThreadMessageInfo,
+    ThreadMessagesResponse,
+    ThreadResponse,
+)
 
 __all__ = [
     "RegisterRequest",
@@ -68,6 +75,11 @@ __all__ = [
     "DocumentDeleteResponse",
     "ThreadCreateRequest",
     "ThreadResponse",
+    "ThreadInfo",
+    "ThreadListResponse",
+    "ThreadMessageInfo",
+    "ThreadMessagesResponse",
+    "ThreadDeleteResponse",
     "RunCreateRequest",
     "RunResponse",
     "RunCreateResponse",

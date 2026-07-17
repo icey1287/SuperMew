@@ -202,6 +202,7 @@ class MessageRepositoryTests(unittest.TestCase):
                 thread_id="thread-1",
                 message="durable question",
                 idempotency_key="request-1",
+                _allow_implicit_thread=True,
             )
             claimed = run_repository.claim(
                 run_id=reservation.run.id,
@@ -216,6 +217,8 @@ class MessageRepositoryTests(unittest.TestCase):
 
             messages = storage.get_session_messages("alice", "thread-1")
             sessions = storage.list_session_infos("alice")
+            thread_messages = storage.get_thread_messages("alice", "thread-1")
+            threads = storage.list_thread_infos("alice")
 
         self.assertEqual(
             ["legacy message", "durable question", "durable answer"],
@@ -223,7 +226,10 @@ class MessageRepositoryTests(unittest.TestCase):
         )
         self.assertEqual("completed", messages[-1]["status"])
         self.assertEqual(3, sessions[0]["message_count"])
-        self.assertEqual(4, sessions[0]["version"])
+        self.assertEqual(3, sessions[0]["version"])
+        self.assertEqual(messages, thread_messages)
+        self.assertEqual("thread-1", threads[0]["thread_id"])
+        self.assertNotIn("session_id", threads[0])
 
     def test_thread_delete_rejects_nonterminal_run_and_allows_terminal_history(self):
         storage = ConversationStorage(self.repository)
@@ -233,10 +239,11 @@ class MessageRepositoryTests(unittest.TestCase):
             thread_id="thread-1",
             message="durable question",
             idempotency_key="request-1",
+            _allow_implicit_thread=True,
         )
 
         with self.assertRaises(AppError) as raised:
-            storage.delete_session("alice", "thread-1")
+            storage.delete_thread("alice", "thread-1")
         self.assertEqual(ErrorCode.RUN_ACTIVE, raised.exception.code)
 
         claimed = run_repository.claim(
@@ -250,7 +257,7 @@ class MessageRepositoryTests(unittest.TestCase):
             fencing_token=claimed.fencing_token,
         )
 
-        self.assertTrue(storage.delete_session("alice", "thread-1"))
+        self.assertTrue(storage.delete_thread("alice", "thread-1"))
 
 
 if __name__ == "__main__":

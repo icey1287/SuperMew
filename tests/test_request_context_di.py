@@ -142,15 +142,16 @@ class KnowledgeToolFactoryTests(unittest.TestCase):
 
 
 class RouteImportTests(unittest.TestCase):
-    def test_sessions_route_uses_storage_instance(self):
-        path = REPO_ROOT / "backend" / "api" / "routes" / "sessions.py"
-        spec = importlib.util.spec_from_file_location("sessions_route_under_test", path)
-        sessions = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(sessions)
+    def test_thread_route_uses_application_module(self):
+        path = REPO_ROOT / "backend" / "api" / "routes" / "threads.py"
+        spec = importlib.util.spec_from_file_location("threads_route_under_test", path)
+        threads = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(threads)
 
-        self.assertTrue(callable(sessions.storage.list_session_infos))
-        self.assertTrue(callable(sessions.storage.get_session_messages))
-        self.assertTrue(callable(sessions.storage.delete_session))
+        self.assertTrue(callable(threads.thread_service.create_thread))
+        self.assertTrue(callable(threads.thread_service.list_threads))
+        self.assertTrue(callable(threads.thread_service.recent_messages))
+        self.assertTrue(callable(threads.thread_service.delete_thread))
 
 
 class ImportShapeTests(unittest.TestCase):

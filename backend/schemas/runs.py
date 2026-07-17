@@ -4,24 +4,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.threads.contracts import ThreadId
+
 
 class RunSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class ThreadCreateRequest(RunSchema):
-    thread_id: str | None = Field(default=None, min_length=1, max_length=120)
-    title: str | None = Field(default=None, max_length=160)
-
-
-class ThreadResponse(RunSchema):
-    thread_id: str
-    title: str
-    status: str
-    version: int
-    message_count: int
-    created_at: str
-    updated_at: str
 
 
 class RunCreateRequest(RunSchema):
@@ -63,7 +50,7 @@ class RunErrorResponse(RunSchema):
 
 class RunResponse(RunSchema):
     id: str
-    thread_id: str
+    thread_id: ThreadId
     status: str
     idempotency_key: str
     request_hash: str

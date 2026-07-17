@@ -10,7 +10,7 @@ from typing import Callable
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from backend.core.errors import (
     AppError,
@@ -39,6 +39,7 @@ from backend.runs.state import (
     RunStatus,
     can_transition,
 )
+from backend.threads.contracts import validate_thread_id
 
 
 SessionFactory = Callable[[], Session]
@@ -230,7 +231,11 @@ class RunRepository:
         return normalized
 
     @staticmethod
-    def _thread_query(db: Session, user_id: int, thread_id: str):
+    def _thread_query(
+        db: Session,
+        user_id: int,
+        thread_id: str,
+    ) -> Query[ChatSession]:
         return db.query(ChatSession).filter(
             ChatSession.user_id == user_id,
             ChatSession.session_id == thread_id,
@@ -243,6 +248,7 @@ class RunRepository:
         thread_id: str,
         *,
         title: str | None = None,
+        allow_create: bool,
     ) -> ChatSession:
         thread = (
             RunRepository._thread_query(db, user.id, thread_id)
@@ -250,7 +256,14 @@ class RunRepository:
             .first()
         )
         if thread:
+            if title and not (thread.metadata_json or {}).get("title"):
+                thread.metadata_json = {
+                    **(thread.metadata_json or {}),
+                    "title": title,
+                }
             return thread
+        if not allow_create:
+            raise AppError(ErrorCode.NOT_FOUND, "Thread 不存在", status_code=404)
         metadata = {"title": title} if title else {}
         thread = ChatSession(
             user_id=user.id,
@@ -336,7 +349,9 @@ class RunRepository:
         tenant_id: str = "default",
         channel: str = "chat",
         approved_tools: frozenset[str] = frozenset(),
+        _allow_implicit_thread: bool = False,
     ) -> RunReservation:
+        thread_id = validate_thread_id(thread_id)
         key = self._validate_idempotency_key(idempotency_key)
         normalized_tenant = self._security_identifier(
             tenant_id,
@@ -374,6 +389,7 @@ class RunRepository:
                     user,
                     thread_id,
                     title=title,
+                    allow_create=_allow_implicit_thread,
                 )
                 existing = self._existing_run(db, user.id, thread.id, key)
                 if existing:
@@ -505,42 +521,6 @@ class RunRepository:
                 status_code=409,
                 retryable=True,
             ) from exc
-        finally:
-            db.close()
-
-    def create_thread(
-        self,
-        *,
-        username: str,
-        thread_id: str,
-        title: str | None = None,
-    ) -> dict:
-        db = self._session_factory()
-        try:
-            with db.begin():
-                user = db.query(User).filter(User.username == username).first()
-                if not user:
-                    raise AppError(
-                        ErrorCode.AUTHENTICATION_REQUIRED,
-                        "用户不存在或已失效",
-                        status_code=401,
-                    )
-                thread = self._get_or_create_thread(db, user, thread_id, title=title)
-                if title and not (thread.metadata_json or {}).get("title"):
-                    thread.metadata_json = {
-                        **(thread.metadata_json or {}),
-                        "title": title,
-                    }
-                return {
-                    "thread_id": thread.session_id,
-                    "title": (thread.metadata_json or {}).get("title")
-                    or thread.session_id,
-                    "status": thread.status,
-                    "version": thread.version,
-                    "message_count": thread.message_count,
-                    "created_at": thread.created_at.isoformat(),
-                    "updated_at": thread.updated_at.isoformat(),
-                }
         finally:
             db.close()
 
@@ -1266,7 +1246,6 @@ class RunRepository:
                     assistant.status = self._message_status(target, partial)
                     assistant.rag_trace = rag_trace
                     assistant.updated_at = now
-                thread.version += 1
                 thread.updated_at = now
                 if input_tokens or output_tokens or Decimal(str(cost)) != Decimal("0"):
                     append_event_in_session(

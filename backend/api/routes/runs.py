@@ -21,16 +21,15 @@ from backend.schemas.runs import (
     RunResumeRequest,
     RunResumeResponse,
     RunResponse,
-    ThreadCreateRequest,
-    ThreadResponse,
 )
+from backend.threads.contracts import ThreadId
 from backend.tools.catalog import tool_registry
 
 
 router = APIRouter(prefix="/v1", tags=["runs"])
 
 
-async def _reserve_run(*, user: User, thread_id: str, request: RunCreateRequest):
+async def _reserve_run(*, user: User, thread_id: ThreadId, request: RunCreateRequest):
     approved_tools = frozenset(request.approved_tools)
     if approved_tools and user.role != "admin":
         raise AppError(
@@ -121,28 +120,12 @@ def _stream_response(*, username: str, run_id: str, after: int) -> StreamingResp
 
 
 @router.post(
-    "/threads", response_model=ThreadResponse, status_code=status.HTTP_201_CREATED
-)
-async def create_thread(
-    request: ThreadCreateRequest,
-    current_user: User = Depends(get_current_user),
-):
-    thread = await run_in_threadpool(
-        service.create_thread,
-        username=current_user.username,
-        thread_id=request.thread_id,
-        title=request.title,
-    )
-    return ThreadResponse(**thread)
-
-
-@router.post(
     "/threads/{thread_id}/runs",
     response_model=RunCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_run(
-    thread_id: str,
+    thread_id: ThreadId,
     request: RunCreateRequest,
     current_user: User = Depends(get_current_user),
 ):
@@ -256,7 +239,7 @@ async def stream_run_events(
 
 @router.post("/threads/{thread_id}/runs/stream")
 async def create_run_stream(
-    thread_id: str,
+    thread_id: ThreadId,
     request: RunCreateRequest,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     current_user: User = Depends(get_current_user),

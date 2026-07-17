@@ -232,6 +232,75 @@ def test_run_events_reject_negative_after_before_reading_journal() -> None:
     read_after.assert_not_called()
 
 
+def test_create_run_rejects_invalid_thread_id_before_reservation() -> None:
+    app, _ = _app()
+    create_run = Mock()
+    spawn_once = AsyncMock()
+
+    with (
+        patch.object(routes.service, "create_run", create_run),
+        patch.object(routes.run_agent_executor, "spawn_once", spawn_once),
+        TestClient(app) as client,
+    ):
+        response = client.post(
+            "/v1/threads/bad$id/runs",
+            json=_run_request(),
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    create_run.assert_not_called()
+    spawn_once.assert_not_awaited()
+
+
+def test_canonical_run_route_does_not_implicitly_create_thread() -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from backend.db.models import Base, ChatSession, User
+    from backend.runs.repository import RunRepository
+    from backend.runs.service import RunService
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory.begin() as db:
+        db.add(User(username="alice", password_hash="hash", role="user"))
+    app, _ = _app()
+    real_service = RunService(RunRepository(session_factory))
+    spawn_once = AsyncMock()
+    try:
+        with (
+            patch.object(routes, "service", real_service),
+            patch.object(routes.run_agent_executor, "spawn_once", spawn_once),
+            patch.object(
+                routes,
+                "get_settings",
+                return_value=SimpleNamespace(
+                    app=SimpleNamespace(default_tenant_id="tenant-test")
+                ),
+            ),
+            TestClient(app) as client,
+        ):
+            response = client.post(
+                "/v1/threads/thread-missing/runs",
+                json=_run_request(),
+            )
+
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "NOT_FOUND"
+        spawn_once.assert_not_awaited()
+        with session_factory() as db:
+            assert db.query(ChatSession).count() == 0
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("method", "path", "payload"),
     [

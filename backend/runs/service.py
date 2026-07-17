@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from uuid import uuid4
 
 from backend.core.errors import (
     AppError,
@@ -19,22 +18,14 @@ from backend.runs.state import MultitaskStrategy, RunStatus
 class RunService:
     """Run 生命周期的应用 interface；HTTP、worker 与兼容入口共享。"""
 
-    def __init__(self, run_repository: RunRepository = repository):
-        self.repository = run_repository
-
-    def create_thread(
+    def __init__(
         self,
+        run_repository: RunRepository = repository,
         *,
-        username: str,
-        thread_id: str | None = None,
-        title: str | None = None,
-    ) -> dict:
-        resolved_id = thread_id or f"thread_{uuid4().hex}"
-        return self.repository.create_thread(
-            username=username,
-            thread_id=resolved_id,
-            title=title,
-        )
+        _allow_implicit_threads: bool = False,
+    ) -> None:
+        self.repository = run_repository
+        self._allow_implicit_threads = _allow_implicit_threads
 
     def create_run(
         self,
@@ -65,6 +56,7 @@ class RunService:
             tenant_id=tenant_id,
             channel=channel,
             approved_tools=approved_tools,
+            _allow_implicit_thread=self._allow_implicit_threads,
         )
 
     def get_run(self, *, username: str, run_id: str) -> RunRecord:
