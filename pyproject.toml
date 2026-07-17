@@ -10,21 +10,21 @@ dependencies = [
     "uvicorn>=0.30.0",
     "python-dotenv>=1.0.1",
     "requests>=2.32.0",
-    "pymilvus>=2.5.0",
+    "pymilvus>=2.5.0,<3",
     "python-multipart>=0.0.9",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
     "httpx>=0.27.0",
     "jsonschema>=4.23.0",
     "alembic>=1.13.0",
-    "langchain>=1.2,<1.3",
+    "langchain==1.3.9",
     "langchain-core>=1.2,<2",
     "langchain-community>=0.4,<0.5",
     "langchain-text-splitters>=1.1,<2",
     "langchain-huggingface>=1.2,<2",
     "langchain-openai>=1.1,<2",
     "sentence-transformers>=3.0.0",
-    "langgraph>=1.1,<1.2",
+    "langgraph>=1.2.4,<1.3",
     "langgraph-checkpoint-postgres>=3.0,<4",
     "psycopg[binary,pool]>=3.2,<4",
     "pypdf>=4.3.1",
@@ -36,8 +36,8 @@ dependencies = [
     "sqlalchemy>=2.0.36",
     "psycopg2-binary>=2.9.10",
     "redis>=5.2.1",
-    "passlib[bcrypt]>=1.7.4",
-    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=5,<6",
+    "PyJWT>=2.10,<3",
     "beautifulsoup4>=4.12.0",
     "pyyaml>=6.0",
     "sqlglot==30.12.0",
@@ -45,9 +45,20 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy==1.18.2",
+    "pip-audit==2.9.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov==7.0.0",
     "ruff>=0.6.0",
+]
+storage-compatibility = [
+    "alembic>=1.13.0",
+    "fastapi>=0.115.0",
+    "pydantic-settings>=2.4.0",
+    "pymilvus>=2.5.0,<3",
+    "redis>=5.2.1",
+    "sqlalchemy>=2.0.36",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +69,7 @@ study = [
 ]
 
 [project.scripts]
+supermew-auth-cleanup = "backend.auth.cleanup:main"
 supermew-indexing-worker = "backend.workers.indexing:main"
 supermew-registry = "backend.tools.registry_cli:main"
 
@@ -69,3 +81,64 @@ exclude = ["frontend*", "tests*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+extend-exclude = ["presentation-assets", "volumes"]
+
+[tool.ruff.lint]
+extend-select = ["ASYNC210", "ASYNC220", "ASYNC221", "ASYNC230", "ASYNC251"]
+
+[tool.mypy]
+python_version = "3.12"
+files = [
+    "backend/agent/context.py",
+    "backend/agent/runtime.py",
+    "backend/api/routes/auth.py",
+    "backend/auth",
+    "backend/chat/repository.py",
+    "backend/chat/storage.py",
+    "backend/core/errors.py",
+    "backend/events/contracts.py",
+    "backend/events/generated",
+    "backend/guardrails",
+    "backend/infra/auth.py",
+    "backend/providers/core.py",
+    "backend/providers/runtime.py",
+    "backend/rate_limits",
+    "backend/runs/agent_executor.py",
+    "backend/runs/cancellation.py",
+    "backend/runs/repository.py",
+    "backend/runs/service.py",
+    "backend/runs/state.py",
+    "backend/sandbox",
+    "backend/schemas",
+    "backend/security/headers.py",
+    "backend/security/milvus_filters.py",
+    "backend/security/origins.py",
+    "backend/sql_assistant/contracts.py",
+    "backend/threads",
+    "backend/tools/contracts.py",
+    "backend/tools/control.py",
+    "backend/tools/generated",
+    "backend/web_research/citations.py",
+    "backend/web_research/contracts.py",
+]
+check_untyped_defs = true
+disallow_untyped_defs = true
+follow_imports = "skip"
+ignore_missing_imports = true
+no_implicit_optional = true
+show_error_codes = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.coverage.run]
+source = ["backend", "scripts"]
+
+[tool.coverage.report]
+fail_under = 80
+precision = 1
+show_missing = true
+skip_covered = true

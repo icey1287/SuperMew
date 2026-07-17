@@ -7,13 +7,11 @@ from backend.documents.publication import (
     DocumentRetirementOutcome,
 )
 from backend.documents.retrieval import DocumentRetrievalScope
-from backend.indexing import (
-    DocumentLoader,
-    MilvusWriter,
-    ParentChunkStore,
-    embedding_service,
-)
+from backend.indexing.document_loader import DocumentLoader
+from backend.indexing.embedding import embedding_service
 from backend.indexing.milvus_client import get_milvus_store
+from backend.indexing.milvus_writer import MilvusWriter
+from backend.indexing.parent_chunk_store import ParentChunkStore
 
 
 UPLOAD_DIR = get_settings().storage.upload_dir
