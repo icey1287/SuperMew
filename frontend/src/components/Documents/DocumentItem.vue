@@ -28,8 +28,8 @@
         :title="
           deleteJob?.status === 'failed'
             ? '重试删除'
-            : deleteJob?.status === 'cleanup_pending'
-              ? '已不可检索，后台清理待重试'
+            : deleteJob?.status === 'cleanup_failed'
+              ? '已不可检索，物理清理失败，需管理员受控重试'
               : '删除文档'
         "
         :disabled="documentStore.isDeleteActionLocked(doc.filename)"
@@ -50,8 +50,8 @@
             {{
               deleteJob.status === 'completed'
                 ? '清理完成'
-                : deleteJob.status === 'cleanup_pending'
-                  ? '逻辑撤销已完成，可稍后重试物理清理'
+                : deleteJob.status === 'cleanup_failed'
+                  ? '检索范围已撤销，物理清理失败，需管理员处理'
                   : '正在同步各存储层'
             }}
           </small>
@@ -123,7 +123,7 @@ const versionLabel = computed(() => {
 const statusLabel = computed(() => {
   if (deleteJob.value?.status === 'running') return '删除中';
   if (deleteJob.value?.status === 'completed') return '已删除';
-  if (deleteJob.value?.status === 'cleanup_pending') return '已撤销，待清理';
+  if (deleteJob.value?.status === 'cleanup_failed') return '已撤销，清理失败';
   if (deleteJob.value?.status === 'failed') return '删除失败';
   if (props.doc.status === 'updating') return '更新中';
   if (props.doc.status === 'indexing' || props.doc.status === 'pending') return '构建中';
@@ -134,7 +134,7 @@ const statusLabel = computed(() => {
 const statusIcon = computed(() => {
   if (deleteJob.value?.status === 'running') return 'fa-solid fa-spinner fa-spin';
   if (deleteJob.value?.status === 'failed') return 'fa-solid fa-triangle-exclamation';
-  if (deleteJob.value?.status === 'cleanup_pending') return 'fa-solid fa-triangle-exclamation';
+  if (deleteJob.value?.status === 'cleanup_failed') return 'fa-solid fa-triangle-exclamation';
   if (
     props.doc.status === 'updating' ||
     props.doc.status === 'indexing' ||

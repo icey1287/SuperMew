@@ -172,7 +172,7 @@ describe('authentication store lifecycle', () => {
     expect(store.authForm.admin_code).toBe('');
   });
 
-  it('always clears local state when server-side logout fails', async () => {
+  it('clears local state and visibly reports when server-side logout fails', async () => {
     authSession.installAuthSession({
       access_token: 'active-access',
       username: 'alice',
@@ -187,5 +187,7 @@ describe('authentication store lifecycle', () => {
     expect(store.isAuthenticated).toBe(false);
     expect(store.token).toBe('');
     expect(authSession.getAuthSession()).toBeNull();
+    expect(store.authNotice).toContain('本机已退出');
+    expect(store.authNotice).toContain('服务端凭据撤销失败');
   });
 });

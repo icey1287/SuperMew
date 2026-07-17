@@ -8,7 +8,7 @@ import { createThread, deleteThread, getThreadMessages } from '@/threads/threadC
 import { useAuthStore } from './auth';
 import { useChatStore } from './chat';
 import { useRunsStore } from './runs';
-import { useSessionStore } from './sessions';
+import { useThreadStore } from './threads';
 
 vi.mock('@/runs/runClient', () => ({
   cancelRun: vi.fn(),
@@ -151,14 +151,14 @@ function setupStores(threadId = 'thread-1') {
   });
   const authStore = useAuthStore();
   const chatStore = useChatStore();
-  const sessionStore = useSessionStore();
-  if (threadId) sessionStore.sessions = [threadListItem(threadId)];
-  chatStore.setViewedSession(threadId, []);
+  const threadStore = useThreadStore();
+  if (threadId) threadStore.threads = [threadListItem(threadId)];
+  chatStore.setViewedThread(threadId, []);
   return {
     authStore,
     chatStore,
     runsStore: useRunsStore(),
-    sessionStore,
+    threadStore,
   };
 }
 
@@ -205,14 +205,14 @@ describe('durable chat projection', () => {
 
   it('clears account-scoped messages, Run state, and local stream ownership', () => {
     const { chatStore, runsStore } = setupStores();
-    chatStore.messagesBySession['thread-1'] = [{ text: '旧账号消息', isUser: true }];
-    chatStore.messages = chatStore.messagesBySession['thread-1'];
+    chatStore.messagesByThread['thread-1'] = [{ text: '旧账号消息', isUser: true }];
+    chatStore.messages = chatStore.messagesByThread['thread-1'];
     chatStore.userInput = '草稿';
     runsStore.ensure('run_1', 'thread-1').status = 'running';
 
     chatStore.resetWorkspace();
 
-    expect(chatStore.messagesBySession).toEqual({});
+    expect(chatStore.messagesByThread).toEqual({});
     expect(chatStore.messages).toEqual([]);
     expect(chatStore.userInput).toBe('');
     expect(runsStore.byId).toEqual({});
@@ -234,8 +234,7 @@ describe('durable chat projection', () => {
       expect.objectContaining({ expected_thread_version: 0 }),
       'test-token'
     );
-    expect(chatStore.sessionId).toBe('thread-server');
-    expect(chatStore.sessionId).not.toMatch(/^session_/);
+    expect(chatStore.threadId).toBe('thread-server');
 
     streams.emit('run_1', event('run_1', 'thread-server', 1, 'run.created'));
     streams.emit(
@@ -253,17 +252,17 @@ describe('durable chat projection', () => {
       message: '成功删除 Thread',
     });
     vi.mocked(createThread).mockResolvedValue(threadDetail('thread-replacement'));
-    const { chatStore, sessionStore } = setupStores();
-    chatStore.messagesBySession['thread-1'] = [{ text: '旧消息', isUser: true }];
-    chatStore.messages = chatStore.messagesBySession['thread-1'];
+    const { chatStore, threadStore } = setupStores();
+    chatStore.messagesByThread['thread-1'] = [{ text: '旧消息', isUser: true }];
+    chatStore.messages = chatStore.messagesByThread['thread-1'];
 
     await chatStore.handleClearChat();
 
     expect(deleteThread).toHaveBeenCalledWith('thread-1');
     expect(createThread).toHaveBeenCalledWith({});
-    expect(chatStore.sessionId).toBe('thread-replacement');
-    expect(chatStore.messagesBySession['thread-1']).toBeUndefined();
-    expect(sessionStore.sessions.map((thread) => thread.thread_id)).toEqual(['thread-replacement']);
+    expect(chatStore.threadId).toBe('thread-replacement');
+    expect(chatStore.messagesByThread['thread-1']).toBeUndefined();
+    expect(threadStore.threads.map((thread) => thread.thread_id)).toEqual(['thread-replacement']);
   });
 
   it('keeps the current Thread intact when authoritative deletion reports an active Run', async () => {
@@ -273,36 +272,36 @@ describe('durable chat projection', () => {
       retryable: false,
       category: 'thread',
     });
-    const { chatStore, sessionStore } = setupStores();
-    chatStore.messagesBySession['thread-1'] = [{ text: '仍需保留', isUser: true }];
-    chatStore.messages = chatStore.messagesBySession['thread-1'];
+    const { chatStore, threadStore } = setupStores();
+    chatStore.messagesByThread['thread-1'] = [{ text: '仍需保留', isUser: true }];
+    chatStore.messages = chatStore.messagesByThread['thread-1'];
 
     await chatStore.handleClearChat();
 
     expect(createThread).not.toHaveBeenCalled();
-    expect(chatStore.sessionId).toBe('thread-1');
+    expect(chatStore.threadId).toBe('thread-1');
     expect(chatStore.messages[0].text).toBe('仍需保留');
-    expect(sessionStore.sessions[0].thread_id).toBe('thread-1');
+    expect(threadStore.threads[0].thread_id).toBe('thread-1');
     expect(alert).toHaveBeenCalledWith('Thread 仍有活跃 Run');
   });
 
   it('locks input from canonical active Run metadata until the Run is restored', () => {
-    const { chatStore, sessionStore } = setupStores();
-    sessionStore.sessions[0].active_run_id = 'run-server';
-    sessionStore.sessions[0].active_run_status = 'running';
-    sessionStore.sessions[0].activeRunId = 'run-server';
-    sessionStore.sessions[0].activeRunStatus = 'running';
-    sessionStore.sessions[0].isStreaming = true;
+    const { chatStore, threadStore } = setupStores();
+    threadStore.threads[0].active_run_id = 'run-server';
+    threadStore.threads[0].active_run_status = 'running';
+    threadStore.threads[0].activeRunId = 'run-server';
+    threadStore.threads[0].activeRunStatus = 'running';
+    threadStore.threads[0].isStreaming = true;
 
     expect(chatStore.currentRunStatus).toBe('running');
     expect(chatStore.isInputLocked).toBe(true);
-    expect(chatStore.isViewingStreamingSession).toBe(false);
+    expect(chatStore.isViewingStreamingThread).toBe(false);
   });
 
   it('creates optimistic messages, reserves a durable Run, and projects final authority', async () => {
     const streams = installControlledStreams();
     vi.mocked(createRun).mockResolvedValue(createResponse());
-    const { chatStore, sessionStore } = setupStores();
+    const { chatStore, threadStore } = setupStores();
     chatStore.userInput = '帮我总结文档';
 
     const sending = chatStore.handleSend();
@@ -320,7 +319,7 @@ describe('durable chat projection', () => {
       runId: 'run_1',
       isThinking: true,
     });
-    expect(sessionStore.sessions[0]).toMatchObject({
+    expect(threadStore.threads[0]).toMatchObject({
       thread_id: 'thread-1',
       isStreaming: true,
     });
@@ -368,7 +367,7 @@ describe('durable chat projection', () => {
       isThinking: false,
       ragTrace: { retrieval_outcome: 'ANSWERABLE' },
     });
-    expect(sessionStore.sessions[0].isStreaming).toBe(false);
+    expect(threadStore.threads[0].isStreaming).toBe(false);
   });
 
   it('keeps Event projection on the originating Thread after navigation', async () => {
@@ -383,7 +382,7 @@ describe('durable chat projection', () => {
       messages: [threadMessage(1, 'user', '另一会话', { id: 21 })],
       previous_cursor: null,
     });
-    await chatStore.loadSession('thread-2');
+    await chatStore.loadThread('thread-2');
 
     streams.emit(
       'run_1',
@@ -410,9 +409,9 @@ describe('durable chat projection', () => {
     streams.finish('run_1', 5);
     await sending;
 
-    expect(chatStore.sessionId).toBe('thread-2');
+    expect(chatStore.threadId).toBe('thread-2');
     expect(chatStore.messages.map((message) => message.text)).toEqual(['另一会话']);
-    expect(chatStore.messagesBySession['thread-1'][1]).toMatchObject({
+    expect(chatStore.messagesByThread['thread-1'][1]).toMatchObject({
       text: '原会话回答',
       ragSteps: [{ label: '检索中', group: 'retrieval' }],
     });
@@ -579,7 +578,7 @@ describe('durable chat projection', () => {
     });
     const { chatStore } = setupStores();
 
-    await chatStore.loadSession('thread-1');
+    await chatStore.loadThread('thread-1');
 
     expect(getRun).toHaveBeenCalledWith('run_1', 'test-token');
     expect(getRunEvents).toHaveBeenCalledWith(
@@ -606,15 +605,15 @@ describe('durable chat projection', () => {
     const first = chatStore.handleSend();
     await flushPromises();
 
-    chatStore.setViewedSession('thread-2', []);
+    chatStore.setViewedThread('thread-2', []);
     expect(chatStore.isLoading).toBe(false);
     chatStore.userInput = '线程二';
     const second = chatStore.handleSend();
     await flushPromises();
 
     expect(createRun).toHaveBeenCalledTimes(2);
-    expect(chatStore.messagesBySession['thread-1'][0].text).toBe('线程一');
-    expect(chatStore.messagesBySession['thread-2'][0].text).toBe('线程二');
+    expect(chatStore.messagesByThread['thread-1'][0].text).toBe('线程一');
+    expect(chatStore.messagesByThread['thread-2'][0].text).toBe('线程二');
 
     for (const [runId, threadId, answer] of [
       ['run_1', 'thread-1', '回答一'],
@@ -634,8 +633,8 @@ describe('durable chat projection', () => {
     }
     await Promise.all([first, second]);
 
-    expect(chatStore.messagesBySession['thread-1'][1].text).toBe('回答一');
-    expect(chatStore.messagesBySession['thread-2'][1].text).toBe('回答二');
+    expect(chatStore.messagesByThread['thread-1'][1].text).toBe('回答一');
+    expect(chatStore.messagesByThread['thread-2'][1].text).toBe('回答二');
   });
 
   it('loads the latest message page and prepends older messages on demand', async () => {
@@ -650,7 +649,7 @@ describe('durable chat projection', () => {
       });
     const { chatStore } = setupStores();
 
-    await chatStore.loadSession('thread-1');
+    await chatStore.loadThread('thread-1');
 
     expect(getThreadMessages).toHaveBeenCalledTimes(1);
     expect(getThreadMessages).toHaveBeenCalledWith('thread-1', { limit: 200 });
@@ -682,5 +681,52 @@ describe('durable chat projection', () => {
     expect(chatStore.messages[1].text).toContain('[NETWORK_UNAVAILABLE]');
     expect(chatStore.messages[1].text).not.toContain('secret socket detail');
     expect(chatStore.messages[1]).toMatchObject({ status: 'failed', isThinking: false });
+  });
+
+  it('does not reconstruct HITL state from Messages without a Run identity', async () => {
+    vi.mocked(getThreadMessages).mockResolvedValueOnce({
+      messages: [
+        threadMessage(1, 'assistant', '请补充角色名', {
+          rag_trace: {
+            route: 'clarify',
+            retrieval_status: 'needs_clarification',
+            hitl_prompt: '请补充角色名',
+          },
+        }),
+      ],
+      previous_cursor: null,
+    });
+    const { chatStore } = setupStores();
+
+    await chatStore.loadThread('thread-1');
+
+    expect(chatStore.currentPendingHitl).toBeNull();
+    expect(chatStore.messages[0]).toMatchObject({
+      isHitlRequest: false,
+      isHitlAnswer: false,
+    });
+  });
+
+  it('keeps Message lifecycle authoritative when only Run transport fails', async () => {
+    vi.mocked(createRun).mockResolvedValue(createResponse());
+    vi.mocked(connectRunEventStream).mockRejectedValue(
+      Object.assign(new Error('offline'), {
+        code: 'NETWORK_UNAVAILABLE',
+        retryable: true,
+      })
+    );
+    const { chatStore, runsStore } = setupStores();
+    chatStore.userInput = '继续执行';
+
+    await chatStore.handleSend();
+
+    expect(runsStore.byId.run_1).toMatchObject({
+      status: 'pending',
+      terminal: false,
+      transportStatus: 'closed',
+    });
+    expect(runsStore.byId.run_1.transportError?.code).toBe('NETWORK_UNAVAILABLE');
+    expect(chatStore.messages[1].status).not.toBe('failed');
+    expect(chatStore.messages[1].text).not.toContain('[NETWORK_UNAVAILABLE]');
   });
 });

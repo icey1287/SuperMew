@@ -41,6 +41,10 @@
         }}
       </p>
 
+      <p v-if="authStore.authNotice" class="operation-notice" role="status" aria-live="polite">
+        {{ authStore.authNotice }}
+      </p>
+
       <form class="auth-form" @submit.prevent="onSubmit">
         <label class="form-field">
           <span>用户名</span>

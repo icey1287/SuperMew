@@ -67,11 +67,10 @@
         </div>
         <div
           v-for="target in msg.ragTrace.retrieval_target_results || []"
-          :key="`${target.collection_name}:${target.storage_layout}`"
+          :key="target.collection_name"
           class="trace-line"
         >
-          {{ target.collection_name }} · {{ target.storage_layout }} · {{ target.mode }} ·
-          {{ target.hit_count }} 条
+          {{ target.collection_name }} · {{ target.mode }} · {{ target.hit_count }} 条
         </div>
         <div
           v-if="msg.ragTrace.candidate_k !== null && msg.ragTrace.candidate_k !== undefined"

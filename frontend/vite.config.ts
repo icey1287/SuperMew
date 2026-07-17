@@ -43,8 +43,6 @@ export default defineConfig({
     proxy: {
       // 代理后端接口，方便开发联调
       '/auth': 'http://localhost:8000',
-      '/chat': 'http://localhost:8000',
-      '/sessions': 'http://localhost:8000',
       '/documents': 'http://localhost:8000',
       '/v1': 'http://localhost:8000',
     },

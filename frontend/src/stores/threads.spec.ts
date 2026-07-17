@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThread, deleteThread, listThreads } from '@/threads/threadClient';
-import { useSessionStore } from './sessions';
+import { useThreadStore } from './threads';
 
 vi.mock('@/threads/threadClient', () => ({
   createThread: vi.fn(),
@@ -30,11 +30,11 @@ describe('Thread history store', () => {
 
   it('loads canonical Thread summaries into a separate list view model', async () => {
     vi.mocked(listThreads).mockResolvedValue([threadSummary('thread-1', 'waiting_input')]);
-    const store = useSessionStore();
+    const store = useThreadStore();
 
-    await store.fetchSessions();
+    await store.fetchThreads();
 
-    expect(store.sessions[0]).toMatchObject({
+    expect(store.threads[0]).toMatchObject({
       thread_id: 'thread-1',
       thread_status: 'active',
       active_run_status: 'waiting_input',
@@ -52,25 +52,25 @@ describe('Thread history store', () => {
       version: 0,
       created_at: '2026-07-16T08:00:00Z',
     });
-    const store = useSessionStore();
+    const store = useThreadStore();
 
-    await expect(store.createSession('新的 Thread')).resolves.toMatchObject({
+    await expect(store.createThread('新的 Thread')).resolves.toMatchObject({
       thread_id: 'thread-created',
       isStreaming: false,
     });
 
     expect(createThread).toHaveBeenCalledWith({ title: '新的 Thread' });
-    expect(store.sessions[0].thread_id).toBe('thread-created');
+    expect(store.threads[0].thread_id).toBe('thread-created');
   });
 
   it('keeps Run projection separate from canonical Thread status', async () => {
     vi.mocked(listThreads).mockResolvedValue([threadSummary()]);
-    const store = useSessionStore();
-    await store.fetchSessions();
+    const store = useThreadStore();
+    await store.fetchThreads();
 
     store.setRunView('thread-1', 'run-1', 'running');
 
-    expect(store.sessions[0]).toMatchObject({
+    expect(store.threads[0]).toMatchObject({
       thread_status: 'active',
       active_run_status: null,
       activeRunId: 'run-1',
@@ -84,8 +84,8 @@ describe('Thread history store', () => {
       thread_id: 'thread-1',
       message: '成功删除 Thread',
     });
-    const store = useSessionStore();
-    store.sessions = [
+    const store = useThreadStore();
+    store.threads = [
       {
         ...threadSummary('thread-1'),
         activeRunId: null,
@@ -100,9 +100,34 @@ describe('Thread history store', () => {
       },
     ];
 
-    await expect(store.deleteSession('thread-1')).resolves.toBe('成功删除 Thread');
+    await expect(store.deleteThread('thread-1')).resolves.toBe('成功删除 Thread');
 
     expect(deleteThread).toHaveBeenCalledWith('thread-1');
-    expect(store.sessions.map((thread) => thread.thread_id)).toEqual(['thread-2']);
+    expect(store.threads.map((thread) => thread.thread_id)).toEqual(['thread-2']);
+  });
+
+  it('locks duplicate deletion while the canonical request is in flight', async () => {
+    let finish!: (value: { thread_id: string; message: string }) => void;
+    vi.mocked(deleteThread).mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    const store = useThreadStore();
+    store.threads = [
+      {
+        ...threadSummary('thread-1'),
+        activeRunId: null,
+        activeRunStatus: null,
+        isStreaming: false,
+      },
+    ];
+
+    const first = store.deleteThread('thread-1');
+    const duplicate = store.deleteThread('thread-1');
+
+    expect(store.isDeletingThread('thread-1')).toBe(true);
+    await expect(duplicate).resolves.toBeNull();
+    expect(deleteThread).toHaveBeenCalledOnce();
+
+    finish({ thread_id: 'thread-1', message: '已删除' });
+    await first;
+    expect(store.isDeletingThread('thread-1')).toBe(false);
   });
 });

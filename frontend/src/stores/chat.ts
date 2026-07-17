@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { watch, type WatchStopHandle } from 'vue';
 import { useAuthStore } from './auth';
-import { useSessionStore } from './sessions';
+import { useThreadStore } from './threads';
 import { useRunsStore } from './runs';
 import type { RunEventState } from '@/events/runEventReducer';
 import { getThreadMessages } from '@/threads/threadClient';
@@ -39,27 +39,6 @@ function appendPublicError(text: string, error: PublicRequestError): string {
   return text.trim() ? `${text}\n\n${rendered}` : rendered;
 }
 
-function isHitlTrace(trace?: RagTrace | null): boolean {
-  if (!trace) return false;
-  return (
-    trace.retrieval_status === 'needs_clarification' ||
-    trace.retrieval_status === 'needs_scope_selection' ||
-    trace.route === 'clarify' ||
-    trace.route === 'scope_select'
-  );
-}
-
-function normalizeLegacyHitl(message: Message): HitlRequest | null {
-  if (message.isUser || !isHitlTrace(message.ragTrace)) return null;
-  return {
-    runId: message.runId,
-    prompt: message.hitlPrompt || message.ragTrace?.hitl_prompt || message.text,
-    options: message.hitlOptions || message.ragTrace?.hitl_options || [],
-    route: message.ragTrace?.route,
-    retrieval_status: message.ragTrace?.retrieval_status,
-  };
-}
-
 function formatHitlText(hitl: HitlRequest): string {
   const options = hitl.options || [];
   if (!options.length) return hitl.prompt;
@@ -75,55 +54,77 @@ function messageIdentity(message: Message): string {
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as Message[],
-    messagesBySession: {} as Record<string, Message[]>,
-    messagePagesBySession: {} as Record<string, ThreadMessagePageState>,
+    messagesByThread: {} as Record<string, Message[]>,
+    messagePagesByThread: {} as Record<string, ThreadMessagePageState>,
     userInput: '',
     activeNav: 'newChat' as 'newChat' | 'history' | 'settings',
-    sessionId: '',
+    threadId: '',
     isCreatingThread: false,
+    loadingThreadId: '',
+    threadLoadError: '',
   }),
 
   getters: {
     currentRunStatus(state): string | null {
       return (
-        useRunsStore().activeForThread(state.sessionId)?.status ||
-        useSessionStore().threadById(state.sessionId)?.activeRunStatus ||
+        useRunsStore().activeForThread(state.threadId)?.status ||
+        useThreadStore().threadById(state.threadId)?.activeRunStatus ||
         null
       );
     },
 
     currentTransportStatus(state): string | null {
-      return useRunsStore().activeForThread(state.sessionId)?.transportStatus || null;
+      return useRunsStore().activeForThread(state.threadId)?.transportStatus || null;
+    },
+
+    currentTransportError(state) {
+      return useRunsStore().activeForThread(state.threadId)?.transportError || null;
+    },
+
+    isResumingHitl(state): boolean {
+      const run = useRunsStore().activeForThread(state.threadId);
+      return useRunsStore().isResumeInFlight(run?.runId);
     },
 
     isLoading(state): boolean {
-      const run = useRunsStore().activeForThread(state.sessionId);
-      const status = run?.status || useSessionStore().threadById(state.sessionId)?.activeRunStatus;
-      return state.isCreatingThread || BUSY_RUN_STATUSES.has(String(status || ''));
+      const run = useRunsStore().activeForThread(state.threadId);
+      const status = run?.status || useThreadStore().threadById(state.threadId)?.activeRunStatus;
+      return (
+        state.isCreatingThread ||
+        Boolean(state.loadingThreadId && state.loadingThreadId === state.threadId) ||
+        this.isResumingHitl ||
+        BUSY_RUN_STATUSES.has(String(status || ''))
+      );
     },
 
-    isViewingStreamingSession(state): boolean {
-      const run = useRunsStore().activeForThread(state.sessionId);
+    isViewingStreamingThread(state): boolean {
+      const run = useRunsStore().activeForThread(state.threadId);
       return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
     },
 
     isInputLocked(state): boolean {
-      const run = useRunsStore().activeForThread(state.sessionId);
-      if (state.isCreatingThread) return true;
+      const run = useRunsStore().activeForThread(state.threadId);
+      if (
+        state.isCreatingThread ||
+        Boolean(state.loadingThreadId && state.loadingThreadId === state.threadId)
+      ) {
+        return true;
+      }
+      if (useRunsStore().isResumeInFlight(run?.runId)) return true;
       if (run) return BUSY_RUN_STATUSES.has(run.status);
-      return Boolean(useSessionStore().threadById(state.sessionId)?.activeRunStatus);
+      return Boolean(useThreadStore().threadById(state.threadId)?.activeRunStatus);
     },
 
     hasOlderMessages(state): boolean {
-      return Boolean(state.messagePagesBySession[state.sessionId]?.hasOlder);
+      return Boolean(state.messagePagesByThread[state.threadId]?.hasOlder);
     },
 
     isLoadingOlderMessages(state): boolean {
-      return Boolean(state.messagePagesBySession[state.sessionId]?.loadingOlder);
+      return Boolean(state.messagePagesByThread[state.threadId]?.loadingOlder);
     },
 
     currentPendingHitl(state): HitlRequest | null {
-      const run = useRunsStore().activeForThread(state.sessionId);
+      const run = useRunsStore().activeForThread(state.threadId);
       if (run?.pendingHitl) {
         return {
           runId: run.runId,
@@ -136,9 +137,7 @@ export const useChatStore = defineStore('chat', {
           original_question: run.pendingHitl.originalQuestion || undefined,
         };
       }
-      const messages = state.messagesBySession[state.sessionId] || [];
-      const lastMessage = messages[messages.length - 1];
-      return lastMessage ? normalizeLegacyHitl(lastMessage) : null;
+      return null;
     },
 
     inputPlaceholder(): string {
@@ -158,63 +157,46 @@ export const useChatStore = defineStore('chat', {
       this.$reset();
     },
 
-    ensureSessionMessages(sessionId: string): Message[] {
-      if (!this.messagesBySession[sessionId]) {
-        this.messagesBySession[sessionId] = [];
+    ensureThreadMessages(threadId: string): Message[] {
+      if (!this.messagesByThread[threadId]) {
+        this.messagesByThread[threadId] = [];
       }
-      return this.messagesBySession[sessionId];
+      return this.messagesByThread[threadId];
     },
 
-    ensureMessagePage(sessionId: string): ThreadMessagePageState {
-      if (!this.messagePagesBySession[sessionId]) {
-        this.messagePagesBySession[sessionId] = {
+    ensureMessagePage(threadId: string): ThreadMessagePageState {
+      if (!this.messagePagesByThread[threadId]) {
+        this.messagePagesByThread[threadId] = {
           previousCursor: null,
           hasOlder: false,
           loadingOlder: false,
         };
       }
-      return this.messagePagesBySession[sessionId];
+      return this.messagePagesByThread[threadId];
     },
 
     selectHitlOption(option: string) {
       this.userInput = option;
     },
 
-    setViewedSession(sessionId: string, messages?: Message[]) {
-      if (messages) this.messagesBySession[sessionId] = messages;
-      this.sessionId = sessionId;
-      this.messages = this.ensureSessionMessages(sessionId);
+    setViewedThread(threadId: string, messages?: Message[]) {
+      if (messages) this.messagesByThread[threadId] = messages;
+      this.threadId = threadId;
+      this.messages = this.ensureThreadMessages(threadId);
       this.activeNav = 'newChat';
     },
 
-    getLocalSessionTitle(sessionId: string, messages: Message[]): string {
+    getLocalThreadTitle(threadId: string, messages: Message[]): string {
       const firstUserMessage = messages.find((message) => message.isUser && message.text.trim());
-      if (!firstUserMessage) return sessionId;
+      if (!firstUserMessage) return threadId;
       const title = firstUserMessage.text.trim();
       return title.length > 10 ? `${title.substring(0, 10)}...` : title;
     },
 
     mapServerMessages(messages: ThreadMessage[]): Message[] {
-      let awaitingLegacyHitlAnswer = false;
-      let legacyResumeText: string | undefined;
-
       return (messages || []).map((message) => {
         const ragTrace = message.rag_trace || null;
         const isUser = message.role === 'user';
-        const isHitlRequest = !message.run_id && !isUser && isHitlTrace(ragTrace);
-        const isHitlAnswer = !message.run_id && isUser && awaitingLegacyHitlAnswer;
-        const resumeTextForMessage =
-          !message.run_id && !isUser && !isHitlRequest ? legacyResumeText : undefined;
-
-        if (isHitlRequest) {
-          awaitingLegacyHitlAnswer = true;
-          legacyResumeText = undefined;
-        } else if (isHitlAnswer) {
-          awaitingLegacyHitlAnswer = false;
-          legacyResumeText = message.content;
-        } else if (!isUser) {
-          legacyResumeText = undefined;
-        }
 
         return {
           id: message.id,
@@ -224,31 +206,28 @@ export const useChatStore = defineStore('chat', {
           text: message.content,
           isUser,
           isThinking: !isUser && ['queued', 'streaming'].includes(String(message.status || '')),
-          isHitlRequest,
-          isHitlAnswer,
-          hitlPrompt: isHitlRequest ? ragTrace?.hitl_prompt || message.content : undefined,
-          hitlOptions: isHitlRequest ? ragTrace?.hitl_options || [] : undefined,
-          hitlResumeText: resumeTextForMessage,
+          isHitlRequest: false,
+          isHitlAnswer: false,
           ragTrace,
         };
       });
     },
 
-    mergeCachedSessionsIntoHistory() {
-      const sessionStore = useSessionStore();
+    mergeCachedThreadsIntoHistory() {
+      const threadStore = useThreadStore();
       const runsStore = useRunsStore();
-      sessionStore.sessions.forEach((session) => {
-        const run = runsStore.activeForThread(session.thread_id);
-        const creating = Boolean(runsStore.pendingCreates[session.thread_id]);
-        if (creating) sessionStore.setRunView(session.thread_id, null, 'creating');
-        else if (run) sessionStore.setRunView(session.thread_id, run.runId, run.status);
+      threadStore.threads.forEach((thread) => {
+        const run = runsStore.activeForThread(thread.thread_id);
+        const creating = Boolean(runsStore.pendingCreates[thread.thread_id]);
+        if (creating) threadStore.setRunView(thread.thread_id, null, 'creating');
+        else if (run) threadStore.setRunView(thread.thread_id, run.runId, run.status);
       });
 
-      Object.entries(this.messagesBySession).forEach(([sessionId, messages]) => {
-        const existing = sessionStore.threadById(sessionId);
+      Object.entries(this.messagesByThread).forEach(([threadId, messages]) => {
+        const existing = threadStore.threadById(threadId);
         if (!existing || !messages.length) return;
-        const localTitle = this.getLocalSessionTitle(sessionId, messages);
-        if (!existing.title || existing.title === sessionId || existing.title === '新对话') {
+        const localTitle = this.getLocalThreadTitle(threadId, messages);
+        if (!existing.title || existing.title === threadId || existing.title === '新对话') {
           existing.title = localTitle;
         }
         existing.message_count = Math.max(existing.message_count, messages.length);
@@ -296,13 +275,13 @@ export const useChatStore = defineStore('chat', {
     },
 
     projectRunState(run: RunEventState) {
-      const sessionStore = useSessionStore();
-      sessionStore.setRunView(
+      const threadStore = useThreadStore();
+      threadStore.setRunView(
         run.threadId,
         run.terminal ? null : run.runId,
         run.terminal ? null : run.status
       );
-      const messages = this.ensureSessionMessages(run.threadId);
+      const messages = this.ensureThreadMessages(run.threadId);
       const assistant = messages.find(
         (message) =>
           !message.isUser &&
@@ -360,8 +339,8 @@ export const useChatStore = defineStore('chat', {
           assistant.text = appendPublicError('', getPublicError(run.error));
         }
       }
-      if (this.sessionId === run.threadId) this.messages = messages;
-      this.mergeCachedSessionsIntoHistory();
+      if (this.threadId === run.threadId) this.messages = messages;
+      this.mergeCachedThreadsIntoHistory();
     },
 
     attachRunProjection(runId: string, threadId: string) {
@@ -378,36 +357,30 @@ export const useChatStore = defineStore('chat', {
       stops.set(runId, stop);
     },
 
-    appendRunConnectionError(runId: string, error: unknown) {
-      const publicError = getPublicError(error);
-      const run = useRunsStore().byId[runId];
-      if (!run || run.terminal || run.status === 'waiting_input') return;
-      const assistant = this.ensureSessionMessages(run.threadId).find(
-        (message) => !message.isUser && message.runId === runId
-      );
-      if (!assistant) return;
-      assistant.isThinking = false;
-      assistant.status = 'failed';
-      assistant.text = appendPublicError(assistant.text, publicError);
-    },
-
     async connectRun(runId: string, token: string) {
       try {
         await useRunsStore().connect(runId, token);
-      } catch (error) {
-        this.appendRunConnectionError(runId, error);
+      } catch {
+        // Transport state is projected separately; only terminal Run Events may
+        // change the authoritative Message lifecycle.
       } finally {
         const run = useRunsStore().byId[runId];
         if (run) this.projectRunState(run);
       }
     },
 
-    async restoreRunsForSession(sessionId: string) {
+    async reconnectCurrentRun() {
+      const run = useRunsStore().activeForThread(this.threadId);
+      if (!run || run.terminal || run.status === 'waiting_input') return;
+      await this.connectRun(run.runId, useAuthStore().token);
+    },
+
+    async restoreRunsForThread(threadId: string) {
       const authStore = useAuthStore();
       const runsStore = useRunsStore();
       const runIds = Array.from(
         new Set(
-          this.ensureSessionMessages(sessionId)
+          this.ensureThreadMessages(threadId)
             .filter(
               (message) =>
                 !message.isUser &&
@@ -419,7 +392,7 @@ export const useChatStore = defineStore('chat', {
       );
 
       for (const runId of runIds) {
-        this.attachRunProjection(runId, sessionId);
+        this.attachRunProjection(runId, threadId);
         try {
           const run = await runsStore.replay(runId, authStore.token);
           this.projectRunState(run);
@@ -427,48 +400,56 @@ export const useChatStore = defineStore('chat', {
             void this.connectRun(runId, authStore.token);
           }
         } catch (error) {
-          this.appendRunConnectionError(runId, error);
+          const run = runsStore.ensure(runId, threadId);
+          runsStore.setTransport(runId, 'closed', 0, error);
+          this.projectRunState(run);
         }
       }
     },
 
-    async loadSession(sessionId: string) {
-      const sessionStore = useSessionStore();
-      const cachedMessages = this.messagesBySession[sessionId];
-      this.setViewedSession(sessionId, cachedMessages || []);
-      sessionStore.showHistorySidebar = false;
+    async loadThread(threadId: string) {
+      const threadStore = useThreadStore();
+      const cachedMessages = this.messagesByThread[threadId];
+      this.setViewedThread(threadId, cachedMessages || []);
+      threadStore.showHistorySidebar = false;
+      this.loadingThreadId = threadId;
+      this.threadLoadError = '';
 
       try {
-        const response = await getThreadMessages(sessionId, { limit: 200 });
+        const response = await getThreadMessages(threadId, { limit: 200 });
         const loadedMessages = this.mapServerMessages(response.messages || []);
-        this.messagePagesBySession[sessionId] = {
+        this.messagePagesByThread[threadId] = {
           previousCursor: response.previous_cursor,
           hasOlder: response.previous_cursor !== null,
           loadingOlder: false,
         };
-        this.setViewedSession(sessionId, loadedMessages);
-        this.mergeCachedSessionsIntoHistory();
-        await this.restoreRunsForSession(sessionId);
+        this.setViewedThread(threadId, loadedMessages);
+        this.mergeCachedThreadsIntoHistory();
+        await this.restoreRunsForThread(threadId);
       } catch (error) {
-        if (!cachedMessages && this.sessionId === sessionId) this.messages = [];
-        if (cachedMessages) await this.restoreRunsForSession(sessionId);
-        throw getPublicError(error);
+        const publicError = getPublicError(error);
+        this.threadLoadError = publicError.message;
+        if (!cachedMessages && this.threadId === threadId) this.messages = [];
+        if (cachedMessages) await this.restoreRunsForThread(threadId);
+        throw publicError;
+      } finally {
+        if (this.loadingThreadId === threadId) this.loadingThreadId = '';
       }
     },
 
     async loadOlderMessages() {
-      const sessionId = this.sessionId;
-      if (!sessionId) return;
-      const page = this.ensureMessagePage(sessionId);
+      const threadId = this.threadId;
+      if (!threadId) return;
+      const page = this.ensureMessagePage(threadId);
       if (!page.hasOlder || page.loadingOlder || page.previousCursor === null) return;
 
       page.loadingOlder = true;
       try {
-        const response = await getThreadMessages(sessionId, {
+        const response = await getThreadMessages(threadId, {
           before: page.previousCursor,
           limit: 200,
         });
-        const current = this.ensureSessionMessages(sessionId);
+        const current = this.ensureThreadMessages(threadId);
         const seen = new Set(current.map(messageIdentity));
         const older = this.mapServerMessages(response.messages || []).filter(
           (message) => !seen.has(messageIdentity(message))
@@ -478,8 +459,8 @@ export const useChatStore = defineStore('chat', {
           if (right.sequence === undefined) return -1;
           return left.sequence - right.sequence;
         });
-        this.messagesBySession[sessionId] = merged;
-        if (this.sessionId === sessionId) this.messages = merged;
+        this.messagesByThread[threadId] = merged;
+        if (this.threadId === threadId) this.messages = merged;
         page.previousCursor = response.previous_cursor;
         page.hasOlder = response.previous_cursor !== null;
       } catch (error) {
@@ -491,18 +472,18 @@ export const useChatStore = defineStore('chat', {
 
     async createNewThread(title?: string) {
       if (this.isCreatingThread) return null;
-      const selectedBeforeCreate = this.sessionId;
+      const selectedBeforeCreate = this.threadId;
       this.isCreatingThread = true;
       try {
-        const thread = await useSessionStore().createSession(title);
-        this.messagesBySession[thread.thread_id] = [];
-        this.messagePagesBySession[thread.thread_id] = {
+        const thread = await useThreadStore().createThread(title);
+        this.messagesByThread[thread.thread_id] = [];
+        this.messagePagesByThread[thread.thread_id] = {
           previousCursor: null,
           hasOlder: false,
           loadingOlder: false,
         };
-        if (this.sessionId === selectedBeforeCreate) {
-          this.setViewedSession(thread.thread_id);
+        if (this.threadId === selectedBeforeCreate) {
+          this.setViewedThread(thread.thread_id);
         }
         return thread;
       } finally {
@@ -512,8 +493,8 @@ export const useChatStore = defineStore('chat', {
 
     async handleNewChat() {
       this.userInput = '';
-      this.setViewedSession('', []);
-      useSessionStore().showHistorySidebar = false;
+      this.setViewedThread('', []);
+      useThreadStore().showHistorySidebar = false;
       try {
         await this.createNewThread();
       } catch (error) {
@@ -522,14 +503,14 @@ export const useChatStore = defineStore('chat', {
     },
 
     async handleClearChat() {
-      const threadId = this.sessionId;
+      const threadId = this.threadId;
       if (!threadId) {
         await this.handleNewChat();
         return;
       }
       if (
         useRunsStore().activeForThread(threadId) ||
-        useSessionStore().threadById(threadId)?.isStreaming
+        useThreadStore().threadById(threadId)?.isStreaming
       ) {
         alert('当前会话仍有活跃运行，请先终止或等待完成后再清空');
         return;
@@ -537,9 +518,9 @@ export const useChatStore = defineStore('chat', {
       if (!confirm('确定要永久删除当前对话吗？喵？')) return;
 
       try {
-        await useSessionStore().deleteSession(threadId);
-        this.removeSessionState(threadId);
-        this.setViewedSession('', []);
+        await useThreadStore().deleteThread(threadId);
+        this.removeThreadState(threadId);
+        this.setViewedThread('', []);
         await this.createNewThread();
       } catch (error) {
         alert(getPublicError(error).message);
@@ -548,7 +529,7 @@ export const useChatStore = defineStore('chat', {
 
     handleStop() {
       const runsStore = useRunsStore();
-      const activeRun = runsStore.activeForThread(this.sessionId);
+      const activeRun = runsStore.activeForThread(this.threadId);
       if (!activeRun || activeRun.status === 'cancelling') return;
       void runsStore.cancel(activeRun.runId, useAuthStore().token).catch((error) => {
         alert(getPublicError(error).message);
@@ -557,7 +538,7 @@ export const useChatStore = defineStore('chat', {
 
     async resumeHitl(hitl: HitlRequest, answer: string) {
       if (!hitl.runId || !hitl.hitlToken) {
-        alert('这条旧版人工介入记录无法原地恢复，请新建问题重试。');
+        alert('当前补充请求缺少可恢复的 Run 身份，请刷新对话后重试。');
         return;
       }
       const authStore = useAuthStore();
@@ -570,7 +551,7 @@ export const useChatStore = defineStore('chat', {
 
       this.userInput = '';
       this.attachRunProjection(hitl.runId, run.threadId);
-      const assistant = this.ensureSessionMessages(run.threadId).find(
+      const assistant = this.ensureThreadMessages(run.threadId).find(
         (message) => !message.isUser && message.runId === hitl.runId
       );
       if (assistant) {
@@ -598,7 +579,7 @@ export const useChatStore = defineStore('chat', {
 
     async handleSend() {
       const authStore = useAuthStore();
-      const sessionStore = useSessionStore();
+      const threadStore = useThreadStore();
       const runsStore = useRunsStore();
       if (!authStore.isAuthenticated) {
         alert('请先登录');
@@ -617,7 +598,7 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
-      let threadId = this.sessionId;
+      let threadId = this.threadId;
       if (!threadId) {
         try {
           const thread = await this.createNewThread(text.replace(/\s+/g, ' ').slice(0, 32));
@@ -629,7 +610,7 @@ export const useChatStore = defineStore('chat', {
           return;
         }
       }
-      const messages = this.ensureSessionMessages(threadId);
+      const messages = this.ensureThreadMessages(threadId);
       const userMessage: Message = {
         text,
         isUser: true,
@@ -646,22 +627,22 @@ export const useChatStore = defineStore('chat', {
         _groupedSteps: [],
       };
       messages.push(userMessage, assistantMessage);
-      if (this.sessionId === threadId) this.messages = messages;
+      if (this.threadId === threadId) this.messages = messages;
       this.userInput = '';
-      this.mergeCachedSessionsIntoHistory();
+      this.mergeCachedThreadsIntoHistory();
 
       try {
-        const session = sessionStore.sessions.find((item) => item.thread_id === threadId);
+        const thread = threadStore.threads.find((item) => item.thread_id === threadId);
         const createPromise = runsStore.create({
           threadId,
           message: text,
           token: authStore.token,
-          expectedThreadVersion: session?.version,
+          expectedThreadVersion: thread?.version,
           multitaskStrategy: 'reject',
           onDisconnect: 'continue',
           approvedTools: [],
         });
-        this.mergeCachedSessionsIntoHistory();
+        this.mergeCachedThreadsIntoHistory();
         const created = await createPromise;
         const runId = created.response.run.id;
         userMessage.id = created.response.run.user_message_id;
@@ -669,7 +650,7 @@ export const useChatStore = defineStore('chat', {
         assistantMessage.id = created.response.run.assistant_message_id;
         assistantMessage.runId = runId;
         assistantMessage.status = created.response.run.status;
-        if (session) session.version = created.response.thread_version;
+        if (thread) thread.version = created.response.thread_version;
         this.attachRunProjection(runId, threadId);
         this.projectRunState(created.state);
         await this.connectRun(runId, authStore.token);
@@ -679,21 +660,21 @@ export const useChatStore = defineStore('chat', {
         assistantMessage.status = 'failed';
         assistantMessage.text = appendPublicError(assistantMessage.text, publicError);
       } finally {
-        this.mergeCachedSessionsIntoHistory();
+        this.mergeCachedThreadsIntoHistory();
       }
     },
 
-    removeSessionState(sessionId: string) {
+    removeThreadState(threadId: string) {
       const runsStore = useRunsStore();
       Object.values(runsStore.byId)
-        .filter((run) => run.threadId === sessionId)
+        .filter((run) => run.threadId === threadId)
         .forEach((run) => {
           projectionMap(this).get(run.runId)?.();
           projectionMap(this).delete(run.runId);
           runsStore.remove(run.runId);
         });
-      delete this.messagesBySession[sessionId];
-      delete this.messagePagesBySession[sessionId];
+      delete this.messagesByThread[threadId];
+      delete this.messagePagesByThread[threadId];
     },
   },
 });

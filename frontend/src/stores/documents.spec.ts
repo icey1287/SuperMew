@@ -100,9 +100,7 @@ describe('document upload polling', () => {
     const store = useDocumentStore();
     store.stopUploadJobPolling();
     store.stopAllDeleteJobPolling();
-    Object.keys(store.deleteRemoveTimers).forEach((filename) =>
-      store.clearDeleteRemovalTimer(filename)
-    );
+    vi.unstubAllGlobals();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -259,11 +257,11 @@ describe('document upload polling', () => {
     expect(api.get).toHaveBeenCalledWith('/documents/delete/jobs/delete-job-1');
   });
 
-  it('restores cleanup dead-letter metadata without polling', async () => {
+  it('restores physical cleanup failure metadata without polling', async () => {
     const store = useDocumentStore();
     const cleanupPending = createDeleteJob({
-      status: 'cleanup_pending',
-      message: '文档已不可检索，物理清理进入 dead-letter',
+      status: 'cleanup_failed',
+      message: '文档已不可检索，但物理清理失败，需要管理员受控重试',
       dead_letter_job_ids: ['cleanup-1', 'cleanup-2'],
     });
     vi.mocked(api.get).mockResolvedValue({ data: [cleanupPending] });
@@ -271,12 +269,45 @@ describe('document upload polling', () => {
     await store.restoreDurableDeleteJobs();
 
     expect(store.deleteJobs['guide.pdf']).toMatchObject({
-      status: 'cleanup_pending',
+      status: 'cleanup_failed',
       deadLetterJobIds: ['cleanup-1', 'cleanup-2'],
     });
     expect(store.deletePollTimers['guide.pdf']).toBeUndefined();
     expect(store.documents.some((document) => document.filename === 'guide.pdf')).toBe(true);
     expect(api.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('locks duplicate document deletion as soon as the first request starts', async () => {
+    const store = useDocumentStore();
+    const confirmSpy = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirmSpy);
+    let resolveDelete: ((value: any) => void) | undefined;
+    vi.mocked(api.delete).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDelete = resolve;
+        })
+    );
+
+    const first = store.deleteDocument('guide.pdf');
+    const duplicate = store.deleteDocument('guide.pdf');
+
+    expect(store.deleteJobs['guide.pdf']).toMatchObject({
+      status: 'running',
+      message: '正在提交删除任务...',
+    });
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(api.delete).toHaveBeenCalledTimes(1);
+
+    resolveDelete?.({
+      data: {
+        job_id: 'delete-job-1',
+        message: '文档已从检索目录撤销，物理清理已进入持久化队列',
+      },
+    });
+    await first;
+    await duplicate;
+    expect(api.delete).toHaveBeenCalledTimes(1);
   });
 
   it('does not restore an old retirement over a newer reupload', async () => {
@@ -328,7 +359,7 @@ describe('document upload polling', () => {
     });
 
     await store.restoreDurableDeleteJobs();
-    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
 
     expect(store.deleteJobs['guide.pdf']).toBeUndefined();
     expect(store.documents).toHaveLength(1);
@@ -417,6 +448,7 @@ describe('document upload polling', () => {
     const retryingJob = createUploadJob({
       status: 'retry_wait',
       message: '候选向量写入暂时失败，等待重试',
+      next_retry_at: '2026-07-17T10:30:00Z',
     });
     const stagedJob = createUploadJob({
       status: 'staged',
@@ -435,7 +467,8 @@ describe('document upload polling', () => {
     store.startUploadJobPolling('job_upload_1');
     await flushPromises();
 
-    expect(store.uploadProgress).toBe('候选向量写入暂时失败，等待重试');
+    expect(store.uploadProgress).toContain('候选向量写入暂时失败，等待重试');
+    expect(store.uploadProgress).toContain('下次重试');
     expect(store.uploadPollTimer).not.toBeNull();
     expect(store.isUploading).toBe(true);
 
@@ -445,6 +478,40 @@ describe('document upload polling', () => {
     expect(store.uploadProgress).toBe('候选索引已核验，等待原子发布');
     expect(store.uploadPollTimer).not.toBeNull();
     expect(store.isUploading).toBe(true);
+  });
+
+  it('keeps tracking an upload when only progress transport fails', async () => {
+    const store = useDocumentStore();
+    vi.mocked(api.get).mockRejectedValue(new TypeError('offline'));
+
+    store.isUploading = true;
+    store.startUploadJobPolling('job_upload_1');
+    await flushPromises();
+
+    expect(store.isUploading).toBe(true);
+    expect(store.uploadPollTimer).not.toBeNull();
+    expect(store.uploadProgress).toContain('后台任务仍在继续');
+    expect(store.uploadProgress).toContain('自动重试');
+  });
+
+  it('keeps tracking a deletion when only progress transport fails', async () => {
+    const store = useDocumentStore();
+    store.setDeleteJob('guide.pdf', {
+      jobId: 'delete-job-1',
+      status: 'running',
+      message: '正在清理',
+      collapsed: false,
+      steps: store.createDeleteSteps(),
+    });
+    vi.mocked(api.get).mockRejectedValue(new TypeError('offline'));
+
+    store.startDeleteJobPolling('guide.pdf', 'delete-job-1');
+    await flushPromises();
+
+    expect(store.deleteJobs['guide.pdf']).toMatchObject({ status: 'running' });
+    expect(store.deleteJobs['guide.pdf'].message).toContain('后台清理仍在继续');
+    expect(store.deleteJobs['guide.pdf'].message).toContain('自动重试');
+    expect(store.deletePollTimers['guide.pdf']).toBeDefined();
   });
 
   it.each(['failed', 'cancelled', 'dead_letter'] as const)(
@@ -502,7 +569,7 @@ describe('document upload polling', () => {
     expect(store.uploadProgress).not.toContain('进度查询失败');
   });
 
-  it('treats cleanup_pending as logically deleted and stops polling', async () => {
+  it('shows a physical cleanup failure immediately and stops polling', async () => {
     const store = useDocumentStore();
     store.setDeleteJob('guide.pdf', {
       jobId: 'delete-job-1',
@@ -514,8 +581,8 @@ describe('document upload polling', () => {
     vi.mocked(api.get).mockResolvedValue({
       data: {
         job_id: 'delete-job-1',
-        status: 'cleanup_pending',
-        message: '文档已撤销，物理索引清理待重试',
+        status: 'cleanup_failed',
+        message: '文档已撤销，但物理索引清理失败，需要管理员受控重试',
         steps: store.createDeleteSteps(),
       },
     });
@@ -523,10 +590,9 @@ describe('document upload polling', () => {
     store.startDeleteJobPolling('guide.pdf', 'delete-job-1');
     await flushPromises();
 
-    expect(store.deleteJobs['guide.pdf'].status).toBe('cleanup_pending');
+    expect(store.deleteJobs['guide.pdf'].status).toBe('cleanup_failed');
     expect(store.deletePollTimers['guide.pdf']).toBeUndefined();
-    expect(store.deleteRemoveTimers['guide.pdf']).toBeUndefined();
-    expect(store.isDeleteActionLocked('guide.pdf')).toBe(false);
+    expect(store.isDeleteActionLocked('guide.pdf')).toBe(true);
   });
 
   it('serializes delete polls and ignores an older job response', async () => {

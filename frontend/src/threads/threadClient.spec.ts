@@ -46,7 +46,7 @@ describe('thread client', () => {
     expect(api.post).toHaveBeenCalledWith('/v1/threads', { title: '第一条 Thread' });
   });
 
-  it('lists canonical Threads without using the legacy session route', async () => {
+  it('lists Threads through the canonical collection path', async () => {
     const threads = [threadSummary()];
     vi.mocked(api.get).mockResolvedValue({ data: { threads } });
 

@@ -3,28 +3,50 @@
     <section class="chat-area">
       <header class="chat-header">
         <div class="header-info">
-          <h1>{{ sessionTitle }}</h1>
+          <h1>{{ threadTitle }}</h1>
           <span class="header-status-line">
             <span class="status-dot"></span>
             <span>{{ generationStatus }}</span>
             <span>·</span>
-            <span>上下文已同步</span>
+            <span>{{ contextSyncLabel }}</span>
           </span>
         </div>
         <div class="chat-header-actions">
-          <button type="button" title="历史会话" aria-label="打开历史会话" @click="openHistory">
+          <button type="button" title="历史对话" aria-label="打开历史对话" @click="openHistory">
             <i class="fa-solid fa-clock-rotate-left"></i>
           </button>
           <button
             type="button"
             title="清空当前对话"
             aria-label="清空当前对话"
+            :disabled="threadStore.isDeletingThread(chatStore.threadId)"
             @click="chatStore.handleClearChat"
           >
             <i class="fa-regular fa-trash-can"></i>
           </button>
         </div>
       </header>
+
+      <div
+        v-if="chatStore.currentTransportError"
+        class="operation-notice operation-notice-action"
+        role="status"
+        aria-live="polite"
+      >
+        <span>
+          Run 状态连接已中断：{{ chatStore.currentTransportError.message }}。后台运行状态未被改写。
+        </span>
+        <button type="button" @click="chatStore.reconnectCurrentRun">重新连接</button>
+      </div>
+
+      <p
+        v-else-if="chatStore.threadLoadError"
+        class="operation-notice"
+        role="status"
+        aria-live="polite"
+      >
+        对话加载失败：{{ chatStore.threadLoadError }}
+      </p>
 
       <div class="chat-container" ref="chatContainerRef">
         <WelcomeScreen v-if="chatStore.messages.length === 0" />
@@ -73,18 +95,18 @@ import MessageItem from './MessageItem.vue';
 import ChatInput from './ChatInput.vue';
 import KnowledgeContextPanel from './KnowledgeContextPanel.vue';
 import { useChatStore } from '@/stores/chat';
-import { useSessionStore } from '@/stores/sessions';
+import { useThreadStore } from '@/stores/threads';
 import type { Message } from '@/types/chat';
 
 const chatStore = useChatStore();
-const sessionStore = useSessionStore();
+const threadStore = useThreadStore();
 const chatContainerRef = ref<HTMLDivElement | null>(null);
 const messageItemRefs = ref<any[]>([]);
 const preservingOlderScroll = ref(false);
 
-const sessionTitle = computed(() => {
-  const session = sessionStore.sessions.find((item) => item.thread_id === chatStore.sessionId);
-  if (session?.title) return session.title;
+const threadTitle = computed(() => {
+  const thread = threadStore.threads.find((item) => item.thread_id === chatStore.threadId);
+  if (thread?.title) return thread.title;
   const firstUserMessage = chatStore.messages.find(
     (message) => message.isUser && message.text.trim()
   );
@@ -95,7 +117,12 @@ const sessionTitle = computed(() => {
 
 const generationStatus = computed(() => {
   if (chatStore.isCreatingThread) return '正在创建对话';
+  if (chatStore.loadingThreadId && chatStore.loadingThreadId === chatStore.threadId) {
+    return '正在加载对话';
+  }
+  if (chatStore.isResumingHitl) return '正在提交补充';
   if (chatStore.currentTransportStatus === 'reconnecting') return '连接恢复中';
+  if (chatStore.currentTransportError) return '运行状态连接中断';
   if (chatStore.currentRunStatus === 'creating') return '正在创建运行';
   if (['queued', 'pending'].includes(chatStore.currentRunStatus || '')) return '运行已排队';
   if (chatStore.currentRunStatus === 'cancelling') return '正在终止运行';
@@ -103,6 +130,14 @@ const generationStatus = computed(() => {
   if (chatStore.currentRunStatus === 'waiting_input') return '等待你的补充';
   if (chatStore.currentPendingHitl) return '等待你的补充';
   return '喵喵在线';
+});
+
+const contextSyncLabel = computed(() => {
+  if (chatStore.currentTransportError) return '上下文待重新同步';
+  if (chatStore.loadingThreadId && chatStore.loadingThreadId === chatStore.threadId) {
+    return '上下文同步中';
+  }
+  return '上下文已同步';
 });
 
 const messageKey = (message: Message, index: number) => {
@@ -138,10 +173,10 @@ const scrollToChunk = async (msgIndex: number, chunkIndex: number) => {
 
 const openHistory = async () => {
   chatStore.activeNav = 'history';
-  sessionStore.showHistorySidebar = true;
+  threadStore.showHistorySidebar = true;
   try {
-    await sessionStore.fetchSessions();
-    chatStore.mergeCachedSessionsIntoHistory();
+    await threadStore.fetchThreads();
+    chatStore.mergeCachedThreadsIntoHistory();
   } catch (error: any) {
     alert(error.message);
   }
@@ -149,14 +184,14 @@ const openHistory = async () => {
 
 const loadOlderMessages = async () => {
   const container = chatContainerRef.value;
-  const threadId = chatStore.sessionId;
+  const threadId = chatStore.threadId;
   const previousHeight = container?.scrollHeight || 0;
   const previousTop = container?.scrollTop || 0;
   preservingOlderScroll.value = true;
   try {
     await chatStore.loadOlderMessages();
     await nextTick();
-    if (container && chatStore.sessionId === threadId) {
+    if (container && chatStore.threadId === threadId) {
       container.scrollTop = previousTop + Math.max(container.scrollHeight - previousHeight, 0);
     }
   } catch (error: any) {
@@ -175,7 +210,7 @@ watch(
 );
 
 watch(
-  () => chatStore.sessionId,
+  () => chatStore.threadId,
   () => nextTick(scrollToBottom)
 );
 

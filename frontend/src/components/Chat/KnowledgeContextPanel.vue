@@ -22,7 +22,7 @@
         <div class="context-card-heading">
           <div>
             <strong>本次 Agent 运行</strong>
-            <small>{{ shortSessionId }}</small>
+            <small>{{ shortThreadId }}</small>
           </div>
           <span v-if="totalDuration">{{ totalDuration }}</span>
         </div>
@@ -123,9 +123,9 @@ const latestMessage = computed(() => {
 const trace = computed(() => latestMessage.value?.ragTrace || null);
 const sources = computed(() => trace.value?.retrieved_chunks || []);
 const isRunning = computed(() =>
-  Boolean(latestMessage.value?.isThinking || chatStore.isViewingStreamingSession)
+  Boolean(latestMessage.value?.isThinking || chatStore.isViewingStreamingThread)
 );
-const shortSessionId = computed(() => chatStore.sessionId.replace('session_', '').slice(-8));
+const shortThreadId = computed(() => chatStore.threadId.replace('thread_', '').slice(-8));
 
 const statusLabel = computed(() => {
   if (isRunning.value) return '运行中';

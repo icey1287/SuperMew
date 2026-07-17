@@ -17,6 +17,15 @@
       </button>
     </header>
 
+    <p
+      v-if="documentStore.workspaceNotice"
+      class="operation-notice"
+      role="status"
+      aria-live="polite"
+    >
+      {{ documentStore.workspaceNotice }}
+    </p>
+
     <section class="settings-stats">
       <article>
         <span>文档总数</span>
@@ -63,7 +72,7 @@
         <div v-if="documentStore.documentsLoading" class="loading-indicator">
           <span class="loading-orb"><i class="fa-solid fa-spinner fa-spin"></i></span>
           <strong>正在同步知识库</strong>
-          <p>从 Milvus 读取文档与片段统计。</p>
+          <p>正在读取 Document Catalog 与当前版本统计。</p>
         </div>
 
         <div v-else-if="filteredDocuments.length === 0" class="empty-documents">

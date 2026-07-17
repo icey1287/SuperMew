@@ -16,7 +16,6 @@ export interface DocumentItem {
   embedding_model?: string;
   index_version?: string;
   vector_collection?: string;
-  storage_layout?: string;
   error_code?: string | null;
 }
 
@@ -78,12 +77,13 @@ export interface DeleteJob {
   current_step?: string;
   message: string;
   error?: string | null;
+  next_retry_at?: string | null;
   created_at?: string;
   updated_at?: string;
   steps: DeleteStep[];
 }
 
-export type DeleteJobStatus = 'running' | 'completed' | 'failed' | 'cleanup_pending';
+export type DeleteJobStatus = 'running' | 'completed' | 'failed' | 'cleanup_failed';
 
 export interface ActiveDeleteJob {
   jobId?: string;
@@ -92,6 +92,7 @@ export interface ActiveDeleteJob {
   deadLetterJobIds?: string[];
   createdAt?: string;
   updatedAt?: string;
+  nextRetryAt?: string | null;
   status: DeleteJobStatus;
   message: string;
   collapsed: boolean;

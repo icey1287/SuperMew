@@ -40,7 +40,7 @@ import AuthPanel from '@/components/AuthPanel.vue';
 
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
-import { useSessionStore } from '@/stores/sessions';
+import { useThreadStore } from '@/stores/threads';
 import { useRunsStore } from '@/stores/runs';
 
 const HistorySidebar = defineAsyncComponent(() => import('@/components/HistorySidebar.vue'));
@@ -51,7 +51,7 @@ const DocumentSettings = defineAsyncComponent(
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
-const sessionStore = useSessionStore();
+const threadStore = useThreadStore();
 const runsStore = useRunsStore();
 
 type Theme = 'dark' | 'light';
@@ -76,7 +76,7 @@ watch(
   (username, previousUsername) => {
     if (username === previousUsername) return;
     chatStore.resetWorkspace();
-    sessionStore.$reset();
+    threadStore.$reset();
   }
 );
 

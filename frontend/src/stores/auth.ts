@@ -46,6 +46,7 @@ export const useAuthStore = defineStore('auth', () => {
     admin_code: '',
   });
   const authLoading = ref(false);
+  const authNotice = ref('');
   let restorePromise: Promise<void> | null = null;
 
   const stopSessionSubscription = subscribeAuthSession((nextSession) => {
@@ -71,7 +72,11 @@ export const useAuthStore = defineStore('auth', () => {
     restorePromise = (async () => {
       try {
         await restoreAuthSession();
-      } catch {
+      } catch (error) {
+        const publicError = getPublicError(error);
+        if (publicError.code !== 'AUTHENTICATION_REQUIRED') {
+          authNotice.value = `登录状态恢复失败：${publicError.message}`;
+        }
         clearAuthSession();
       } finally {
         authResolved.value = true;
@@ -90,6 +95,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     authLoading.value = true;
+    authNotice.value = '';
     try {
       const endpoint = authMode.value === 'login' ? '/auth/login' : '/auth/register';
       const payload: AuthRequestPayload = { username, password };
@@ -116,10 +122,12 @@ export const useAuthStore = defineStore('auth', () => {
   async function handleLogout(): Promise<void> {
     if (authLoading.value) return;
     authLoading.value = true;
+    authNotice.value = '';
     try {
       await revokeRefreshSession();
-    } catch {
-      // Local sign-out is authoritative even when the revocation request cannot reach the server.
+    } catch (error) {
+      const publicError = getPublicError(error);
+      authNotice.value = `本机已退出，但服务端凭据撤销失败：${publicError.message}。系统会在下次打开页面时继续撤销。`;
     } finally {
       clearSession();
       authLoading.value = false;
@@ -133,6 +141,7 @@ export const useAuthStore = defineStore('auth', () => {
     authMode,
     authForm,
     authLoading,
+    authNotice,
     isAuthenticated,
     isAdmin,
     restoreSession,

@@ -7,23 +7,22 @@ export interface RetrievedChunk {
   rrf_rank?: number;
   rerank_score?: number | null;
   text?: string;
-  chunk_id?: string;
+  chunk_id: string;
   parent_chunk_id?: string;
   root_chunk_id?: string;
   chunk_level?: number;
   chunk_idx?: number;
-  document_id?: string;
-  document_version_id?: string;
-  section_id?: string;
-  index_version?: string;
-  content_hash?: string;
+  document_id: string;
+  document_version_id: string;
+  section_id: string;
+  index_version: string;
+  content_hash: string;
   merged_from_children?: boolean;
   merged_child_count?: number;
 }
 
 export interface RetrievalTargetTrace {
   collection_name: string;
-  storage_layout: 'versioned' | 'legacy_filename';
   required: boolean;
   mode: 'hybrid' | 'dense_fallback' | 'missing_optional';
   hit_count: number;

@@ -50,7 +50,7 @@
       ></textarea>
 
       <button
-        v-if="chatStore.isViewingStreamingSession"
+        v-if="chatStore.isViewingStreamingThread"
         type="button"
         class="send-btn stop-btn"
         title="终止回答"
@@ -66,7 +66,7 @@
         type="button"
         class="send-btn"
         :disabled="chatStore.isInputLocked"
-        :title="chatStore.isInputLocked ? '当前会话已有回答正在生成' : '发送'"
+        :title="chatStore.isInputLocked ? '当前对话正在处理操作' : '发送'"
         aria-label="发送消息"
         @click="onSend"
       >

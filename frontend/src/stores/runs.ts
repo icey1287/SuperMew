@@ -90,6 +90,7 @@ export const useRunsStore = defineStore('runs', {
     byId: {} as Record<string, RunEventState>,
     pendingCreates: {} as Record<string, PendingCreateAttempt>,
     pendingResumes: {} as Record<string, PendingResumeAttempt>,
+    resumeInFlight: {} as Record<string, boolean>,
   }),
   getters: {
     activeForThread: (state) => (threadId: string | null) => {
@@ -117,6 +118,8 @@ export const useRunsStore = defineStore('runs', {
       const run = state.byId[runId];
       return Boolean(run?.status === 'failed' && run.error?.retryable);
     },
+    isResumeInFlight: (state) => (runId: string | null | undefined) =>
+      Boolean(runId && state.resumeInFlight[runId]),
   },
   actions: {
     ensure(runId: string, threadId: string): RunEventState {
@@ -393,6 +396,7 @@ export const useRunsStore = defineStore('runs', {
         answer: command.answer,
         idempotencyKey,
       };
+      this.resumeInFlight = { ...this.resumeInFlight, [runId]: true };
 
       try {
         const response = await resumeRun(
@@ -409,6 +413,9 @@ export const useRunsStore = defineStore('runs', {
         return response;
       } catch (error) {
         throw getPublicError(error);
+      } finally {
+        const { [runId]: _finished, ...remaining } = this.resumeInFlight;
+        this.resumeInFlight = remaining;
       }
     },
 
@@ -452,6 +459,7 @@ export const useRunsStore = defineStore('runs', {
     remove(runId: string) {
       this.disconnect(runId);
       delete this.pendingResumes[runId];
+      delete this.resumeInFlight[runId];
       delete this.byId[runId];
     },
   },

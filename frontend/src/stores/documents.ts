@@ -27,9 +27,25 @@ const TERMINAL_UPLOAD_JOB_STATUSES = new Set<UploadJobStatus>([
 
 const RECOVERABLE_DELETE_JOB_STATUSES = new Set<DeleteJobStatus>([
   'running',
-  'cleanup_pending',
+  'cleanup_failed',
   'failed',
 ]);
+
+function retryMessage(message: string, nextRetryAt?: string | null): string {
+  if (!nextRetryAt) return message;
+  const timestamp = new Date(nextRetryAt);
+  if (Number.isNaN(timestamp.getTime())) return message;
+  const formatted = new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai',
+  }).format(timestamp);
+  return `${message}；下次重试：${formatted}`;
+}
 
 const jobTimestamp = (job: { updated_at?: string; created_at?: string }): number => {
   const value = Date.parse(job.created_at || job.updated_at || '');
@@ -56,6 +72,7 @@ export const useDocumentStore = defineStore('documents', {
   state: () => ({
     documents: [] as DocumentItem[],
     documentsLoading: false,
+    workspaceNotice: '',
     selectedFile: null as File | null,
     isUploading: false,
     uploadProgress: '',
@@ -65,7 +82,6 @@ export const useDocumentStore = defineStore('documents', {
     uploadPollTimer: null as any,
     deleteJobs: {} as Record<string, ActiveDeleteJob>,
     deletePollTimers: {} as Record<string, any>,
-    deleteRemoveTimers: {} as Record<string, any>,
   }),
 
   actions: {
@@ -140,6 +156,7 @@ export const useDocumentStore = defineStore('documents', {
 
     async loadDocuments() {
       this.documentsLoading = true;
+      this.workspaceNotice = '';
       try {
         const response = await api.get('/documents');
         this.documents = this.mergeDocumentsWithActiveDeletes(response.data.documents || []);
@@ -200,7 +217,6 @@ export const useDocumentStore = defineStore('documents', {
 
         if (this.isRetirementSupersededByLiveDocument(job)) {
           this.stopDeleteJobPolling(filename);
-          this.clearDeleteRemovalTimer(filename);
           const { [filename]: _stale, ...remaining } = this.deleteJobs;
           this.deleteJobs = remaining;
           return;
@@ -208,7 +224,7 @@ export const useDocumentStore = defineStore('documents', {
         if (job.status === 'completed') {
           if (this.deleteJobs[filename]) {
             this.syncDeleteJob(filename, job);
-            this.scheduleDeletedDocumentRemoval(filename);
+            void this.finalizeDeletedDocument(filename);
           }
           return;
         }
@@ -306,7 +322,7 @@ export const useDocumentStore = defineStore('documents', {
 
     syncUploadJob(job: UploadJob) {
       this.activeUploadJobId = job.job_id;
-      this.uploadProgress = job.message || '';
+      this.uploadProgress = retryMessage(job.message || '', job.next_retry_at);
       if (Array.isArray(job.steps)) {
         this.uploadSteps = job.steps.map((step: any) => ({
           key: step.key,
@@ -354,9 +370,8 @@ export const useDocumentStore = defineStore('documents', {
           }
         } catch (error: any) {
           if (this.activeUploadJobId !== jobId) return;
-          this.uploadProgress = '进度查询失败：' + (error.response?.data?.detail || error.message);
-          this.stopUploadJobPolling();
-          this.isUploading = false;
+          const detail = error.response?.data?.detail || error.message || '网络不可用';
+          this.uploadProgress = `进度连接中断：${detail}；后台任务仍在继续，1 秒后自动重试`;
         } finally {
           pollInFlight = false;
         }
@@ -380,14 +395,17 @@ export const useDocumentStore = defineStore('documents', {
 
     isDeleteActionLocked(filename: string): boolean {
       const job = this.deleteJobs[filename];
-      return !!(job && (job.status === 'running' || job.status === 'completed'));
+      return !!(
+        job &&
+        (job.status === 'running' || job.status === 'completed' || job.status === 'cleanup_failed')
+      );
     },
 
     getDeleteButtonIcon(filename: string): string {
       const job = this.deleteJobs[filename];
       if (job?.status === 'running') return 'fas fa-spinner fa-spin';
       if (job?.status === 'completed') return 'fas fa-check';
-      if (job?.status === 'cleanup_pending') return 'fas fa-triangle-exclamation';
+      if (job?.status === 'cleanup_failed') return 'fas fa-triangle-exclamation';
       return 'fas fa-trash';
     },
 
@@ -424,10 +442,11 @@ export const useDocumentStore = defineStore('documents', {
           : [],
         createdAt: job.created_at,
         updatedAt: job.updated_at,
+        nextRetryAt: job.next_retry_at,
         status: job.status,
-        message: job.message || '',
+        message: retryMessage(job.message || '', job.next_retry_at),
         collapsed:
-          job.status === 'completed' || job.status === 'cleanup_pending'
+          job.status === 'completed' || job.status === 'cleanup_failed'
             ? true
             : Boolean(current.collapsed),
         steps: Array.isArray(job.steps)
@@ -443,14 +462,13 @@ export const useDocumentStore = defineStore('documents', {
     },
 
     async deleteDocument(filename: string) {
-      if (this.isDeletingDocument(filename)) {
+      if (this.isDeleteActionLocked(filename)) {
         return;
       }
       if (!confirm(`确定要删除文档 "${filename}" 吗？这将同时删除 Milvus 中的所有相关向量。`)) {
         return;
       }
 
-      this.clearDeleteRemovalTimer(filename);
       this.setDeleteJob(filename, {
         status: 'running',
         message: '正在提交删除任务...',
@@ -500,8 +518,8 @@ export const useDocumentStore = defineStore('documents', {
 
           if (job.status === 'completed') {
             this.stopDeleteJobPolling(filename);
-            this.scheduleDeletedDocumentRemoval(filename);
-          } else if (job.status === 'cleanup_pending') {
+            void this.finalizeDeletedDocument(filename);
+          } else if (job.status === 'cleanup_failed') {
             this.stopDeleteJobPolling(filename);
           } else if (job.status === 'failed') {
             this.stopDeleteJobPolling(filename);
@@ -510,12 +528,11 @@ export const useDocumentStore = defineStore('documents', {
           if (this.deleteJobs[filename]?.jobId !== jobId) return;
           const errMsg = error.response?.data?.detail || error.message || '查询失败';
           this.setDeleteJob(filename, {
-            status: 'failed',
-            message: '删除进度查询失败：' + errMsg,
+            status: 'running',
+            message: `删除进度连接中断：${errMsg}；后台清理仍在继续，1 秒后自动重试`,
             collapsed: false,
             steps: this.deleteJobs[filename]?.steps || this.createDeleteSteps(),
           });
-          this.stopDeleteJobPolling(filename);
         } finally {
           pollInFlight = false;
         }
@@ -540,32 +557,16 @@ export const useDocumentStore = defineStore('documents', {
       Object.keys(this.deletePollTimers).forEach((filename) => this.stopDeleteJobPolling(filename));
     },
 
-    clearDeleteRemovalTimer(filename: string) {
-      const timer = this.deleteRemoveTimers[filename];
-      if (timer == null) return;
-      clearTimeout(timer);
-      const { [filename]: _, ...rest } = this.deleteRemoveTimers;
-      this.deleteRemoveTimers = rest;
-    },
-
-    scheduleDeletedDocumentRemoval(filename: string) {
-      this.clearDeleteRemovalTimer(filename);
-      const timer = setTimeout(async () => {
-        this.documents = this.documents.filter((doc) => doc.filename !== filename);
-        const { [filename]: _job, ...jobs } = this.deleteJobs;
-        const { [filename]: _timer, ...timers } = this.deleteRemoveTimers;
-        this.deleteJobs = jobs;
-        this.deleteRemoveTimers = timers;
-        try {
-          await this.loadDocuments();
-        } catch {
-          // Catalog 已经撤销该文档；列表刷新失败不应把删除终态改回失败。
-        }
-      }, 3000);
-      this.deleteRemoveTimers = {
-        ...this.deleteRemoveTimers,
-        [filename]: timer,
-      };
+    async finalizeDeletedDocument(filename: string) {
+      this.documents = this.documents.filter((doc) => doc.filename !== filename);
+      const { [filename]: _job, ...jobs } = this.deleteJobs;
+      this.deleteJobs = jobs;
+      try {
+        await this.loadDocuments();
+      } catch (error: any) {
+        const detail = error?.message || '目录刷新失败';
+        this.workspaceNotice = `文档已删除，但目录刷新失败：${detail}`;
+      }
     },
 
     toggleDeleteJobCollapsed(filename: string) {
