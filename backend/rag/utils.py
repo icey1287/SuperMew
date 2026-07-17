@@ -279,34 +279,18 @@ def _parent_matches_child_scope(parent: dict, child: dict) -> bool:
         return False
     if parent.get("filename") != child.get("filename"):
         return False
-    child_version = str(child.get("document_version_id") or "").strip()
-    if not child_version:
-        if any(
-            str(parent.get(field) or "").strip()
-            for field in (
-                "knowledge_base_id",
-                "document_id",
-                "document_version_id",
-            )
-        ):
+    for field in (
+        "tenant_id",
+        "knowledge_base_id",
+        "document_id",
+        "document_version_id",
+        "index_version",
+    ):
+        child_value = str(child.get(field) or "").strip()
+        parent_value = str(parent.get(field) or "").strip()
+        if not child_value or not parent_value or parent_value != child_value:
             return False
-        child_tenant = str(child.get("tenant_id") or "").strip()
-        parent_tenant = str(parent.get("tenant_id") or "").strip()
-        child_index = str(child.get("index_version") or "").strip()
-        parent_index = str(parent.get("index_version") or "").strip()
-        return (
-            not child_tenant or not parent_tenant or child_tenant == parent_tenant
-        ) and (not child_index or not parent_index or child_index == parent_index)
-    return all(
-        str(parent.get(field) or "").strip() == str(child.get(field) or "").strip()
-        for field in (
-            "tenant_id",
-            "knowledge_base_id",
-            "document_id",
-            "document_version_id",
-            "index_version",
-        )
-    )
+    return True
 
 
 def _merge_to_parent_level(
@@ -834,7 +818,6 @@ def retrieve_documents(
         target_results.append(
             {
                 "collection_name": target.collection_name,
-                "storage_layout": str(target.storage_layout),
                 "required": bool(target.required),
                 "mode": mode,
                 "hit_count": len(documents),

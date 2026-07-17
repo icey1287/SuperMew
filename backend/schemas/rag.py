@@ -1,55 +1,11 @@
 import re
 from typing import Any, List, Literal, Mapping, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrictSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class ChatStreamPublicError(StrictSchema):
-    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
-    message: str = Field(min_length=1)
-    retryable: bool
-    category: Optional[str] = None
-    stage: Optional[str] = None
-    provider: Optional[str] = None
-    retry_after: Optional[float] = Field(default=None, ge=0)
-    request_id: Optional[str] = None
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-def build_chat_stream_error_event(error: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the one legacy-SSE error envelope accepted by old and new clients."""
-
-    public = ChatStreamPublicError.model_validate(dict(error))
-    contract = public.model_dump()
-    compatibility = {
-        key: contract[key]
-        for key in (
-            "code",
-            "message",
-            "retryable",
-            "category",
-            "stage",
-            "provider",
-            "retry_after",
-            "request_id",
-        )
-    }
-    return {
-        "type": "error",
-        "error": contract,
-        **compatibility,
-        "error_code": public.code,
-        "content": f"[{public.code}] {public.message}",
-    }
-
-
-class ChatRequest(StrictSchema):
-    message: str
-    session_id: Optional[str] = "default_session"
 
 
 class RetrievedChunk(StrictSchema):
@@ -60,27 +16,20 @@ class RetrievedChunk(StrictSchema):
     score: Optional[float] = None
     rrf_rank: Optional[int] = None
     rerank_score: Optional[float] = None
-    chunk_id: Optional[str] = None
+    chunk_id: str
     parent_chunk_id: Optional[str] = None
     root_chunk_id: Optional[str] = None
     chunk_level: Optional[int] = None
     chunk_idx: Optional[int] = None
-    document_id: Optional[str] = None
-    document_version_id: Optional[str] = None
-    section_id: Optional[str] = None
-    index_version: Optional[str] = None
-    content_hash: Optional[str] = Field(
-        default=None,
+    document_id: str
+    document_version_id: str
+    section_id: str
+    index_version: str
+    content_hash: str = Field(
         pattern=r"^[0-9a-fA-F]{64}$",
     )
     merged_from_children: Optional[bool] = None
     merged_child_count: Optional[int] = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def require_versioned_manifest_hash(self) -> "RetrievedChunk":
-        if self.document_version_id and self.content_hash is None:
-            raise ValueError("versioned retrieved chunk requires content_hash")
-        return self
 
 
 class RetrievalTargetTrace(StrictSchema):
@@ -89,7 +38,6 @@ class RetrievalTargetTrace(StrictSchema):
         max_length=160,
         pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,159}$",
     )
-    storage_layout: Literal["versioned", "legacy_filename"]
     required: bool
     mode: Literal["hybrid", "dense_fallback", "missing_optional"]
     hit_count: int = Field(ge=0)
@@ -314,42 +262,3 @@ def normalize_rag_trace(trace: dict | None) -> Optional[dict]:
             if item is not None
         ]
     return RagTrace.model_validate(normalized).model_dump(exclude_none=True)
-
-
-class ChatResponse(StrictSchema):
-    response: str
-    rag_trace: Optional[RagTrace] = None
-
-
-class MessageInfo(StrictSchema):
-    id: Optional[int] = None
-    run_id: Optional[str] = None
-    sequence: Optional[int] = None
-    status: Optional[str] = None
-    type: str
-    content: str
-    timestamp: str
-    rag_trace: Optional[RagTrace] = None
-
-
-class SessionMessagesResponse(StrictSchema):
-    messages: List[MessageInfo]
-    next_cursor: Optional[int] = None
-
-
-class SessionInfo(StrictSchema):
-    session_id: str
-    title: Optional[str] = None
-    updated_at: str
-    message_count: int
-    version: Optional[int] = None
-    status: Optional[str] = None
-
-
-class SessionListResponse(StrictSchema):
-    sessions: List[SessionInfo]
-
-
-class SessionDeleteResponse(StrictSchema):
-    session_id: str
-    message: str

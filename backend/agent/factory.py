@@ -12,7 +12,7 @@ from backend.agent.context import AgentRuntimeContext, RuntimeBudget
 from backend.agent.middleware import build_default_middleware
 from backend.agent.models import ModelRegistry, ModelRole, model_registry
 from backend.agent.runtime import AgentRuntime
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AppSettings, SkillSettings, get_settings
 from backend.guardrails import (
@@ -267,13 +267,13 @@ class AgentRuntimeFactory:
 
     def create(
         self,
-        request_context: ChatRequestContext,
+        request_context: RunRequestContext,
         *,
         persistent_note: str = "",
         user_db_id: int | None = None,
         roles: frozenset[str] = frozenset({"user"}),
         tenant_id: str | None = None,
-        channel: str = "chat",
+        channel: str = "run",
         run_id: str | None = None,
         request_id: str | None = None,
         allowed_tools: frozenset[str] | None = None,
@@ -296,7 +296,7 @@ class AgentRuntimeFactory:
             if deadline_seconds is None
             else max(deadline_seconds, 0.0)
         )
-        effective_run_id = run_id or f"legacy-{uuid4().hex}"
+        effective_run_id = run_id or f"run_{uuid4().hex}"
         app_settings = getattr(self.settings, "app", None)
         effective_tenant_id = tenant_id or getattr(
             app_settings,
@@ -306,7 +306,7 @@ class AgentRuntimeFactory:
         if approval_grant is not None and not approval_grant.is_bound_to(
             user_id=request_context.user_id,
             tenant_id=effective_tenant_id,
-            thread_id=request_context.session_id,
+            thread_id=request_context.thread_id,
             run_id=effective_run_id,
         ):
             raise AppError(
@@ -327,7 +327,7 @@ class AgentRuntimeFactory:
         context = AgentRuntimeContext(
             request_context=request_context,
             user_id=request_context.user_id,
-            thread_id=request_context.session_id,
+            thread_id=request_context.thread_id,
             user_db_id=user_db_id,
             roles=frozenset(roles),
             tenant_id=effective_tenant_id,

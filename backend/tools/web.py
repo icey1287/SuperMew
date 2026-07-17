@@ -6,7 +6,7 @@ from typing import Protocol
 
 from langchain_core.tools import BaseTool, tool
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.tools.contracts import ToolResultV1, new_tool_failure, new_tool_success
 from backend.web_research.contracts import WebResearchResult
 
@@ -88,7 +88,7 @@ def _web_failure(error: Exception) -> ToolResultV1 | None:
 
 
 def make_web_search(
-    ctx: ChatRequestContext,
+    ctx: RunRequestContext,
     *,
     default_results: int = 5,
 ) -> BaseTool:
@@ -119,7 +119,7 @@ def make_web_search(
     return web_search
 
 
-def make_web_fetch(ctx: ChatRequestContext) -> BaseTool:
+def make_web_fetch(ctx: RunRequestContext) -> BaseTool:
     """Build a request-owned fetch Adapter over search-minted capabilities."""
 
     @tool("web_fetch")

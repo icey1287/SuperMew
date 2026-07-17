@@ -35,11 +35,10 @@ document_retrieval_scope = DocumentRetrievalScope(document_catalog)
 
 def delete_document_transactionally(
     filename: str,
-    owner_id: int | None = None,
 ) -> DocumentRetirementOutcome:
     """原子撤销 Catalog scope，并把物理清理留给持久 worker。"""
 
-    return document_publication.retire(filename, owner_id=owner_id)
+    return document_publication.retire(filename)
 
 
 def ensure_upload_dir() -> None:

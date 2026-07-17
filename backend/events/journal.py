@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import (
-    ChatSession,
+    Thread,
     Run,
     RunEvent,
     TransactionOutbox,
@@ -101,15 +101,11 @@ class RunEventJournal:
                             "当前 worker 不再拥有该 Run 的事件写权限",
                             status_code=409,
                         )
-                thread = (
-                    db.query(ChatSession)
-                    .filter(ChatSession.id == run.thread_ref_id)
-                    .one()
-                )
+                thread = db.query(Thread).filter(Thread.id == run.thread_ref_id).one()
                 return append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=event_type,
                     data=data,
                 )
@@ -133,8 +129,8 @@ class RunEventJournal:
         db = self._session_factory()
         try:
             row = (
-                db.query(ChatSession.session_id)
-                .join(Run, Run.thread_ref_id == ChatSession.id)
+                db.query(Thread.thread_id)
+                .join(Run, Run.thread_ref_id == Thread.id)
                 .join(User, User.id == Run.user_id)
                 .filter(Run.id == run_id, User.username == username)
                 .first()
@@ -156,9 +152,9 @@ class RunEventJournal:
         db = self._session_factory()
         try:
             query = (
-                db.query(RunEvent, ChatSession.session_id)
+                db.query(RunEvent, Thread.thread_id)
                 .join(Run, Run.id == RunEvent.run_id)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .filter(RunEvent.run_id == run_id, RunEvent.sequence > max(after, 0))
             )
             if username is not None:

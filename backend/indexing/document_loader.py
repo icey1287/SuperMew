@@ -1,7 +1,6 @@
 """文档加载和分片服务"""
 
 import hashlib
-import os
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -172,10 +171,10 @@ class DocumentLoader:
         index: int,
         document_version_id: str = "",
     ) -> str:
-        legacy_chunk_id = f"{filename}::p{page_number}::l{level}::{index}"
+        chunk_path = f"{filename}::p{page_number}::l{level}::{index}"
         if not document_version_id:
-            return legacy_chunk_id
-        return f"{document_version_id}::{legacy_chunk_id}"
+            raise ValueError("document_version_id must not be empty")
+        return f"{document_version_id}::{chunk_path}"
 
     @staticmethod
     def _content_hash(text: str) -> str:
@@ -184,33 +183,16 @@ class DocumentLoader:
     @staticmethod
     def _artifact_metadata_for_page(
         raw_metadata: dict,
-        metadata: DocumentArtifactMetadata | None,
+        metadata: DocumentArtifactMetadata,
         page_number: int,
     ) -> dict:
-        if metadata is None:
-            tenant_id = (
-                _normalize_metadata_text(raw_metadata.get("tenant_id")) or "default"
-            )
-            knowledge_base_id = _normalize_metadata_text(
-                raw_metadata.get("knowledge_base_id")
-            )
-            document_id = _normalize_metadata_text(raw_metadata.get("document_id"))
-            document_version_id = _normalize_metadata_text(
-                raw_metadata.get("document_version_id")
-            )
-            index_version = (
-                _normalize_metadata_text(raw_metadata.get("index_version")) or "v1"
-            )
-            acl_tags = _normalize_acl_tags(raw_metadata.get("acl_tags"))
-            explicit_section_id = ""
-        else:
-            tenant_id = metadata.tenant_id
-            knowledge_base_id = metadata.knowledge_base_id
-            document_id = metadata.document_id
-            document_version_id = metadata.document_version_id
-            index_version = metadata.index_version
-            acl_tags = list(metadata.acl_tags)
-            explicit_section_id = metadata.section_id
+        tenant_id = metadata.tenant_id
+        knowledge_base_id = metadata.knowledge_base_id
+        document_id = metadata.document_id
+        document_version_id = metadata.document_version_id
+        index_version = metadata.index_version
+        acl_tags = list(metadata.acl_tags)
+        explicit_section_id = metadata.section_id
 
         section_id = (
             explicit_section_id
@@ -339,7 +321,7 @@ class DocumentLoader:
         file_path: str,
         filename: str,
         doc_type: str,
-        metadata: DocumentArtifactMetadata | None = None,
+        metadata: DocumentArtifactMetadata,
     ) -> list[dict]:
         if len(raw_docs) > self.max_pages:
             raise ValueError(f"文档页数超过限制（最多 {self.max_pages} 页）")
@@ -380,7 +362,7 @@ class DocumentLoader:
         file_path: str,
         filename: str,
         *,
-        metadata: DocumentArtifactMetadata | None = None,
+        metadata: DocumentArtifactMetadata,
     ) -> list[dict]:
         file_lower = filename.lower()
 
@@ -419,25 +401,3 @@ class DocumentLoader:
             )
         except Exception as e:
             raise Exception(f"处理文档失败: {str(e)}") from e
-
-    def load_documents_from_folder(self, folder_path: str) -> list[dict]:
-        all_documents = []
-
-        for filename in os.listdir(folder_path):
-            file_lower = filename.lower()
-            if not (
-                file_lower.endswith(".pdf")
-                or file_lower.endswith((".docx", ".doc"))
-                or file_lower.endswith((".xlsx", ".xls"))
-                or file_lower.endswith((".html", ".htm"))
-            ):
-                continue
-
-            file_path = os.path.join(folder_path, filename)
-            try:
-                documents = self.load_document(file_path, filename)
-                all_documents.extend(documents)
-            except Exception:
-                continue
-
-        return all_documents

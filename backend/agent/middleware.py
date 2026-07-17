@@ -365,7 +365,7 @@ class RequestContextMiddleware(AgentMiddleware):
         context = _runtime_context(runtime)
         if context.user_id != context.request_context.user_id:
             raise RuntimeError("Agent user_id does not match request context")
-        if context.thread_id != context.request_context.session_id:
+        if context.thread_id != context.request_context.thread_id:
             raise RuntimeError("Agent thread_id does not match request context")
         context.check_deadline()
         context.request_context.reset_knowledge_tool_budget()

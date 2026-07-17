@@ -45,28 +45,10 @@ def _runtime(
 
 def _catalog(
     *,
-    complete: bool,
-    state_exists: bool = True,
-    collection: str | None = None,
-    knowledge_base_name: str | None = None,
     worker_ready: bool = True,
 ):
     return SimpleNamespace(
-        legacy_adoption_state=lambda **_kwargs: SimpleNamespace(
-            complete=complete,
-            state_exists=state_exists,
-            legacy_collection=(
-                collection
-                if collection is not None
-                else health.milvus_manager.collection_name
-            ),
-            knowledge_base_name=(
-                knowledge_base_name
-                if knowledge_base_name is not None
-                else health.document_publication.config.knowledge_base_name
-            ),
-            fingerprint="a" * 64,
-        ),
+        current_index_fingerprint=lambda **_kwargs: "a" * 64,
         worker_readiness=lambda **_kwargs: SimpleNamespace(
             worker_kind="indexing",
             ready=worker_ready,
@@ -102,7 +84,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
                 "provider_runtime",
                 _runtime(running=True, embedding_ready=False, warmup=False),
             ),
-            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(health, "document_catalog", _catalog()),
         ):
             response = await health.ready()
 
@@ -116,27 +98,12 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
                 "provider_runtime",
                 _runtime(running=True, embedding_ready=False, warmup=True),
             ),
-            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(health, "document_catalog", _catalog()),
         ):
             response = await health.ready()
 
         self.assertEqual(503, response.status_code)
         self.assertEqual("not_ready", json.loads(response.body)["status"])
-
-    async def test_ready_fails_until_legacy_catalog_adoption_is_complete(self):
-        with (
-            patch.object(
-                health,
-                "provider_runtime",
-                _runtime(running=True, embedding_ready=True, warmup=True),
-            ),
-            patch.object(health, "document_catalog", _catalog(complete=False)),
-        ):
-            response = await health.ready()
-
-        payload = json.loads(response.body)
-        self.assertEqual(503, response.status_code)
-        self.assertFalse(payload["document_catalog"]["legacy_adoption_complete"])
 
     async def test_ready_fails_without_a_fresh_indexing_worker_heartbeat(self):
         with (
@@ -148,7 +115,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 health,
                 "document_catalog",
-                _catalog(complete=True, worker_ready=False),
+                _catalog(worker_ready=False),
             ),
         ):
             response = await health.ready()
@@ -175,7 +142,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
                 oldest_ready_at=None,
             )
 
-        catalog = _catalog(complete=True)
+        catalog = _catalog()
         catalog.worker_readiness = worker_readiness
         with (
             patch.object(
@@ -209,7 +176,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 health,
                 "document_catalog",
-                _catalog(complete=True, worker_ready=False),
+                _catalog(worker_ready=False),
             ),
         ):
             response = await health.ready()
@@ -223,7 +190,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
                 "provider_runtime",
                 _runtime(running=True, embedding_ready=True, warmup=True),
             ),
-            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(health, "document_catalog", _catalog()),
             patch.object(
                 health,
                 "get_sandbox_runtime",
@@ -270,7 +237,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         sql_runtime = SimpleNamespace(readiness=lambda: next(sql_snapshots))
         with (
             patch.object(health, "provider_runtime", runtime),
-            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(health, "document_catalog", _catalog()),
             patch.object(
                 health,
                 "get_sql_assistant_runtime",
@@ -316,7 +283,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         web_runtime = SimpleNamespace(readiness=lambda: next(snapshots))
         with (
             patch.object(health, "provider_runtime", runtime),
-            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(health, "document_catalog", _catalog()),
             patch.object(
                 health,
                 "get_web_research_runtime",
@@ -368,7 +335,7 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         sandbox_runtime = SimpleNamespace(readiness=lambda: next(snapshots))
         with (
             patch.object(health, "provider_runtime", runtime),
-            patch.object(health, "document_catalog", _catalog(complete=True)),
+            patch.object(health, "document_catalog", _catalog()),
             patch.object(
                 health,
                 "get_sandbox_runtime",
@@ -393,47 +360,9 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             payload["sandbox"],
         )
 
-    async def test_ready_is_read_only_and_fails_when_catalog_state_is_missing(self):
-        with (
-            patch.object(
-                health,
-                "provider_runtime",
-                _runtime(running=True, embedding_ready=True, warmup=True),
-            ),
-            patch.object(
-                health,
-                "document_catalog",
-                _catalog(complete=False, state_exists=False),
-            ),
-        ):
-            response = await health.ready()
-
-        payload = json.loads(response.body)
-        self.assertEqual(503, response.status_code)
-        self.assertFalse(payload["document_catalog"]["state_exists"])
-
-    async def test_ready_fails_when_adoption_target_does_not_match_runtime(self):
-        with (
-            patch.object(
-                health,
-                "provider_runtime",
-                _runtime(running=True, embedding_ready=True, warmup=True),
-            ),
-            patch.object(
-                health,
-                "document_catalog",
-                _catalog(complete=True, knowledge_base_name="typo-kb"),
-            ),
-        ):
-            response = await health.ready()
-
-        payload = json.loads(response.body)
-        self.assertEqual(503, response.status_code)
-        self.assertFalse(payload["document_catalog"]["legacy_target_matches"])
-
     async def test_ready_redacts_catalog_failure_as_unavailable(self):
         catalog = SimpleNamespace(
-            legacy_adoption_state=lambda **_kwargs: (_ for _ in ()).throw(
+            current_index_fingerprint=lambda **_kwargs: (_ for _ in ()).throw(
                 ConnectionError("postgres password=secret")
             )
         )

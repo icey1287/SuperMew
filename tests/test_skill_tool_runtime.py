@@ -14,7 +14,7 @@ from pydantic import Field
 from backend.agent.factory import AgentRuntimeFactory
 from backend.agent.models import ModelRole
 from backend.agent.runtime import AgentRuntimeInput
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.settings import AgentSettings, RunSettings
 from backend.core.errors import AppError, ErrorCode
 from backend.skills import SkillAccess, SkillPin, SkillRegistry
@@ -211,9 +211,9 @@ def test_factory_defaults_to_an_empty_tool_ceiling():
             {"AMAP_WEATHER_API", "AMAP_API_KEY"}
         ),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="factory-empty-default",
+        thread_id="factory-empty-default",
     )
     try:
         runtime = factory.create(request_context)
@@ -307,9 +307,9 @@ def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset({"SQL_ASSISTANT_DSN"}),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="admin",
-        session_id="sql-enabled",
+        thread_id="sql-enabled",
     )
     try:
         runtime = factory.create(
@@ -343,9 +343,9 @@ def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset(),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="admin",
-        session_id="sql-disabled",
+        thread_id="sql-disabled",
     )
     try:
         runtime = factory.create(
@@ -374,9 +374,9 @@ def test_factory_authorizes_web_only_with_configured_and_caller_secret():
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset({"BRAVE_SEARCH_API_KEY"}),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="web-enabled",
+        thread_id="web-enabled",
     )
     try:
         runtime = factory.create(
@@ -410,9 +410,9 @@ def test_factory_disabled_web_cannot_be_enabled_by_a_forged_secret_name():
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset(),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="web-disabled",
+        thread_id="web-disabled",
     )
     try:
         runtime = factory.create(
@@ -447,9 +447,9 @@ def test_factory_excludes_secret_gated_weather_and_sets_explicit_allowed_tools()
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset(),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="factory-no-secrets",
+        thread_id="factory-no-secrets",
     )
     try:
         runtime = factory.create(
@@ -481,9 +481,9 @@ def test_trusted_router_can_activate_a_pinned_skill_before_graph_creation():
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset(),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="router-skill",
+        thread_id="router-skill",
     )
     try:
         runtime = factory.create(
@@ -512,9 +512,9 @@ def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
         secret_names_provider=lambda _registry: frozenset(),
     )
 
-    unavailable_context = ChatRequestContext.for_sync(
+    unavailable_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="missing-skill",
+        thread_id="missing-skill",
     )
     try:
         with pytest.raises(AppError) as unavailable:
@@ -523,9 +523,9 @@ def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
         unavailable_context.close()
     assert unavailable.value.code is ErrorCode.POLICY_DENIED
 
-    drift_context = ChatRequestContext.for_sync(
+    drift_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="drifted-skill",
+        thread_id="drifted-skill",
     )
     try:
         with pytest.raises(AppError) as drifted:
@@ -686,9 +686,9 @@ async def test_slash_skill_activates_before_first_model_call_and_denies_forged_w
         skills=_load_project_skills(registry),
         secret_names_provider=lambda _registry: frozenset(),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="slash-skill",
+        thread_id="slash-skill",
     )
     runtime = factory.create(
         request_context,
@@ -781,9 +781,9 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
         skills=skills,
         secret_names_provider=lambda _registry: frozenset(),
     )
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="deferred-tool-search",
+        thread_id="deferred-tool-search",
     )
     runtime = factory.create(
         request_context,
@@ -837,13 +837,13 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
         skills=skills,
         secret_names_provider=lambda _registry: frozenset(),
     )
-    first_request_context = ChatRequestContext.for_sync(
+    first_request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="isolated-first",
+        thread_id="isolated-first",
     )
-    second_request_context = ChatRequestContext.for_sync(
+    second_request_context = RunRequestContext.for_sync(
         user_id="alice",
-        session_id="isolated-second",
+        thread_id="isolated-second",
     )
     first_runtime = factory.create(
         first_request_context,

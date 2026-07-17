@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, Run, RunEvent, ToolAudit, User, utcnow
+from backend.db.models import Base, Message, Run, RunEvent, ToolAudit, User, utcnow
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
@@ -61,9 +61,7 @@ class RunServiceTests(unittest.TestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == completed.id).one()
             message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("succeeded", run.status)
             self.assertEqual("answer", message.content)
@@ -213,8 +211,8 @@ class RunServiceTests(unittest.TestCase):
         self.assertEqual(RunStatus.PENDING, promoted.status)
         with self.Session() as db:
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == promoted.assistant_message_id)
+                db.query(Message)
+                .filter(Message.id == promoted.assistant_message_id)
                 .one()
             )
             self.assertEqual("streaming", assistant.status)
@@ -231,9 +229,7 @@ class RunServiceTests(unittest.TestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == claimed.id).one()
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("failed", run.status)
             self.assertEqual("incomplete", assistant.status)
@@ -305,9 +301,7 @@ class RunServiceTests(unittest.TestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == claimed.id).one()
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("运行已由用户取消。", assistant.content)
             self.assertEqual("incomplete", assistant.status)
@@ -361,8 +355,8 @@ class RunServiceTests(unittest.TestCase):
                 .all()
             )
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == waiting.assistant_message_id)
+                db.query(Message)
+                .filter(Message.id == waiting.assistant_message_id)
                 .one()
             )
             self.assertEqual(1, len(events))

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.schemas.chat import RagTrace
+from backend.schemas.rag import RagTrace
 from backend.threads.contracts import ThreadId
 
 

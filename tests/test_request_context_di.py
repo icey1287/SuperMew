@@ -1,32 +1,28 @@
 import asyncio
 import ast
 import importlib.util
-import sys
-import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
-from backend.chat.request_context import ChatRequestContext
-from backend.tools.knowledge import make_search_knowledge_base
+from backend.runs.request_context import RunRequestContext
 from backend.web_research.contracts import WebEvidence, WebResearchResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
+class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_request_contexts_do_not_share_rag_steps(self):
         queue_a = asyncio.Queue()
         queue_b = asyncio.Queue()
-        ctx_a = ChatRequestContext.for_stream(
+        ctx_a = RunRequestContext.for_stream(
             user_id="a",
-            session_id="s1",
+            thread_id="s1",
             output_queue=queue_a,
         )
-        ctx_b = ChatRequestContext.for_stream(
+        ctx_b = RunRequestContext.for_stream(
             user_id="b",
-            session_id="s2",
+            thread_id="s2",
             output_queue=queue_b,
         )
 
@@ -60,8 +56,8 @@ class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
             ctx_b.close()
 
     async def test_web_fetch_capabilities_are_request_owned_and_cannot_rebind(self):
-        ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
-        ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
+        ctx_a = RunRequestContext.for_sync(user_id="a", thread_id="s1")
+        ctx_b = RunRequestContext.for_sync(user_id="b", thread_id="s2")
         evidence = WebEvidence.create(
             canonical_url="https://research.dev/article",
             title="Research",
@@ -84,58 +80,14 @@ class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
 
 class KnowledgeToolFactoryTests(unittest.TestCase):
     def test_knowledge_tool_counter_is_per_context(self):
-        ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
-        ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
+        ctx_a = RunRequestContext.for_sync(user_id="a", thread_id="s1")
+        ctx_b = RunRequestContext.for_sync(user_id="b", thread_id="s2")
 
         try:
             self.assertTrue(ctx_a.acquire_knowledge_tool_slot())
             self.assertFalse(ctx_a.acquire_knowledge_tool_slot())
             self.assertTrue(ctx_b.acquire_knowledge_tool_slot())
             self.assertFalse(ctx_b.acquire_knowledge_tool_slot())
-        finally:
-            ctx_a.close()
-            ctx_b.close()
-
-    def test_tool_closure_records_trace_to_own_context(self):
-        fake_rag = types.ModuleType("backend.rag")
-        fake_rag.__path__ = []
-        fake_pipeline = types.ModuleType("backend.rag.pipeline")
-
-        def run_rag_graph(query, ctx):
-            return {
-                "docs": [
-                    {
-                        "filename": f"{query}.txt",
-                        "page_number": 1,
-                        "text": f"{query} body",
-                    }
-                ],
-                "rag_trace": {"query": query, "session_id": ctx.session_id},
-            }
-
-        fake_pipeline.run_rag_graph = run_rag_graph
-
-        ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
-        ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
-
-        try:
-            tool_a = make_search_knowledge_base(ctx_a)
-            tool_b = make_search_knowledge_base(ctx_b)
-
-            with patch.dict(
-                sys.modules,
-                {
-                    "backend.rag": fake_rag,
-                    "backend.rag.pipeline": fake_pipeline,
-                },
-            ):
-                output_a = tool_a.invoke({"query": "A"})
-                output_b = tool_b.invoke({"query": "B"})
-
-            self.assertIn("A.txt", output_a)
-            self.assertIn("B.txt", output_b)
-            self.assertEqual(ctx_a.take_rag_trace()["rag_trace"]["query"], "A")
-            self.assertEqual(ctx_b.take_rag_trace()["rag_trace"]["query"], "B")
         finally:
             ctx_a.close()
             ctx_b.close()

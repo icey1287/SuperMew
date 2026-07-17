@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.guardrails import (
     DestinationCapabilityBinding,
     GuardrailDecision,
@@ -30,7 +30,7 @@ def _request(**overrides: object) -> ToolGuardrailRequest:
         "active_skill": "web-research",
         "active_skill_registered": True,
         "active_skill_scope_allows": True,
-        "channel": "chat",
+        "channel": "run",
         "network_policy": "restricted",
         "destination_capability": None,
         "resource_scope": "public-web",
@@ -122,9 +122,9 @@ def test_chat_context_keeps_capability_internal_to_public_web_fetch_args() -> No
         retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
     )
     evidence_id = evidence.evidence_id
-    context = ChatRequestContext.for_sync(
+    context = RunRequestContext.for_sync(
         user_id="user-1",
-        session_id="thread-1",
+        thread_id="thread-1",
     )
     context.configure_guardrail_context(tenant_id="tenant-1", run_id="run-1")
     context.record_web_search_result(WebResearchResult.create([evidence]))
@@ -160,7 +160,7 @@ def test_chat_context_keeps_capability_internal_to_public_web_fetch_args() -> No
 
 
 def test_chat_context_rejects_security_context_rebinding() -> None:
-    context = ChatRequestContext.for_sync(user_id="user-1", session_id="thread-1")
+    context = RunRequestContext.for_sync(user_id="user-1", thread_id="thread-1")
     context.configure_guardrail_context(tenant_id="tenant-1", run_id="run-1")
 
     try:
@@ -186,7 +186,7 @@ def test_search_capability_commit_is_atomic_when_issuance_fails(monkeypatch) -> 
         content="Two",
         retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
     )
-    context = ChatRequestContext.for_sync(user_id="user-1", session_id="thread-1")
+    context = RunRequestContext.for_sync(user_id="user-1", thread_id="thread-1")
     context.configure_guardrail_context(tenant_id="tenant-1", run_id="run-1")
     original = RunDestinationCapabilityAuthority.issue
     calls = 0

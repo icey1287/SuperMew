@@ -4,15 +4,15 @@ from contextlib import contextmanager
 from threading import RLock
 from uuid import uuid4
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 
 
-_contexts: dict[str, ChatRequestContext] = {}
+_contexts: dict[str, RunRequestContext] = {}
 _lock = RLock()
 
 
 def register_rag_runtime_context(
-    context: ChatRequestContext,
+    context: RunRequestContext,
     context_id: str | None = None,
 ) -> str:
     resolved_id = context_id or f"ragctx_{uuid4().hex}"
@@ -28,7 +28,7 @@ def release_rag_runtime_context(context_id: str) -> None:
 
 @contextmanager
 def bind_rag_runtime_context(
-    context: ChatRequestContext,
+    context: RunRequestContext,
     context_id: str | None = None,
 ):
     resolved_id = register_rag_runtime_context(context, context_id)
@@ -38,7 +38,7 @@ def bind_rag_runtime_context(
         release_rag_runtime_context(resolved_id)
 
 
-def get_rag_runtime_context(context_id: str | None) -> ChatRequestContext | None:
+def get_rag_runtime_context(context_id: str | None) -> RunRequestContext | None:
     if not context_id:
         return None
     with _lock:

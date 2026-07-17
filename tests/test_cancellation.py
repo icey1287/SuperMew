@@ -8,9 +8,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, Run, RunEvent, User
+from backend.db.models import Base, Message, Run, RunEvent, User
 from backend.providers import ProviderCode, ProviderError, ProviderOperation
 from backend.runs.cancellation import CancellationRegistry, RunExecutionManager
 from backend.runs.repository import RunRepository
@@ -92,9 +92,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == claimed.id).one()
             message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             terminal_count = (
                 db.query(RunEvent)
@@ -255,7 +253,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(RunStatus.CANCELLED, response.status)
 
     async def test_closed_request_context_keeps_provider_cancellation_probe(self):
-        context = ChatRequestContext.for_sync(user_id="alice", session_id="thread-1")
+        context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
         context.configure_provider_runtime(cancellation_probe=lambda: True)
 
         context.close()
@@ -284,13 +282,15 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
                     max_attempts=3,
                 ) from cause
 
-        with self.assertLogs("backend.runs.cancellation", level="WARNING") as logs:
+        with patch("backend.runs.cancellation.logger.warning") as warning:
             await self.manager.execute(run=claimed, runner=runner)
 
-        self.assertIn("VECTOR_STORE_UNAVAILABLE", "\n".join(logs.output))
-        self.assertNotIn("secret milvus response body", "\n".join(logs.output))
-        for record in logs.records:
-            self.assertIsNone(record.exc_info)
+        warning.assert_called_once_with(
+            "Run execution failed run_id=%s error_code=%s",
+            claimed.id,
+            ErrorCode.VECTOR_STORE_UNAVAILABLE,
+        )
+        self.assertNotIn("secret milvus response body", str(warning.call_args))
 
         failed = self.service.get_run(username="alice", run_id=claimed.id)
         response = RunResponse.model_validate(failed.__dict__)
@@ -307,9 +307,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == claimed.id).one()
             message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             terminal = (
                 db.query(RunEvent)
@@ -356,15 +354,20 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(RunStatus.CANCELLING, cancelling.status)
 
-        release.set()
-        with self.assertLogs("backend.runs.cancellation", level="WARNING") as logs:
+        with patch("backend.runs.cancellation.logger.warning") as warning:
+            release.set()
             await task
 
         terminal = self.service.get_run(username="alice", run_id=claimed.id)
         self.assertEqual(RunStatus.CANCELLED, terminal.status)
         self.assertEqual("RUN_CANCELLED", terminal.error_code)
         self.assertEqual("运行已由用户取消。", terminal.error["message"])
-        self.assertNotIn("secret provider failure", "\n".join(logs.output))
+        warning.assert_called_once_with(
+            "Run execution failed run_id=%s error_code=%s",
+            claimed.id,
+            ErrorCode.MODEL_UNAVAILABLE,
+        )
+        self.assertNotIn("secret provider failure", str(warning.call_args))
         with self.Session() as db:
             self.assertEqual(
                 1,
@@ -385,7 +388,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
                 .count(),
             )
 
-    async def test_unknown_failure_keeps_legacy_run_execution_failed_code(self):
+    async def test_unknown_failure_uses_canonical_run_execution_failed_code(self):
         reservation = self.create()
         claimed = self.service.claim_run(
             run_id=reservation.run.id,

@@ -36,12 +36,6 @@ class ErrorContractTests(unittest.TestCase):
         self.assertEqual(ErrorCode.INTERNAL_ERROR, error.code)
         self.assertNotIn("secret upstream body", error.message)
 
-    def test_model_rate_limit_has_stable_code(self):
-        error = public_error_from_exception(RuntimeError("Error code: 429 raw payload"))
-        self.assertEqual(ErrorCode.MODEL_RATE_LIMITED, error.code)
-        self.assertEqual(429, error.status_code)
-        self.assertNotIn("raw payload", error.message)
-
     def test_provider_public_error_round_trips_without_raw_exception(self):
         error = public_error_from_exception(FakeProviderError())
         encoded = serialize_public_error(error)
@@ -55,21 +49,6 @@ class ErrorContractTests(unittest.TestCase):
         self.assertEqual(2.5, restored.retry_after)
         self.assertNotIn("secret", encoded)
         self.assertNotIn("token=abc", error_payload(error)["error"]["message"])
-
-    def test_retired_endpoint_round_trip_preserves_gone_status(self):
-        encoded = serialize_public_error(
-            PublicError(
-                code=ErrorCode.ENDPOINT_RETIRED,
-                message="接口已退役",
-                status_code=410,
-            )
-        )
-
-        restored = deserialize_public_error(encoded)
-
-        self.assertIsNotNone(restored)
-        self.assertEqual("ENDPOINT_RETIRED", restored.code)
-        self.assertEqual(410, restored.status_code)
 
     def test_http_handler_preserves_typed_fields_and_retry_after(self):
         app = FastAPI()

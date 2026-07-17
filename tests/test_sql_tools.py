@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.settings import SqlAssistantSettings
 from backend.sql_assistant.postgres import SqlAssistantError, SqlAssistantErrorCode
 from backend.tools.catalog import (
@@ -122,7 +122,7 @@ def test_sql_query_adapter_passes_run_deadline_and_cancellation(monkeypatch):
     def cancelled() -> bool:
         return False
 
-    ctx = ChatRequestContext.for_sync(user_id="admin", session_id="sql-query")
+    ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-query")
     ctx.configure_provider_runtime(
         deadline_at=1234.5,
         cancellation_probe=cancelled,
@@ -186,7 +186,7 @@ def test_sql_schema_adapter_passes_only_requested_qualified_tables(monkeypatch):
         "backend.tools.sql.get_sql_assistant_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="admin", session_id="sql-schema")
+    ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-schema")
     registry = build_default_tool_registry(sql_assistant_settings=_settings())
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_schema", "sql_query"})
@@ -211,7 +211,7 @@ def test_sql_runtime_exception_is_redacted_by_registry(monkeypatch):
         "backend.tools.sql.get_sql_assistant_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="admin", session_id="sql-failure")
+    ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-failure")
     registry = build_default_tool_registry(sql_assistant_settings=_settings())
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_query"})
@@ -238,7 +238,7 @@ def test_sql_runtime_stable_error_is_preserved_without_internal_message(monkeypa
         "backend.tools.sql.get_sql_assistant_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="admin", session_id="sql-timeout")
+    ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-timeout")
     registry = build_default_tool_registry(sql_assistant_settings=_settings())
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_query"})

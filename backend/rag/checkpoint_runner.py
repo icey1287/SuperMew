@@ -12,10 +12,10 @@ from langgraph.types import Command
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
-from backend.db.models import ChatMessage, ChatSession, Run, RunCheckpoint, User, utcnow
+from backend.db.models import Message, Thread, Run, RunCheckpoint, User, utcnow
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
@@ -162,11 +162,7 @@ class HitlCheckpointRepository:
                         status_code=409,
                     )
 
-                thread = (
-                    db.query(ChatSession)
-                    .filter(ChatSession.id == run.thread_ref_id)
-                    .one()
-                )
+                thread = db.query(Thread).filter(Thread.id == run.thread_ref_id).one()
                 hitl_token = f"hitl_{uuid4().hex}"
                 checkpoint = RunCheckpoint(
                     run_id=run.id,
@@ -187,8 +183,8 @@ class HitlCheckpointRepository:
                 run.updated_at = utcnow()
                 if run.assistant_message_id:
                     message = (
-                        db.query(ChatMessage)
-                        .filter(ChatMessage.id == run.assistant_message_id)
+                        db.query(Message)
+                        .filter(Message.id == run.assistant_message_id)
                         .first()
                     )
                     if message:
@@ -197,14 +193,14 @@ class HitlCheckpointRepository:
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.RUN_WAITING_INPUT,
                     data={"status": run.status},
                 )
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.HITL_REQUIRED,
                     data={
                         "hitl_token": hitl_token,
@@ -249,9 +245,9 @@ class HitlCheckpointRepository:
         try:
             with db.begin():
                 row = (
-                    db.query(RunCheckpoint, Run, ChatSession, User)
+                    db.query(RunCheckpoint, Run, Thread, User)
                     .join(Run, Run.id == RunCheckpoint.run_id)
-                    .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                    .join(Thread, Thread.id == Run.thread_ref_id)
                     .join(User, User.id == Run.user_id)
                     .filter(
                         Run.id == run_id,
@@ -331,7 +327,7 @@ class HitlCheckpointRepository:
                         append_event_in_session(
                             db,
                             run=run,
-                            thread_id=thread.session_id,
+                            thread_id=thread.thread_id,
                             event_type=RunEventType.RUN_STARTED,
                             data={
                                 "status": run.status,
@@ -371,8 +367,8 @@ class HitlCheckpointRepository:
                 run.updated_at = utcnow()
                 if run.assistant_message_id:
                     message = (
-                        db.query(ChatMessage)
-                        .filter(ChatMessage.id == run.assistant_message_id)
+                        db.query(Message)
+                        .filter(Message.id == run.assistant_message_id)
                         .first()
                     )
                     if message:
@@ -381,7 +377,7 @@ class HitlCheckpointRepository:
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.HITL_RESUMED,
                     data={
                         "checkpoint_id": checkpoint.checkpoint_id,
@@ -393,7 +389,7 @@ class HitlCheckpointRepository:
                     append_event_in_session(
                         db,
                         run=run,
-                        thread_id=thread.session_id,
+                        thread_id=thread.thread_id,
                         event_type=RunEventType.RUN_STARTED,
                         data={
                             "status": run.status,
@@ -503,7 +499,7 @@ class CheckpointedRagRunner:
         *,
         run_id: str,
         question: str,
-        context: ChatRequestContext,
+        context: RunRequestContext,
         worker_id: str,
         fencing_token: int,
     ) -> RagRunOutcome:
@@ -536,7 +532,7 @@ class CheckpointedRagRunner:
         hitl_token: str,
         answer: str,
         idempotency_key: str,
-        context: ChatRequestContext,
+        context: RunRequestContext,
         worker_id: str,
         preflight: ResumeAccessValidator,
     ) -> RagRunOutcome:
@@ -561,7 +557,7 @@ class CheckpointedRagRunner:
         *,
         run_id: str,
         consumed: ConsumedResume,
-        context: ChatRequestContext,
+        context: RunRequestContext,
         worker_id: str,
     ) -> RagRunOutcome:
         from backend.rag.pipeline import build_rag_graph

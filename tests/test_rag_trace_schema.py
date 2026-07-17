@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from backend.schemas.chat import HitlResumeState, RagTrace, normalize_rag_trace
+from backend.schemas.rag import HitlResumeState, RagTrace, normalize_rag_trace
 
 
 class RagTraceSchemaTests(unittest.TestCase):
@@ -56,15 +56,13 @@ class RagTraceSchemaTests(unittest.TestCase):
                 "retrieval_target_results": [
                     {
                         "collection_name": "embeddings_collection_catalog_v1",
-                        "storage_layout": "versioned",
                         "required": True,
                         "mode": "hybrid",
                         "hit_count": 3,
                         "raw_filter": "must-not-persist",
                     },
                     {
-                        "collection_name": "embeddings_collection",
-                        "storage_layout": "legacy_filename",
+                        "collection_name": "archive_catalog_v1",
                         "required": False,
                         "mode": "missing_optional",
                         "hit_count": 0,
@@ -111,20 +109,7 @@ class RagTraceSchemaTests(unittest.TestCase):
         self.assertEqual(3, chunk["chunk_level"])
         self.assertNotIn("private_metadata", chunk)
 
-    def test_legacy_chunk_drops_empty_hash_but_versioned_chunk_fails_closed(self):
-        legacy = normalize_rag_trace(
-            {
-                "retrieved_chunks": [
-                    {
-                        "filename": "legacy.pdf",
-                        "chunk_id": "legacy::chunk",
-                        "content_hash": "",
-                    }
-                ]
-            }
-        )
-        self.assertNotIn("content_hash", legacy["retrieved_chunks"][0])
-
+    def test_retrieved_chunk_requires_complete_document_version_identity(self):
         with self.assertRaises(ValidationError):
             normalize_rag_trace(
                 {

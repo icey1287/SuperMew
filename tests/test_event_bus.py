@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import (
     Base,
-    ChatMessage,
+    Message,
     Run,
     RunEvent,
     TransactionOutbox,
@@ -114,9 +114,7 @@ class EventBusTests(unittest.IsolatedAsyncioTestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == claimed.id).one()
             message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("answer", message.content)
             self.assertEqual(len(events), run.last_event_sequence)

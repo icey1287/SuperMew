@@ -35,18 +35,6 @@ def _metadata(version_id: str, *, section_id: str = "") -> DocumentArtifactMetad
     )
 
 
-def test_legacy_chunk_ids_remain_unchanged(tmp_path):
-    path = _write_html(tmp_path, "<h1>Guide</h1><p>Stable content.</p>")
-
-    documents = _loader().load_document(str(path), path.name)
-
-    assert [document["chunk_id"] for document in documents] == [
-        "guide.html::p1::l1::0",
-        "guide.html::p1::l2::0",
-        "guide.html::p1::l3::0",
-    ]
-
-
 def test_versioned_chunk_ids_are_stable_and_do_not_collide(tmp_path):
     path = _write_html(tmp_path, "<h1>Guide</h1><p>Stable content.</p>")
     loader = _loader()

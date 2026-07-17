@@ -199,7 +199,7 @@ async def test_disabled_provider_is_an_explicit_skip_not_a_fallback():
     assert meta["rerank_threshold_applied"] is False
 
 
-def test_sync_compatibility_uses_injected_long_lived_loop_bridge():
+def test_sync_interface_uses_injected_long_lived_loop_bridge():
     provider = _FakeReranker(
         RerankResult(items=(RerankItem(index=0, score=0.8),), attempts=1)
     )

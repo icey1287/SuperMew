@@ -141,19 +141,19 @@ class ParentChunkStoreVersionTests(unittest.TestCase):
         self.assertEqual("version-1", cached["document_version_id"])
         self.assertEqual("b" * 64, cached["content_hash"])
 
-    def test_get_by_ids_preserves_order_and_legacy_cache_payload(self):
+    def test_get_by_ids_discards_cache_payload_without_document_version_identity(self):
         with self.session_factory() as db:
             db.add(parent_chunk("db-chunk"))
             db.commit()
-        legacy_payload = {"chunk_id": "legacy", "text": "legacy cached text"}
-        self.cache.values["parent_chunk:legacy"] = legacy_payload
+        stale_payload = {"chunk_id": "stale", "text": "stale cached text"}
+        self.cache.values["parent_chunk:stale"] = stale_payload
 
-        results = self.store.get_documents_by_ids(["legacy", "db-chunk"])
+        results = self.store.get_documents_by_ids(["stale", "db-chunk"])
 
-        self.assertEqual(["legacy", "db-chunk"], [item["chunk_id"] for item in results])
-        self.assertEqual(legacy_payload, results[0])
-        self.assertEqual("version-1", results[1]["document_version_id"])
-        self.assertEqual("a" * 64, results[1]["content_hash"])
+        self.assertEqual(["db-chunk"], [item["chunk_id"] for item in results])
+        self.assertEqual("version-1", results[0]["document_version_id"])
+        self.assertEqual("a" * 64, results[0]["content_hash"])
+        self.assertEqual(["parent_chunk:stale"], self.cache.deleted)
 
     def test_count_and_delete_are_isolated_to_exact_version_scope(self):
         rows = [
@@ -198,35 +198,6 @@ class ParentChunkStoreVersionTests(unittest.TestCase):
             self.assertIsNotNone(db.get(ParentChunk, "other-version"))
             self.assertIsNotNone(db.get(ParentChunk, "other-tenant"))
             self.assertIsNotNone(db.get(ParentChunk, "other-index"))
-
-    def test_legacy_filename_cleanup_never_deletes_versioned_reupload(self):
-        legacy = parent_chunk(
-            "legacy-parent",
-            version="",
-            tenant="default",
-            index="v1",
-        )
-        legacy.knowledge_base_id = ""
-        legacy.document_id = ""
-        legacy.section_id = ""
-        legacy.acl_tags = []
-        legacy.content_hash = ""
-        current = parent_chunk("current-parent", version="version-current")
-        with self.session_factory() as db:
-            db.add_all([legacy, current])
-            db.commit()
-        for row in (legacy, current):
-            self.cache.values[f"parent_chunk:{row.chunk_id}"] = {
-                "chunk_id": row.chunk_id
-            }
-
-        deleted = self.store.delete_legacy_by_filename("doc.pdf")
-
-        self.assertEqual(1, deleted)
-        with self.session_factory() as db:
-            self.assertIsNone(db.get(ParentChunk, "legacy-parent"))
-            self.assertIsNotNone(db.get(ParentChunk, "current-parent"))
-        self.assertEqual(["parent_chunk:legacy-parent"], self.cache.deleted)
 
     def test_verify_version_checks_ids_count_and_artifact_metadata(self):
         with self.session_factory() as db:

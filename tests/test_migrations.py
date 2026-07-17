@@ -10,7 +10,7 @@ from backend.infra.database import alembic_config
 
 
 class MigrationTests(unittest.TestCase):
-    def test_empty_database_upgrades_and_downgrades(self):
+    def test_empty_database_upgrades_to_canonical_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "schema.db"
             url = f"sqlite:///{database_path}"
@@ -25,17 +25,23 @@ class MigrationTests(unittest.TestCase):
                     "runs",
                     "run_events",
                     "run_checkpoints",
+                    "threads",
+                    "messages",
                     "documents",
                     "document_versions",
                     "index_jobs",
                 }.issubset(tables)
             )
+            self.assertTrue({"chat_sessions", "chat_messages"}.isdisjoint(tables))
             self.assertTrue(
-                {"status", "version", "message_count", "last_sequence"}.issubset(
-                    {
-                        column["name"]
-                        for column in inspector.get_columns("chat_sessions")
-                    }
+                {
+                    "thread_id",
+                    "status",
+                    "version",
+                    "message_count",
+                    "last_sequence",
+                }.issubset(
+                    {column["name"] for column in inspector.get_columns("threads")}
                 )
             )
             self.assertTrue(
@@ -60,12 +66,32 @@ class MigrationTests(unittest.TestCase):
                 },
             )
             self.assertTrue(
-                {"run_id", "sequence", "content_json", "status"}.issubset(
-                    {
-                        column["name"]
-                        for column in inspector.get_columns("chat_messages")
-                    }
+                {
+                    "thread_ref_id",
+                    "run_id",
+                    "sequence",
+                    "content_json",
+                    "status",
+                }.issubset(
+                    {column["name"] for column in inspector.get_columns("messages")}
                 )
+            )
+            self.assertIn(
+                {"user_id", "thread_id"},
+                {
+                    frozenset(constraint["column_names"])
+                    for constraint in inspector.get_unique_constraints("threads")
+                },
+            )
+            self.assertEqual(
+                {
+                    frozenset({"thread_ref_id", "sequence"}),
+                    frozenset({"thread_ref_id", "client_message_id"}),
+                },
+                {
+                    frozenset(constraint["column_names"])
+                    for constraint in inspector.get_unique_constraints("messages")
+                },
             )
             self.assertTrue(
                 {
@@ -82,13 +108,105 @@ class MigrationTests(unittest.TestCase):
                 "ix_refresh_tokens_expires_at",
                 {index["name"] for index in inspector.get_indexes("refresh_tokens")},
             )
+            self.assertNotIn("document_catalog_states", tables)
+            version_columns = {
+                column["name"] for column in inspector.get_columns("document_versions")
+            }
+            self.assertNotIn("storage_layout", version_columns)
+            self.assertNotIn("legacy_identity", version_columns)
             engine.dispose()
 
-            command.downgrade(config, "base")
+    def test_canonical_thread_schema_migration_preserves_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "canonical-thread.db"
+            url = f"sqlite:///{database_path}"
+            config = alembic_config(url)
+            command.upgrade(config, "0012_remove_document_compat")
+
             engine = create_engine(url)
-            remaining = set(inspect(engine).get_table_names())
-            self.assertLessEqual(remaining, {"alembic_version"})
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO users (
+                            id, username, password_hash, role, created_at
+                        ) VALUES (1, 'alice', 'hash', 'user', CURRENT_TIMESTAMP)
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO chat_sessions (
+                            id, user_id, session_id, status, version,
+                            message_count, last_sequence, metadata_json,
+                            updated_at, created_at
+                        ) VALUES (
+                            1, 1, 'thread-1', 'active', 1,
+                            1, 1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO runs (
+                            id, thread_ref_id, user_id, tenant_id, channel,
+                            approved_tools_json, status, idempotency_key,
+                            request_hash, model_name, on_disconnect,
+                            multitask_strategy, fencing_token, last_event_sequence,
+                            input_tokens, output_tokens, cost, created_at, updated_at
+                        ) VALUES (
+                            'run-1', 1, 1, 'default', 'chat', '[]',
+                            'completed', 'key-1', :request_hash, 'answer',
+                            'continue', 'reject', 1, 0, 0, 0, 0,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {"request_hash": "a" * 64},
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO chat_messages (
+                            id, session_ref_id, message_type, content,
+                            timestamp, sequence, status, updated_at
+                        ) VALUES (
+                            1, 1, 'human', 'hello', CURRENT_TIMESTAMP,
+                            1, 'completed', CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
             engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(url)
+            inspector = inspect(engine)
+            self.assertTrue(
+                {"chat_sessions", "chat_messages"}.isdisjoint(
+                    inspector.get_table_names()
+                )
+            )
+            with engine.connect() as connection:
+                thread = connection.execute(
+                    text("SELECT thread_id FROM threads WHERE id = 1")
+                ).scalar_one()
+                message = connection.execute(
+                    text("SELECT thread_ref_id, content FROM messages WHERE id = 1")
+                ).one()
+                channel = connection.execute(
+                    text("SELECT channel FROM runs WHERE id = 'run-1'")
+                ).scalar_one()
+            self.assertEqual("thread-1", thread)
+            self.assertEqual((1, "hello"), tuple(message))
+            self.assertEqual("run", channel)
+            engine.dispose()
+
+            with self.assertRaises(RuntimeError):
+                command.downgrade(config, "0012_remove_document_compat")
 
     def test_refresh_token_retention_index_upgrades_and_downgrades_one_step(self):
         with tempfile.TemporaryDirectory() as directory:

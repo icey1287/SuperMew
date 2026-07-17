@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import (
     Document,
-    DocumentCatalogState,
     DocumentCleanupJob,
     DocumentRetirementJob,
     DocumentVersion,
@@ -34,13 +33,7 @@ from backend.infra.database import SessionLocal
 
 SessionFactory = Callable[[], Session]
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_DEFAULT_CLEANUP_GRACE = timedelta(hours=1)
-_LEGACY_TOMBSTONE_PARSER = "legacy-tombstone"
-
-
-class StorageLayout(StrEnum):
-    VERSIONED = "versioned"
-    LEGACY_FILENAME = "legacy_filename"
+_VERSION_REPLACEMENT_CLEANUP_GRACE = timedelta(hours=1)
 
 
 class DocumentVersionStatus(StrEnum):
@@ -178,9 +171,7 @@ class DocumentVersionRecord:
     chunker_version: str
     embedding_model: str
     index_version: str
-    storage_layout: str
     vector_collection: str
-    legacy_identity: str | None
     status: str
     chunk_count: int
     parent_chunk_count: int
@@ -359,33 +350,6 @@ class RetrievalCatalogSnapshot:
     knowledge_base_id: str | None
     documents: tuple[DocumentRecord, ...]
     index_id: str
-    suppressed_legacy_names: tuple[str, ...]
-    legacy_adoption_complete: bool
-    legacy_corpus_fingerprint: str
-    legacy_collection: str | None
-    legacy_knowledge_base_id: str | None
-    legacy_knowledge_base_name: str | None
-
-
-@dataclass(frozen=True)
-class LegacyAdoptionState:
-    tenant_id: str
-    legacy_collection: str | None
-    knowledge_base_id: str | None
-    knowledge_base_name: str | None
-    state_exists: bool
-    complete: bool
-    fingerprint: str
-    fence: int
-
-
-@dataclass(frozen=True)
-class LegacyAdoptionResult:
-    document: DocumentRecord
-    version: DocumentVersionRecord | None
-    job: IndexJobRecord | None
-    adopted: bool
-    reason: str
 
 
 def _payload_hash(payload: Mapping) -> str:
@@ -396,20 +360,6 @@ def _payload_hash(payload: Mapping) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def legacy_source_identity(*, vector_collection: str, canonical_name: str) -> str:
-    """Return the immutable authorization key for one filename-scoped corpus."""
-
-    collection = _required_text(vector_collection, "vector_collection", 160)
-    name = _required_text(canonical_name, "canonical_name", 255)
-    return "legacy:source:v1:" + _payload_hash(
-        {
-            "schema_version": 1,
-            "vector_collection": collection,
-            "canonical_name": name,
-        }
-    )
 
 
 def _new_id(prefix: str) -> str:
@@ -436,16 +386,6 @@ def _content_hash(value: str) -> str:
             status_code=400,
         )
     return normalized
-
-
-def _cleanup_at(now: datetime, grace: timedelta) -> datetime:
-    if grace.total_seconds() < 0:
-        raise AppError(
-            ErrorCode.INVALID_REQUEST,
-            "cleanup_grace 不能为负数",
-            status_code=400,
-        )
-    return now + grace
 
 
 def _database_now(db: Session) -> datetime:
@@ -497,9 +437,7 @@ class DocumentCatalog:
             chunker_version=row.chunker_version,
             embedding_model=row.embedding_model,
             index_version=row.index_version,
-            storage_layout=row.storage_layout,
             vector_collection=row.vector_collection,
-            legacy_identity=row.legacy_identity,
             status=row.status,
             chunk_count=row.chunk_count,
             parent_chunk_count=row.parent_chunk_count,
@@ -725,52 +663,6 @@ class DocumentCatalog:
         row.error_code = error_code
         row.updated_at = now
         return job_id
-
-    @staticmethod
-    def _append_legacy_tombstone(
-        db: Session,
-        *,
-        document: Document,
-        identity: str,
-        collection: str,
-        content_sha256: str,
-        source_object_key: str,
-        now: datetime,
-        cleanup_after: datetime | None = None,
-    ) -> DocumentVersion:
-        document.version_counter += 1
-        tombstone = DocumentVersion(
-            id=_new_id("docver"),
-            document_id=document.id,
-            version_number=document.version_counter,
-            content_sha256=content_sha256,
-            build_fingerprint=_payload_hash(
-                {
-                    "schema_version": 1,
-                    "storage_layout": StorageLayout.LEGACY_FILENAME,
-                    "legacy_identity": identity,
-                    "state": "tombstone",
-                }
-            ),
-            source_object_key=source_object_key,
-            media_type="",
-            size_bytes=0,
-            parser_version=_LEGACY_TOMBSTONE_PARSER,
-            chunker_version=_LEGACY_TOMBSTONE_PARSER,
-            embedding_model="legacy",
-            index_version="legacy-tombstone-v1",
-            storage_layout=StorageLayout.LEGACY_FILENAME,
-            vector_collection=collection,
-            legacy_identity=identity,
-            status=DocumentVersionStatus.SUPERSEDED,
-            chunk_count=0,
-            parent_chunk_count=0,
-            superseded_at=now,
-            cleanup_after=cleanup_after,
-        )
-        db.add(tombstone)
-        db.flush()
-        return tombstone
 
     @staticmethod
     def _knowledge_base(
@@ -1049,269 +941,6 @@ class DocumentCatalog:
         finally:
             db.close()
 
-    def mark_legacy_adoption_complete(
-        self,
-        *,
-        tenant_id: str,
-        legacy_collection: str,
-        knowledge_base_name: str,
-        corpus_fingerprint: str,
-        adoption_fence: int,
-        knowledge_base_id: str | None = None,
-    ) -> LegacyAdoptionState:
-        tenant = _required_text(tenant_id, "tenant_id", 64)
-        collection = _required_text(legacy_collection, "legacy_collection", 160)
-        target_name = _required_text(knowledge_base_name, "knowledge_base_name", 160)
-        target_id = (
-            _required_text(knowledge_base_id, "knowledge_base_id", 64)
-            if knowledge_base_id is not None
-            else None
-        )
-        fingerprint = _content_hash(corpus_fingerprint)
-        if adoption_fence <= 0:
-            raise AppError(
-                ErrorCode.INVALID_REQUEST,
-                "adoption_fence 必须为正整数",
-                status_code=400,
-            )
-        db = self._session_factory()
-        try:
-            with db.begin():
-                if target_id is not None:
-                    target_knowledge_base = self._knowledge_base(
-                        db,
-                        tenant_id=tenant,
-                        knowledge_base_id=target_id,
-                        lock=True,
-                    )
-                    if target_knowledge_base.name != target_name:
-                        raise AppError(
-                            ErrorCode.CONFLICT,
-                            "legacy 接管目标知识库不匹配",
-                            status_code=409,
-                        )
-                row = (
-                    db.query(DocumentCatalogState)
-                    .filter(DocumentCatalogState.tenant_id == tenant)
-                    .with_for_update()
-                    .first()
-                )
-                now = _database_now(db)
-                if (
-                    row is None
-                    or row.legacy_collection != collection
-                    or row.legacy_knowledge_base_name != target_name
-                    or row.legacy_corpus_fingerprint != fingerprint
-                    or row.legacy_adoption_fence != adoption_fence
-                    or (
-                        row.legacy_knowledge_base_id is not None
-                        and row.legacy_knowledge_base_id != target_id
-                    )
-                ):
-                    raise AppError(
-                        ErrorCode.CONFLICT,
-                        "legacy 接管 fencing 已失效，请重新扫描",
-                        status_code=409,
-                        retryable=True,
-                    )
-                row.legacy_collection = collection
-                row.legacy_knowledge_base_id = target_id
-                row.legacy_knowledge_base_name = target_name
-                row.legacy_adoption_completed_at = now
-                row.legacy_corpus_fingerprint = fingerprint
-                row.updated_at = now
-                db.flush()
-                return LegacyAdoptionState(
-                    tenant_id=tenant,
-                    legacy_collection=collection,
-                    knowledge_base_id=target_id,
-                    knowledge_base_name=target_name,
-                    state_exists=True,
-                    complete=True,
-                    fingerprint=fingerprint,
-                    fence=adoption_fence,
-                )
-        finally:
-            db.close()
-
-    def begin_legacy_adoption(
-        self,
-        *,
-        tenant_id: str,
-        legacy_collection: str,
-        knowledge_base_name: str,
-        corpus_fingerprint: str,
-    ) -> LegacyAdoptionState:
-        tenant = _required_text(tenant_id, "tenant_id", 64)
-        collection = _required_text(legacy_collection, "legacy_collection", 160)
-        target_name = _required_text(knowledge_base_name, "knowledge_base_name", 160)
-        fingerprint = _content_hash(corpus_fingerprint)
-        db = self._session_factory()
-        try:
-            with db.begin():
-                row = (
-                    db.query(DocumentCatalogState)
-                    .filter(DocumentCatalogState.tenant_id == tenant)
-                    .with_for_update()
-                    .first()
-                )
-                now = _database_now(db)
-                if row is None:
-                    row = DocumentCatalogState(
-                        tenant_id=tenant,
-                        legacy_collection=collection,
-                        legacy_knowledge_base_name=target_name,
-                        legacy_adoption_fence=1,
-                        legacy_corpus_fingerprint=fingerprint,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    db.add(row)
-                    db.flush()
-                    return LegacyAdoptionState(
-                        tenant_id=tenant,
-                        legacy_collection=collection,
-                        knowledge_base_id=None,
-                        knowledge_base_name=target_name,
-                        state_exists=True,
-                        complete=False,
-                        fingerprint=fingerprint,
-                        fence=1,
-                    )
-                same_projection = bool(
-                    row.legacy_collection == collection
-                    and row.legacy_knowledge_base_name == target_name
-                    and row.legacy_corpus_fingerprint == fingerprint
-                )
-                if same_projection:
-                    return LegacyAdoptionState(
-                        tenant_id=tenant,
-                        legacy_collection=collection,
-                        knowledge_base_id=row.legacy_knowledge_base_id,
-                        knowledge_base_name=target_name,
-                        state_exists=True,
-                        complete=row.legacy_adoption_completed_at is not None,
-                        fingerprint=fingerprint,
-                        fence=row.legacy_adoption_fence,
-                    )
-                row.legacy_collection = collection
-                row.legacy_knowledge_base_id = None
-                row.legacy_knowledge_base_name = target_name
-                row.legacy_adoption_fence += 1
-                row.legacy_adoption_completed_at = None
-                row.legacy_corpus_fingerprint = fingerprint
-                row.updated_at = now
-                db.flush()
-                return LegacyAdoptionState(
-                    tenant_id=tenant,
-                    legacy_collection=collection,
-                    knowledge_base_id=None,
-                    knowledge_base_name=target_name,
-                    state_exists=True,
-                    complete=False,
-                    fingerprint=fingerprint,
-                    fence=row.legacy_adoption_fence,
-                )
-        finally:
-            db.close()
-
-    def bootstrap_empty_legacy_corpus(
-        self,
-        *,
-        tenant_id: str,
-        legacy_collection: str,
-        knowledge_base_name: str,
-    ) -> LegacyAdoptionState:
-        collection = _required_text(legacy_collection, "legacy_collection", 160)
-        fingerprint = _payload_hash(
-            {
-                "schema_version": 1,
-                "collection_name": collection,
-                "legacy_collection_missing": True,
-                "documents": [],
-            }
-        )
-        reservation = self.begin_legacy_adoption(
-            tenant_id=tenant_id,
-            legacy_collection=collection,
-            knowledge_base_name=knowledge_base_name,
-            corpus_fingerprint=fingerprint,
-        )
-        return self.mark_legacy_adoption_complete(
-            tenant_id=tenant_id,
-            legacy_collection=collection,
-            knowledge_base_name=knowledge_base_name,
-            corpus_fingerprint=fingerprint,
-            adoption_fence=reservation.fence,
-        )
-
-    def legacy_adoption_state(
-        self,
-        *,
-        tenant_id: str,
-    ) -> LegacyAdoptionState:
-        tenant = _required_text(tenant_id, "tenant_id", 64)
-        db = self._session_factory()
-        try:
-            row = (
-                db.query(DocumentCatalogState)
-                .filter(DocumentCatalogState.tenant_id == tenant)
-                .first()
-            )
-            if row is None:
-                return LegacyAdoptionState(
-                    tenant_id=tenant,
-                    legacy_collection=None,
-                    knowledge_base_id=None,
-                    knowledge_base_name=None,
-                    state_exists=False,
-                    complete=False,
-                    fingerprint=_payload_hash(
-                        {
-                            "schema_version": 1,
-                            "tenant_id": tenant,
-                            "legacy_adoption_state": "missing",
-                        }
-                    ),
-                    fence=0,
-                )
-            complete = bool(
-                row.legacy_adoption_completed_at is not None
-                and isinstance(row.legacy_corpus_fingerprint, str)
-                and _SHA256_RE.fullmatch(row.legacy_corpus_fingerprint)
-            )
-            return LegacyAdoptionState(
-                tenant_id=tenant,
-                legacy_collection=row.legacy_collection,
-                knowledge_base_id=row.legacy_knowledge_base_id,
-                knowledge_base_name=row.legacy_knowledge_base_name,
-                state_exists=True,
-                complete=complete,
-                fingerprint=(
-                    row.legacy_corpus_fingerprint
-                    if complete
-                    else _payload_hash(
-                        {
-                            "schema_version": 1,
-                            "tenant_id": tenant,
-                            "legacy_collection": row.legacy_collection,
-                            "legacy_knowledge_base_id": (row.legacy_knowledge_base_id),
-                            "legacy_knowledge_base_name": (
-                                row.legacy_knowledge_base_name
-                            ),
-                            "legacy_adoption_fence": row.legacy_adoption_fence,
-                            "legacy_corpus_fingerprint": (
-                                row.legacy_corpus_fingerprint
-                            ),
-                            "legacy_adoption_state": "incomplete",
-                        }
-                    )
-                ),
-                fence=row.legacy_adoption_fence,
-            )
-        finally:
-            db.close()
-
     def reserve_upload(
         self,
         *,
@@ -1326,7 +955,6 @@ class DocumentCatalog:
         processing_profile: BuildProfile,
         vector_collection: str = "",
         max_attempts: int = 3,
-        cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
     ) -> UploadReservation:
         tenant = _required_text(tenant_id, "tenant_id", 64)
         knowledge_base_key = _required_text(knowledge_base_id, "knowledge_base_id", 64)
@@ -1421,7 +1049,7 @@ class DocumentCatalog:
                                 publication_fence=document.publication_fence,
                                 expected_current_version_id=current_match.id,
                                 finished_at=current_match.published_at or now,
-                                step_state_json={"adopted_existing": True},
+                                step_state_json={"reused_current": True},
                             )
                             db.add(job)
                             db.flush()
@@ -1493,7 +1121,6 @@ class DocumentCatalog:
                             status_code=409,
                         )
 
-                    cleanup_after = _cleanup_at(now, cleanup_grace)
                     old_pending = self._version_by_pointer(
                         db, document, document.pending_version_id
                     )
@@ -1502,7 +1129,7 @@ class DocumentCatalog:
                             db,
                             old_pending,
                             now=now,
-                            cleanup_after=cleanup_after,
+                            cleanup_after=now,
                             cancel_job=True,
                         )
                         # The active-identity partial unique index must observe the
@@ -1526,7 +1153,6 @@ class DocumentCatalog:
                         chunker_version=profile.chunker_version,
                         embedding_model=profile.embedding_model,
                         index_version=profile.index_version,
-                        storage_layout=StorageLayout.VERSIONED,
                         vector_collection=collection,
                         status=DocumentVersionStatus.UPLOADED,
                         chunk_count=0,
@@ -1562,7 +1188,6 @@ class DocumentCatalog:
                     job.finished_at = None
                     job.step_state_json = {
                         "build_fingerprint": profile.fingerprint,
-                        "storage_layout": StorageLayout.VERSIONED,
                         "message": "文件已保存，候选版本等待持久化 worker 构建",
                         "active_step": "upload",
                         "active_step_percent": 100,
@@ -1806,7 +1431,6 @@ class DocumentCatalog:
         job_id: str,
         publication_fence: int,
         expected_current_version_id: str | None,
-        cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
         execution: IndexJobExecution | None = None,
     ) -> PublicationResult:
         db = self._session_factory()
@@ -1909,7 +1533,7 @@ class DocumentCatalog:
                         db,
                         previous,
                         now=now,
-                        cleanup_after=_cleanup_at(now, cleanup_grace),
+                        cleanup_after=(now + _VERSION_REPLACEMENT_CLEANUP_GRACE),
                         cancel_job=False,
                     )
                 version.status = DocumentVersionStatus.READY
@@ -2295,7 +1919,7 @@ class DocumentCatalog:
                             db,
                             version,
                             now=now,
-                            cleanup_after=_cleanup_at(now, _DEFAULT_CLEANUP_GRACE),
+                            cleanup_after=now,
                             cancel_job=False,
                         )
                     else:
@@ -2880,7 +2504,6 @@ class DocumentCatalog:
         tenant_id: str,
         canonical_name: str,
         knowledge_base_id: str | None = None,
-        cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
         retirement_job_id: str | None = None,
     ) -> RetirementResult:
         name = _required_text(canonical_name, "canonical_name", 255)
@@ -2912,7 +2535,7 @@ class DocumentCatalog:
                 )
                 if document.deleted_at is not None:
                     now = _database_now(db)
-                    cleanup_after = _cleanup_at(now, cleanup_grace)
+                    cleanup_after = now
                     cleanup_rows = (
                         db.query(DocumentVersion)
                         .filter(
@@ -2986,7 +2609,7 @@ class DocumentCatalog:
                     lock=True,
                 )
                 now = _database_now(db)
-                cleanup_after = _cleanup_at(now, cleanup_grace)
+                cleanup_after = now
                 if current:
                     self._supersede_version(
                         db,
@@ -3066,574 +2689,6 @@ class DocumentCatalog:
                     ),
                     retirement_job_id=operation_id,
                 )
-        finally:
-            db.close()
-
-    def suppress_legacy_name(
-        self,
-        *,
-        tenant_id: str,
-        knowledge_base_id: str,
-        canonical_name: str,
-        owner_id: int,
-        vector_collection: str,
-        cleanup_grace: timedelta = timedelta(0),
-        retirement_job_id: str | None = None,
-    ) -> RetirementResult:
-        """Create a durable filename tombstone before legacy physical cleanup."""
-
-        tenant = _required_text(tenant_id, "tenant_id", 64)
-        knowledge_base_key = _required_text(knowledge_base_id, "knowledge_base_id", 64)
-        name = _required_text(canonical_name, "canonical_name", 255)
-        collection = _required_text(vector_collection, "vector_collection", 160)
-        identity = legacy_source_identity(
-            vector_collection=collection,
-            canonical_name=name,
-        )
-        db = self._session_factory()
-        try:
-            with db.begin():
-                knowledge_base = self._knowledge_base(
-                    db,
-                    tenant_id=tenant,
-                    knowledge_base_id=knowledge_base_key,
-                    lock=True,
-                )
-                document = self._document(
-                    db,
-                    tenant_id=tenant,
-                    canonical_name=name,
-                    knowledge_base_id=knowledge_base_key,
-                    lock=True,
-                )
-                global_claim = (
-                    db.query(DocumentVersion, Document)
-                    .join(Document, Document.id == DocumentVersion.document_id)
-                    .filter(
-                        DocumentVersion.vector_collection == collection,
-                        DocumentVersion.legacy_identity == identity,
-                    )
-                    .with_for_update()
-                    .first()
-                )
-                claim_owned_elsewhere = bool(
-                    global_claim is not None
-                    and (document is None or global_claim[1].id != document.id)
-                )
-                now = _database_now(db)
-                if document is None:
-                    document = Document(
-                        id=_new_id("doc"),
-                        tenant_id=tenant,
-                        knowledge_base_id=knowledge_base_key,
-                        canonical_name=name,
-                        owner_id=owner_id,
-                        status="deleted",
-                        publication_fence=1,
-                        version_counter=0,
-                        deleted_at=now,
-                    )
-                    db.add(document)
-                    db.flush()
-                elif document.current_version_id or document.pending_version_id:
-                    raise AppError(
-                        ErrorCode.CONFLICT,
-                        "必须先撤销 current/pending 版本再建立 legacy tombstone",
-                        status_code=409,
-                    )
-
-                if claim_owned_elsewhere:
-                    document.status = "deleted"
-                    document.deleted_at = document.deleted_at or now
-                    document.updated_at = now
-                    self._bump_revision(knowledge_base, now)
-                    operation_id = self._upsert_retirement_job(
-                        db,
-                        retirement_job_id=retirement_job_id,
-                        document=document,
-                        cleanup_versions=(),
-                        publication_fence=document.publication_fence,
-                        now=now,
-                    )
-                    db.flush()
-                    return RetirementResult(
-                        document_id=document.id,
-                        tenant_id=document.tenant_id,
-                        knowledge_base_id=document.knowledge_base_id,
-                        canonical_name=name,
-                        found=True,
-                        already_deleted=True,
-                        cleanup_versions=(),
-                        retirement_job_id=operation_id,
-                    )
-
-                tombstone = global_claim[0] if global_claim is not None else None
-                cleanup_after = _cleanup_at(now, cleanup_grace)
-                if tombstone is None:
-                    tombstone = self._append_legacy_tombstone(
-                        db,
-                        document=document,
-                        identity=identity,
-                        collection=collection,
-                        content_sha256=_payload_hash(
-                            {
-                                "schema_version": 1,
-                                "legacy_tombstone": identity,
-                            }
-                        ),
-                        source_object_key=name,
-                        now=now,
-                        cleanup_after=cleanup_after,
-                    )
-                else:
-                    tombstone.status = DocumentVersionStatus.SUPERSEDED
-                    tombstone.superseded_at = tombstone.superseded_at or now
-                    tombstone.updated_at = now
-                cleanup_versions = ()
-                if tombstone.index_cleaned_at is None:
-                    tombstone.cleanup_after = cleanup_after
-                    tombstone.cleanup_error_code = None
-                    self._ensure_cleanup_job(
-                        db,
-                        tombstone,
-                        next_retry_at=cleanup_after,
-                    )
-                    cleanup_versions = (tombstone,)
-                document.status = "deleted"
-                document.deleted_at = document.deleted_at or now
-                document.updated_at = now
-                self._bump_revision(knowledge_base, now)
-                operation_id = self._upsert_retirement_job(
-                    db,
-                    retirement_job_id=retirement_job_id,
-                    document=document,
-                    cleanup_versions=cleanup_versions,
-                    publication_fence=document.publication_fence,
-                    now=now,
-                )
-                db.flush()
-                return RetirementResult(
-                    document_id=document.id,
-                    tenant_id=document.tenant_id,
-                    knowledge_base_id=document.knowledge_base_id,
-                    canonical_name=name,
-                    found=True,
-                    already_deleted=True,
-                    cleanup_versions=tuple(
-                        self._version_record(version) for version in cleanup_versions
-                    ),
-                    retirement_job_id=operation_id,
-                )
-        finally:
-            db.close()
-
-    def retire_with_legacy_suppression(
-        self,
-        *,
-        tenant_id: str,
-        knowledge_base_id: str,
-        canonical_name: str,
-        owner_id: int,
-        vector_collection: str,
-        cleanup_grace: timedelta = _DEFAULT_CLEANUP_GRACE,
-        retirement_job_id: str | None = None,
-    ) -> RetirementResult:
-        """Atomically revoke versioned scope and persist the legacy tombstone."""
-
-        outer = self._session_factory()
-        try:
-            connection = outer.connection()
-
-            def transaction_session() -> Session:
-                return Session(
-                    bind=connection,
-                    autoflush=False,
-                    expire_on_commit=False,
-                    join_transaction_mode="rollback_only",
-                )
-
-            transactional = DocumentCatalog(transaction_session)
-            retired = transactional.retire(
-                tenant_id=tenant_id,
-                canonical_name=canonical_name,
-                knowledge_base_id=knowledge_base_id,
-                cleanup_grace=cleanup_grace,
-                retirement_job_id=retirement_job_id,
-            )
-            suppressed = transactional.suppress_legacy_name(
-                tenant_id=tenant_id,
-                knowledge_base_id=knowledge_base_id,
-                canonical_name=canonical_name,
-                owner_id=owner_id,
-                vector_collection=vector_collection,
-                cleanup_grace=cleanup_grace,
-                retirement_job_id=retirement_job_id,
-            )
-            cleanup_versions = {
-                version.id: version
-                for version in (
-                    *retired.cleanup_versions,
-                    *suppressed.cleanup_versions,
-                )
-            }
-            outcome = RetirementResult(
-                document_id=suppressed.document_id or retired.document_id,
-                tenant_id=suppressed.tenant_id,
-                knowledge_base_id=(
-                    suppressed.knowledge_base_id or retired.knowledge_base_id
-                ),
-                canonical_name=suppressed.canonical_name,
-                found=retired.found or suppressed.found,
-                already_deleted=(
-                    retired.already_deleted and suppressed.already_deleted
-                ),
-                cleanup_versions=tuple(cleanup_versions.values()),
-                retirement_job_id=(
-                    suppressed.retirement_job_id or retired.retirement_job_id
-                ),
-            )
-            outer.commit()
-            return outcome
-        finally:
-            outer.close()
-
-    def adopt_legacy(
-        self,
-        *,
-        tenant_id: str,
-        knowledge_base_id: str,
-        canonical_name: str,
-        owner_id: int,
-        legacy_identity: str,
-        corpus_fingerprint: str,
-        adoption_fence: int,
-        source_object_key: str,
-        vector_collection: str,
-        chunk_count: int,
-        parent_chunk_count: int,
-        content_sha256: str | None = None,
-        media_type: str = "",
-        size_bytes: int = 0,
-        index_version: str = "legacy",
-    ) -> LegacyAdoptionResult:
-        tenant = _required_text(tenant_id, "tenant_id", 64)
-        knowledge_base_key = _required_text(knowledge_base_id, "knowledge_base_id", 64)
-        name = _required_text(canonical_name, "canonical_name", 255)
-        source_key = _required_text(source_object_key, "source_object_key", 512)
-        collection = _required_text(vector_collection, "vector_collection", 160)
-        identity = _required_text(legacy_identity, "legacy_identity", 512)
-        corpus_digest = _content_hash(corpus_fingerprint)
-        if adoption_fence <= 0:
-            raise AppError(
-                ErrorCode.INVALID_REQUEST,
-                "adoption_fence 必须为正整数",
-                status_code=400,
-            )
-        expected_identity = legacy_source_identity(
-            vector_collection=collection,
-            canonical_name=name,
-        )
-        if identity != expected_identity:
-            raise AppError(
-                ErrorCode.INVALID_REQUEST,
-                "legacy_identity 与文档来源不匹配",
-                status_code=400,
-            )
-        if chunk_count < 0 or parent_chunk_count < 0 or size_bytes < 0:
-            raise AppError(
-                ErrorCode.INVALID_REQUEST,
-                "legacy 计数不能为负数",
-                status_code=400,
-            )
-        digest = (
-            _content_hash(content_sha256)
-            if content_sha256
-            else _payload_hash(
-                {
-                    "schema_version": 1,
-                    "tenant_id": tenant,
-                    "knowledge_base_id": knowledge_base_key,
-                    "legacy_identity": identity,
-                }
-            )
-        )
-        fingerprint = _payload_hash(
-            {
-                "schema_version": 1,
-                "storage_layout": StorageLayout.LEGACY_FILENAME,
-                "legacy_identity": identity,
-                "vector_collection": collection,
-                "index_version": index_version,
-            }
-        )
-        db = self._session_factory()
-        try:
-            with db.begin():
-                knowledge_base = self._knowledge_base(
-                    db,
-                    tenant_id=tenant,
-                    knowledge_base_id=knowledge_base_key,
-                    lock=True,
-                )
-                adoption_state = (
-                    db.query(DocumentCatalogState)
-                    .filter(DocumentCatalogState.tenant_id == tenant)
-                    .with_for_update()
-                    .first()
-                )
-                if (
-                    adoption_state is None
-                    or adoption_state.legacy_collection != collection
-                    or adoption_state.legacy_knowledge_base_name != knowledge_base.name
-                    or adoption_state.legacy_corpus_fingerprint != corpus_digest
-                    or adoption_state.legacy_adoption_fence != adoption_fence
-                    or (
-                        adoption_state.legacy_knowledge_base_id is not None
-                        and adoption_state.legacy_knowledge_base_id
-                        != knowledge_base_key
-                    )
-                ):
-                    raise AppError(
-                        ErrorCode.CONFLICT,
-                        "legacy 接管 fencing 已失效，请重新扫描",
-                        status_code=409,
-                        retryable=True,
-                    )
-                document = self._document(
-                    db,
-                    tenant_id=tenant,
-                    canonical_name=name,
-                    knowledge_base_id=knowledge_base_key,
-                    lock=True,
-                )
-                if document and document.owner_id != owner_id:
-                    raise AppError(
-                        ErrorCode.PERMISSION_DENIED,
-                        "无权接管该文档",
-                        status_code=403,
-                    )
-                now = utcnow()
-                source_claim = (
-                    db.query(DocumentVersion, Document)
-                    .join(Document, Document.id == DocumentVersion.document_id)
-                    .filter(
-                        DocumentVersion.vector_collection == collection,
-                        DocumentVersion.legacy_identity == identity,
-                    )
-                    .with_for_update()
-                    .first()
-                )
-                if source_claim is not None:
-                    claim_version, claim_document = source_claim
-                    if (
-                        claim_document.tenant_id != tenant
-                        or document is None
-                        or claim_document.id != document.id
-                    ):
-                        raise AppError(
-                            ErrorCode.CONFLICT,
-                            "legacy 文档来源已由其他目录声明",
-                            status_code=409,
-                        )
-                    claim_job = self._job_for_version(db, claim_version.id)
-
-                    def claim_result(reason: str) -> LegacyAdoptionResult:
-                        return LegacyAdoptionResult(
-                            document=self._document_records(db, [claim_document])[0],
-                            version=self._version_record(claim_version),
-                            job=(
-                                self._job_record(claim_job, document=claim_document)
-                                if claim_job
-                                else None
-                            ),
-                            adopted=False,
-                            reason=reason,
-                        )
-
-                    if (
-                        claim_version.parser_version == _LEGACY_TOMBSTONE_PARSER
-                        or claim_document.deleted_at is not None
-                    ):
-                        return claim_result("legacy_tombstoned")
-                    if claim_version.content_sha256 != digest:
-                        return claim_result("legacy_content_drift")
-                    if document.current_version_id or document.pending_version_id:
-                        pointer = self._version_by_pointer(
-                            db,
-                            document,
-                            document.current_version_id or document.pending_version_id,
-                        )
-                        return claim_result(
-                            "already_adopted"
-                            if (
-                                pointer is not None
-                                and pointer.id == claim_version.id
-                                and pointer.status == DocumentVersionStatus.READY
-                            )
-                            else "catalog_not_empty"
-                        )
-                    return claim_result("legacy_identity_terminal")
-
-                if document is None:
-                    document = Document(
-                        id=_new_id("doc"),
-                        tenant_id=tenant,
-                        knowledge_base_id=knowledge_base_key,
-                        canonical_name=name,
-                        owner_id=owner_id,
-                        status="pending",
-                        publication_fence=0,
-                        version_counter=0,
-                    )
-                    db.add(document)
-                    db.flush()
-                if document.deleted_at is not None:
-                    tombstone = self._append_legacy_tombstone(
-                        db,
-                        document=document,
-                        identity=identity,
-                        collection=collection,
-                        content_sha256=digest,
-                        source_object_key=source_key,
-                        now=now,
-                    )
-                    self._bump_revision(knowledge_base, now)
-                    return LegacyAdoptionResult(
-                        document=self._document_records(db, [document])[0],
-                        version=self._version_record(tombstone),
-                        job=None,
-                        adopted=False,
-                        reason="legacy_tombstoned",
-                    )
-                if document.current_version_id:
-                    pointer = self._version_by_pointer(
-                        db,
-                        document,
-                        document.current_version_id,
-                    )
-                    if (
-                        pointer is not None
-                        and pointer.status == DocumentVersionStatus.READY
-                        and pointer.storage_layout == StorageLayout.VERSIONED
-                    ):
-                        tombstone = self._append_legacy_tombstone(
-                            db,
-                            document=document,
-                            identity=identity,
-                            collection=collection,
-                            content_sha256=digest,
-                            source_object_key=source_key,
-                            now=now,
-                        )
-                        document.updated_at = now
-                        self._bump_revision(knowledge_base, now)
-                        return LegacyAdoptionResult(
-                            document=self._document_records(db, [document])[0],
-                            version=self._version_record(tombstone),
-                            job=None,
-                            adopted=False,
-                            reason="catalog_current_suppresses_legacy",
-                        )
-                    return LegacyAdoptionResult(
-                        document=self._document_records(db, [document])[0],
-                        version=(self._version_record(pointer) if pointer else None),
-                        job=(
-                            self._job_record(
-                                self._job_for_version(db, pointer.id),
-                                document=document,
-                            )
-                            if pointer and self._job_for_version(db, pointer.id)
-                            else None
-                        ),
-                        adopted=False,
-                        reason="catalog_not_empty",
-                    )
-                if document.pending_version_id:
-                    pointer = self._version_by_pointer(
-                        db,
-                        document,
-                        document.pending_version_id,
-                    )
-                    return LegacyAdoptionResult(
-                        document=self._document_records(db, [document])[0],
-                        version=(self._version_record(pointer) if pointer else None),
-                        job=(
-                            self._job_record(
-                                self._job_for_version(db, pointer.id),
-                                document=document,
-                            )
-                            if pointer and self._job_for_version(db, pointer.id)
-                            else None
-                        ),
-                        adopted=False,
-                        reason="catalog_not_empty",
-                    )
-                document.version_counter += 1
-                existing = DocumentVersion(
-                    id=_new_id("docver"),
-                    document_id=document.id,
-                    version_number=document.version_counter,
-                    content_sha256=digest,
-                    build_fingerprint=fingerprint,
-                    source_object_key=source_key,
-                    media_type=str(media_type or "")[:160],
-                    size_bytes=size_bytes,
-                    parser_version="legacy",
-                    chunker_version="legacy",
-                    embedding_model="legacy",
-                    index_version=_required_text(index_version, "index_version", 64),
-                    storage_layout=StorageLayout.LEGACY_FILENAME,
-                    vector_collection=collection,
-                    legacy_identity=identity,
-                    status=DocumentVersionStatus.READY,
-                    chunk_count=chunk_count,
-                    parent_chunk_count=parent_chunk_count,
-                    published_at=now,
-                )
-                db.add(existing)
-                db.flush()
-                job = self._job_for_version(db, existing.id)
-                if job is None:
-                    job = IndexJob(
-                        id=_new_id("idxjob"),
-                        document_version_id=existing.id,
-                        status=IndexJobStatus.COMPLETED,
-                        current_step="legacy_adopted",
-                        progress=100,
-                        max_attempts=1,
-                        publication_fence=document.publication_fence + 1,
-                        expected_current_version_id=None,
-                        step_state_json={
-                            "storage_layout": StorageLayout.LEGACY_FILENAME,
-                            "legacy_identity": identity,
-                            "vector_chunk_count": chunk_count,
-                            "parent_chunk_count": parent_chunk_count,
-                        },
-                        finished_at=now,
-                    )
-                    db.add(job)
-                document.publication_fence += 1
-                document.current_version_id = existing.id
-                document.pending_version_id = None
-                document.status = "ready"
-                document.updated_at = now
-                self._bump_revision(knowledge_base, now)
-                db.flush()
-                return LegacyAdoptionResult(
-                    document=self._document_records(db, [document])[0],
-                    version=self._version_record(existing),
-                    job=self._job_record(job, document=document),
-                    adopted=True,
-                    reason="adopted",
-                )
-        except IntegrityError as exc:
-            db.rollback()
-            raise AppError(
-                ErrorCode.CONFLICT,
-                "legacy 目录接管并发冲突，请重试",
-                status_code=409,
-                retryable=True,
-            ) from exc
         finally:
             db.close()
 
@@ -4757,54 +3812,6 @@ class DocumentCatalog:
         db = self._session_factory()
         try:
             with db.begin():
-                catalog_state = (
-                    db.query(DocumentCatalogState)
-                    .filter(DocumentCatalogState.tenant_id == tenant_id)
-                    .with_for_update(read=True)
-                    .first()
-                )
-                legacy_adoption_complete = bool(
-                    catalog_state is not None
-                    and catalog_state.legacy_adoption_completed_at is not None
-                    and isinstance(catalog_state.legacy_corpus_fingerprint, str)
-                    and _SHA256_RE.fullmatch(catalog_state.legacy_corpus_fingerprint)
-                )
-                legacy_collection = (
-                    catalog_state.legacy_collection
-                    if catalog_state is not None
-                    else None
-                )
-                legacy_knowledge_base_id = (
-                    catalog_state.legacy_knowledge_base_id
-                    if catalog_state is not None
-                    else None
-                )
-                legacy_knowledge_base_name = (
-                    catalog_state.legacy_knowledge_base_name
-                    if catalog_state is not None
-                    else None
-                )
-                legacy_corpus_fingerprint = (
-                    catalog_state.legacy_corpus_fingerprint
-                    if legacy_adoption_complete
-                    else _payload_hash(
-                        {
-                            "schema_version": 1,
-                            "tenant_id": tenant_id,
-                            "legacy_collection": legacy_collection,
-                            "legacy_knowledge_base_id": legacy_knowledge_base_id,
-                            "legacy_knowledge_base_name": legacy_knowledge_base_name,
-                            "legacy_corpus_fingerprint": (
-                                catalog_state.legacy_corpus_fingerprint
-                                if catalog_state is not None
-                                else None
-                            ),
-                            "legacy_adoption_state": (
-                                "incomplete" if catalog_state is not None else "missing"
-                            ),
-                        }
-                    )
-                )
                 knowledge_base_query = db.query(KnowledgeBase).filter(
                     KnowledgeBase.tenant_id == tenant_id,
                     KnowledgeBase.status == "active",
@@ -4883,58 +3890,18 @@ class DocumentCatalog:
                             "content_sha256": version.content_sha256,
                             "build_fingerprint": version.build_fingerprint,
                             "index_version": version.index_version,
-                            "storage_layout": version.storage_layout,
                             "vector_collection": version.vector_collection,
                             "chunk_count": version.chunk_count,
                             "parent_chunk_count": version.parent_chunk_count,
                             "manifest": manifests_by_version.get(version.id, []),
                         }
                     )
-                document_ids = [record.id for record in records]
-                historical_legacy_document_ids = (
-                    {
-                        row[0]
-                        for row in db.query(DocumentVersion.document_id)
-                        .filter(
-                            DocumentVersion.document_id.in_(document_ids),
-                            DocumentVersion.storage_layout
-                            == StorageLayout.LEGACY_FILENAME,
-                        )
-                        .distinct()
-                        .all()
-                    }
-                    if document_ids
-                    else set()
-                )
-                suppressed_legacy_names = tuple(
-                    sorted(
-                        {
-                            record.canonical_name
-                            for record in records
-                            if record.deleted_at is not None
-                            or record.id in historical_legacy_document_ids
-                            or (
-                                record.current_version is not None
-                                and record.current_version.status
-                                == DocumentVersionStatus.READY
-                                and record.current_version.storage_layout
-                                == StorageLayout.VERSIONED
-                            )
-                        }
-                    )
-                )
                 index_id = _payload_hash(
                     {
                         "schema_version": 1,
                         "tenant_id": tenant_id,
                         "knowledge_base_id": knowledge_base_id,
                         "current_documents": current_documents,
-                        "suppressed_legacy_names": suppressed_legacy_names,
-                        "legacy_adoption_complete": legacy_adoption_complete,
-                        "legacy_corpus_fingerprint": legacy_corpus_fingerprint,
-                        "legacy_collection": legacy_collection,
-                        "legacy_knowledge_base_id": legacy_knowledge_base_id,
-                        "legacy_knowledge_base_name": legacy_knowledge_base_name,
                     }
                 )
                 return RetrievalCatalogSnapshot(
@@ -4942,12 +3909,6 @@ class DocumentCatalog:
                     knowledge_base_id=knowledge_base_id,
                     documents=records,
                     index_id=index_id,
-                    suppressed_legacy_names=suppressed_legacy_names,
-                    legacy_adoption_complete=legacy_adoption_complete,
-                    legacy_corpus_fingerprint=legacy_corpus_fingerprint,
-                    legacy_collection=legacy_collection,
-                    legacy_knowledge_base_id=legacy_knowledge_base_id,
-                    legacy_knowledge_base_name=legacy_knowledge_base_name,
                 )
         finally:
             db.close()

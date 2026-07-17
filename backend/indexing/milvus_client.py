@@ -352,7 +352,7 @@ class MilvusStore:
         self._run(_init)
 
     def init_versioned_collection(self, dense_dim: int | None = None) -> None:
-        """初始化与 legacy collection 隔离的显式 catalog schema。"""
+        """初始化 Document Version Catalog 使用的显式 schema。"""
 
         if dense_dim is None:
             dense_dim = int(os.getenv("DENSE_EMBEDDING_DIM", "1024"))

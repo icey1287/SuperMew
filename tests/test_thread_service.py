@@ -8,9 +8,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.chat.repository import ConversationRepository, MessageAppend
+from backend.threads.repository import MessageAppend, ThreadRepository
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatSession, Run, User
+from backend.db.models import Base, Thread, Run, User
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import RunStatus
@@ -34,7 +34,7 @@ def thread_environment():
                 User(username="bob", password_hash="hash", role="user"),
             ]
         )
-    conversations = ConversationRepository(session_factory)
+    conversations = ThreadRepository(session_factory)
     threads = ThreadService(conversations)
     runs = RunRepository(session_factory)
     yield engine, session_factory, conversations, threads, runs
@@ -183,7 +183,7 @@ def test_delete_fails_closed_for_every_nonterminal_status(
     threads.create_thread(username="alice", thread_id=thread_id)
     with session_factory.begin() as db:
         user = db.query(User).filter(User.username == "alice").one()
-        thread = db.query(ChatSession).filter(ChatSession.session_id == thread_id).one()
+        thread = db.query(Thread).filter(Thread.thread_id == thread_id).one()
         db.add(
             Run(
                 id=f"run_{run_status}",
@@ -210,18 +210,11 @@ def test_delete_is_owner_scoped_and_allows_terminal_history(
 
     assert threads.delete_thread(username="bob", thread_id="thread_owned") is False
     with session_factory() as db:
-        assert (
-            db.query(ChatSession)
-            .filter(ChatSession.session_id == "thread_owned")
-            .count()
-            == 1
-        )
+        assert db.query(Thread).filter(Thread.thread_id == "thread_owned").count() == 1
 
     with session_factory.begin() as db:
         user = db.query(User).filter(User.username == "alice").one()
-        thread = (
-            db.query(ChatSession).filter(ChatSession.session_id == "thread_owned").one()
-        )
+        thread = db.query(Thread).filter(Thread.thread_id == "thread_owned").one()
         db.add(
             Run(
                 id="run_terminal",
@@ -278,11 +271,7 @@ def test_run_requires_owned_thread_and_versions_only_appended_messages(
     )
 
     with session_factory() as db:
-        thread = (
-            db.query(ChatSession)
-            .filter(ChatSession.session_id == "thread_rounds")
-            .one()
-        )
+        thread = db.query(Thread).filter(Thread.thread_id == "thread_rounds").one()
         assert thread.message_count == 4
         assert thread.last_sequence == 4
         assert thread.version == 4

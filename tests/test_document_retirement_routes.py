@@ -158,7 +158,7 @@ async def test_delete_job_view_prioritizes_dead_letter_over_running_cleanup():
     with patch.object(documents, "document_catalog", catalog):
         response = await documents.get_delete_job(operation.id, None)
 
-    assert response.status == "cleanup_pending"
+    assert response.status == "cleanup_failed"
     assert response.cleanup_job_id == "cleanup-dead"
     assert response.dead_letter_job_ids == ["cleanup-dead"]
     assert response.document_version_id == "version-dead"
@@ -229,7 +229,7 @@ async def test_delete_job_route_hides_a_foreign_tenant_retirement_operation():
 
 
 @pytest.mark.asyncio
-async def test_repeated_completed_tombstones_keep_distinct_terminal_job_ids():
+async def test_repeated_completed_retirements_keep_distinct_terminal_job_ids():
     first = _operation("retire-completed-1")
     second = _operation("retire-completed-2")
     catalog = _RetirementCatalog([first, second])

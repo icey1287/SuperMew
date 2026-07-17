@@ -16,7 +16,7 @@ from backend.providers import (
     ProviderOperation,
     classify_provider_exception,
 )
-from backend.schemas.chat import normalize_rag_trace
+from backend.schemas.rag import normalize_rag_trace
 from backend.skills import SkillRegistryError
 
 

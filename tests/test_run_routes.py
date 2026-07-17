@@ -109,7 +109,7 @@ def test_authenticated_create_run_uses_user_identity() -> None:
         multitask_strategy=None,
         on_disconnect=None,
         tenant_id="tenant-test",
-        channel="chat",
+        channel="run",
         approved_tools=frozenset(),
     )
     spawn_once.assert_awaited_once_with(username="alice", run_id="run_123")
@@ -258,7 +258,7 @@ def test_canonical_run_route_does_not_implicitly_create_thread() -> None:
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
 
-    from backend.db.models import Base, ChatSession, User
+    from backend.db.models import Base, Thread, User
     from backend.runs.repository import RunRepository
     from backend.runs.service import RunService
 
@@ -296,7 +296,7 @@ def test_canonical_run_route_does_not_implicitly_create_thread() -> None:
         assert response.json()["error"]["code"] == "NOT_FOUND"
         spawn_once.assert_not_awaited()
         with session_factory() as db:
-            assert db.query(ChatSession).count() == 0
+            assert db.query(Thread).count() == 0
     finally:
         engine.dispose()
 

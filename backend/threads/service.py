@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from backend.chat.repository import (
-    ConversationRepository,
+from backend.threads.repository import (
     MessageRecord,
+    ThreadRepository,
     ThreadSummaryRecord,
-    repository,
+    thread_repository,
 )
 from backend.core.errors import AppError, ErrorCode
 from backend.threads.contracts import ThreadId, new_thread_id, validate_thread_id
@@ -46,12 +46,6 @@ class ThreadMessage:
 class ThreadMessagePage:
     messages: tuple[ThreadMessage, ...]
     previous_cursor: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyMessagePage:
-    messages: tuple[MessageRecord, ...]
-    next_cursor: int | None
 
 
 def _utc(value: datetime) -> datetime:
@@ -100,13 +94,13 @@ def _message(record: MessageRecord) -> ThreadMessage:
 
 
 class ThreadService:
-    """Thread application Module shared by canonical and compatibility adapters."""
+    """Thread application Module used by the canonical HTTP Adapter."""
 
     def __init__(
         self,
-        conversation_repository: ConversationRepository = repository,
+        repository: ThreadRepository = thread_repository,
     ) -> None:
-        self.repository = conversation_repository
+        self.repository = repository
 
     def create_thread(
         self,
@@ -164,40 +158,17 @@ class ThreadService:
             previous_cursor=(messages[0].sequence if has_previous else None),
         )
 
-    def legacy_messages(
-        self,
-        *,
-        username: str,
-        session_id: str,
-        after: int = 0,
-        limit: int = 200,
-    ) -> LegacyMessagePage:
-        rows = self.repository.list_messages(
-            username,
-            session_id,
-            after=after,
-            limit=limit,
-        )
-        return LegacyMessagePage(
-            messages=tuple(rows),
-            next_cursor=(rows[-1].sequence if len(rows) == limit else None),
-        )
-
     def delete_thread(self, *, username: str, thread_id: str) -> bool:
         return self.repository.delete_thread(
             username,
             validate_thread_id(thread_id),
         )
 
-    def delete_session(self, *, username: str, session_id: str) -> bool:
-        return self.repository.delete_thread(username, session_id)
-
 
 thread_service = ThreadService()
 
 
 __all__ = [
-    "LegacyMessagePage",
     "ThreadMessage",
     "ThreadMessagePage",
     "ThreadMessageRole",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +16,7 @@ from backend.documents.catalog import (
 from backend.documents.publication import (
     DocumentPublication,
     DocumentPublicationConfig,
-    index_job_compatibility_view,
+    index_job_view,
 )
 from backend.indexing.milvus_writer import IndexVersionScope
 from backend.security.uploads import StoredUpload
@@ -235,7 +235,6 @@ def _publication(tmp_path, *, catalog=None, loader=None, parent=None, writer=Non
             vector_collection="embeddings_collection_catalog_v1",
             upload_dir=tmp_path,
             max_attempts=3,
-            cleanup_grace=timedelta(hours=1),
         ),
     )
 
@@ -286,6 +285,7 @@ def test_worker_execution_fence_is_applied_to_every_durable_publication_write(
     assert all(update["execution"] == execution for update in catalog.updates)
     assert catalog.manifests[0]["execution"] == execution
     assert catalog.publish_calls[0]["execution"] == execution
+    assert "cleanup_grace" not in catalog.publish_calls[0]
     assert catalog.failed == []
 
 
@@ -482,7 +482,7 @@ def test_completed_job_short_circuits_without_touching_candidate_storage(tmp_pat
     assert writer.write_calls == 0
 
 
-def test_compatibility_view_uses_candidate_publication_semantics():
+def test_job_view_uses_candidate_publication_semantics():
     now = datetime(2026, 7, 15, 12, 0, 0)
     job = IndexJobRecord(
         id="job-1",
@@ -513,7 +513,7 @@ def test_compatibility_view_uses_candidate_publication_semantics():
         updated_at=now,
     )
 
-    view = index_job_compatibility_view(job)
+    view = index_job_view(job)
 
     assert [step["key"] for step in view["steps"]] == [
         "upload",
@@ -532,7 +532,7 @@ def test_compatibility_view_uses_candidate_publication_semantics():
 
 
 @pytest.mark.parametrize("failed_stage", ["parse", "vector_store"])
-def test_failed_compatibility_view_preserves_the_actual_failed_stage(failed_stage):
+def test_failed_job_view_preserves_the_actual_failed_stage(failed_stage):
     now = datetime(2026, 7, 15, 12, 0, 0)
     job = IndexJobRecord(
         id="job-1",
@@ -562,7 +562,7 @@ def test_failed_compatibility_view_preserves_the_actual_failed_stage(failed_stag
         updated_at=now,
     )
 
-    view = index_job_compatibility_view(job)
+    view = index_job_view(job)
 
     assert view["current_step"] == failed_stage
     failed_step = next(step for step in view["steps"] if step["key"] == failed_stage)
@@ -606,9 +606,8 @@ def test_submit_removes_new_object_when_catalog_reuses_current(tmp_path):
     assert not path.exists()
 
 
-def test_explicit_retire_requests_immediate_versioned_and_legacy_cleanup(tmp_path):
-    versioned = SimpleNamespace(id="version-v1")
-    legacy = SimpleNamespace(id="version-legacy")
+def test_explicit_retire_requests_immediate_cleanup(tmp_path):
+    version = SimpleNamespace(id="version-v1")
     document = SimpleNamespace(
         id="doc-1",
         tenant_id="default",
@@ -624,143 +623,63 @@ def test_explicit_retire_requests_immediate_versioned_and_legacy_cleanup(tmp_pat
         def list_documents(self, **_kwargs):
             return [document]
 
-        def retire_with_legacy_suppression(self, **kwargs):
+        def retire(self, **kwargs):
             self.retire_calls.append(kwargs)
-            return SimpleNamespace(
-                cleanup_versions=(versioned, legacy),
-            )
+            return SimpleNamespace(found=True, cleanup_versions=(version,))
 
     catalog = RetirementCatalog()
-    writer = FakeWriter()
-    writer.milvus_manager = SimpleNamespace(collection_name="embeddings_collection")
-    publication = _publication(tmp_path, catalog=catalog, writer=writer)
+    publication = _publication(tmp_path, catalog=catalog)
 
-    outcome = publication.retire("guide.pdf", owner_id=7)
+    outcome = publication.retire("guide.pdf")
 
-    assert outcome.cleanup_pending is True
-    assert catalog.retire_calls[0]["cleanup_grace"] == timedelta(0)
+    assert outcome.cleanup_required is True
+    assert "cleanup_grace" not in catalog.retire_calls[0]
     assert catalog.retire_calls[0]["retirement_job_id"] == outcome.retirement_job_id
 
 
-def test_legacy_cleanup_uses_canonical_filename_not_composite_identity(tmp_path):
-    class LegacyStore:
-        collection_name = "embeddings_collection"
+def test_retire_unknown_document_fails_without_creating_catalog_state(tmp_path):
+    class EmptyCatalog:
+        def list_documents(self, **_kwargs):
+            return []
 
-        def __init__(self):
-            self.filter_expr = ""
+        def retire(self, **_kwargs):
+            raise AssertionError("unknown document must fail before catalog mutation")
 
-        def with_collection(self, _name):
-            return self
+    publication = _publication(tmp_path, catalog=EmptyCatalog())
 
-        def delete(self, filter_expr):
-            self.filter_expr = filter_expr
-            return {"delete_count": 3}
+    with pytest.raises(AppError) as raised:
+        publication.retire("missing.pdf")
 
-    class LegacyWriter(FakeWriter):
-        def __init__(self):
-            super().__init__()
-            self.milvus_manager = LegacyStore()
+    assert raised.value.code == ErrorCode.NOT_FOUND
 
-    class CleanupCatalog(FakeCatalog):
-        def record_cleanup(self, **_kwargs):
-            return None
 
-    class LegacyParent(FakeParentStore):
-        def __init__(self):
-            super().__init__()
-            self.filename = ""
-
-        def delete_legacy_by_filename(self, filename):
-            self.filename = filename
-            return 2
-
-    catalog = CleanupCatalog()
-    writer = LegacyWriter()
-    parent = LegacyParent()
+def test_cleanup_uses_exact_document_version_scope(tmp_path):
+    catalog = FakeCatalog()
+    writer = FakeWriter()
+    parent = FakeParentStore()
     publication = _publication(
         tmp_path,
         catalog=catalog,
         writer=writer,
         parent=parent,
     )
-    document = SimpleNamespace(canonical_name="guide.pdf")
+    document = SimpleNamespace(
+        id="doc-1",
+        tenant_id="default",
+        knowledge_base_id="kb-1",
+        canonical_name="guide.pdf",
+    )
     version = SimpleNamespace(
-        id="legacy-version",
-        storage_layout="legacy_filename",
-        legacy_identity="documents:guide.pdf",
-        vector_collection="embeddings_collection",
+        id="version-v1",
+        index_version="catalog-v1",
+        vector_collection="embeddings_collection_catalog_v1",
+        source_object_key="object.pdf",
     )
 
     deleted = publication.cleanup_version(document=document, version=version)
 
-    assert deleted == 3
-    assert 'filename == "guide.pdf"' == writer.milvus_manager.filter_expr
-    assert parent.filename == "guide.pdf"
-
-
-def test_unadopted_legacy_delete_persists_tombstone_before_physical_cleanup(
-    tmp_path,
-):
-    class TombstoneCatalog:
-        def __init__(self):
-            self.suppressed = False
-            self.cleanup_errors = []
-            self.document = SimpleNamespace(
-                id="doc-tombstone",
-                tenant_id="default",
-                knowledge_base_id="kb-1",
-                canonical_name="legacy.pdf",
-                owner_id=7,
-            )
-
-        def list_documents(self, **_kwargs):
-            return [self.document] if self.suppressed else []
-
-        def find_knowledge_base(self, **_kwargs):
-            return SimpleNamespace(id="kb-1")
-
-        def retire_with_legacy_suppression(self, **_kwargs):
-            self.suppressed = True
-            return SimpleNamespace(
-                cleanup_versions=(
-                    SimpleNamespace(
-                        id="legacy-tombstone",
-                        storage_layout="legacy_filename",
-                        legacy_identity="legacy:tombstone:v1:redacted",
-                        vector_collection="embeddings_collection",
-                    ),
-                )
-            )
-
-        def record_cleanup(self, **kwargs):
-            self.cleanup_errors.append(kwargs)
-
-    catalog = TombstoneCatalog()
-
-    class FailingLegacyStore:
-        collection_name = "embeddings_collection"
-
-        def with_collection(self, _name):
-            return self
-
-        def delete(self, _filter_expr):
-            assert catalog.suppressed is True
-            raise ConnectionError("milvus unavailable")
-
-    class LegacyWriter(FakeWriter):
-        def __init__(self):
-            super().__init__()
-            self.milvus_manager = FailingLegacyStore()
-
-    publication = _publication(
-        tmp_path,
-        catalog=catalog,
-        writer=LegacyWriter(),
-    )
-
-    outcome = publication.retire("legacy.pdf", owner_id=7)
-
-    assert outcome.cleanup_pending is True
-    assert outcome.cleanup_step == "pending"
-    assert catalog.suppressed is True
-    assert catalog.cleanup_errors == []
+    assert deleted == 0
+    assert writer.deleted[0].document_version_id == "version-v1"
+    assert parent.calls == ["delete"]
+    assert catalog.cleaned == [{"document_version_id": "version-v1"}]
+    assert not (tmp_path / "object.pdf").exists()

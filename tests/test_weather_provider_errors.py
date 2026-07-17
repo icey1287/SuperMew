@@ -55,8 +55,8 @@ class WeatherProviderErrorTests(unittest.TestCase):
         self.assertNotIn("secret provider info", result)
 
     def test_request_owned_tool_propagates_typed_failure_for_runtime_trace(self):
-        context = weather.ChatRequestContext.for_sync(
-            user_id="alice", session_id="thread-1"
+        context = weather.RunRequestContext.for_sync(
+            user_id="alice", thread_id="thread-1"
         )
         tool = weather.make_weather_tool(context)
         try:
@@ -73,8 +73,8 @@ class WeatherProviderErrorTests(unittest.TestCase):
         self.assertEqual(weather.ProviderCode.TOOL_TIMEOUT, raised.exception.code)
 
     def test_request_owned_tool_uses_run_deadline_and_cancellation_probe(self):
-        context = weather.ChatRequestContext.for_sync(
-            user_id="alice", session_id="thread-1"
+        context = weather.RunRequestContext.for_sync(
+            user_id="alice", thread_id="thread-1"
         )
         cancelled = False
         context.configure_provider_runtime(

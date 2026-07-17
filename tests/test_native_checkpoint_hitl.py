@@ -9,9 +9,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, Run, RunCheckpoint, RunEvent, User
+from backend.db.models import Base, Message, Run, RunCheckpoint, RunEvent, User
 from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
     HitlCheckpointRepository,
@@ -79,14 +79,14 @@ class NativeCheckpointGraphTests(unittest.TestCase):
         self.assertIn("ragctx_test", serialized)
         self.assertNotIn("request_context", state)
         self.assertFalse(
-            any(isinstance(value, ChatRequestContext) for value in state.values())
+            any(isinstance(value, RunRequestContext) for value in state.values())
         )
 
     def test_new_graph_instance_resumes_without_repeating_completed_nodes(self):
         pipeline, calls = self._pipeline(clarify_rounds=1)
         saver = InMemorySaver()
         config = {"configurable": {"thread_id": "run_native_resume"}}
-        context = ChatRequestContext.for_sync(user_id="alice", session_id="thread-1")
+        context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
         try:
             graph = pipeline.build_rag_graph(checkpointer=saver)
             with pipeline.bind_rag_runtime_context(context) as runtime_context_id:
@@ -123,7 +123,7 @@ class NativeCheckpointGraphTests(unittest.TestCase):
         pipeline, calls = self._pipeline(clarify_rounds=2)
         saver = InMemorySaver()
         config = {"configurable": {"thread_id": "run_multi_hitl"}}
-        context = ChatRequestContext.for_sync(user_id="alice", session_id="thread-1")
+        context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
         try:
             graph1 = pipeline.build_rag_graph(checkpointer=saver)
             with pipeline.bind_rag_runtime_context(context) as runtime_context_id:
@@ -246,9 +246,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == claimed.id).one()
             message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual(RunStatus.WAITING_INPUT, run.status)
             self.assertIsNone(run.owner_worker_id)
@@ -417,9 +415,9 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
             run_id=reservation.run.id,
             worker_id="worker-start",
         )
-        context = ChatRequestContext.for_sync(
+        context = RunRequestContext.for_sync(
             user_id="alice",
-            session_id="thread-runner",
+            thread_id="thread-runner",
         )
         runner1 = CheckpointedRagRunner(
             saver_factory=saver_factory,

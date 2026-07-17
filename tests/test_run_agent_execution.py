@@ -14,7 +14,7 @@ from backend.agent.runtime import (
     AgentRuntimeResult,
 )
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, Run, ToolAudit, User
+from backend.db.models import Base, Message, Run, ToolAudit, User
 from backend.events.bus import PersistentEventBus
 from backend.events.journal import RunEventJournal
 from backend.providers import ProviderCode, ProviderError, ProviderOperation
@@ -290,9 +290,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == reservation.run.id).one()
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("succeeded", run.status)
             self.assertEqual("你好", assistant.content)
@@ -332,7 +330,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             "default",
             self.runtime_factory.create_kwargs[0]["tenant_id"],
         )
-        self.assertEqual("chat", self.runtime_factory.create_kwargs[0]["channel"])
+        self.assertEqual("run", self.runtime_factory.create_kwargs[0]["channel"])
         self.assertIsNone(self.runtime_factory.create_kwargs[0]["approval_grant"])
 
         replay = self.service.create_run(
@@ -404,7 +402,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             message="运行隔离代码",
             idempotency_key="approved-tool-request",
             tenant_id="tenant-a",
-            channel="chat",
+            channel="run",
             approved_tools=frozenset({"sandbox_execute"}),
         )
 
@@ -419,7 +417,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         grant = create_kwargs["approval_grant"]
         self.assertIsInstance(grant, RunToolApprovalGrant)
         self.assertEqual("tenant-a", create_kwargs["tenant_id"])
-        self.assertEqual("chat", create_kwargs["channel"])
+        self.assertEqual("run", create_kwargs["channel"])
         self.assertTrue(
             grant.allows(
                 "sandbox_execute",
@@ -432,7 +430,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == reservation.run.id).one()
             self.assertEqual("tenant-a", run.tenant_id)
-            self.assertEqual("chat", run.channel)
+            self.assertEqual("run", run.channel)
             self.assertEqual(["sandbox_execute"], run.approved_tools_json)
 
     async def test_provider_failure_keeps_typed_code_and_redacted_terminal_payload(
@@ -469,9 +467,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         with self.Session() as db:
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == run.assistant_message_id)
-                .one()
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("failed", assistant.status)
             self.assertNotIn("secret-token", assistant.content)
@@ -858,8 +854,8 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("succeeded", completed.status)
         with self.Session() as db:
             assistant = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == completed.assistant_message_id)
+                db.query(Message)
+                .filter(Message.id == completed.assistant_message_id)
                 .one()
             )
             self.assertEqual("恢复后的答案", assistant.content)

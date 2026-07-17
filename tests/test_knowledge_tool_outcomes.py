@@ -1,12 +1,12 @@
 import unittest
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.tools.knowledge import _render_rag_result
 
 
 class KnowledgeToolOutcomeTests(unittest.TestCase):
     def _render(self, result: dict) -> str:
-        context = ChatRequestContext.for_sync(user_id="alice", session_id="thread-1")
+        context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
         try:
             return _render_rag_result(context, result)
         finally:

@@ -3,11 +3,11 @@ import re
 
 from langchain_core.tools import tool
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 
 
 def _render_rag_result(
-    ctx: ChatRequestContext,
+    ctx: RunRequestContext,
     rag_result: dict,
     *,
     checkpoint_pause: dict | None = None,
@@ -109,27 +109,8 @@ def _render_rag_result(
     return chunks
 
 
-def make_search_knowledge_base(ctx: ChatRequestContext):
-    @tool("search_knowledge_base")
-    def search_knowledge_base(query: str) -> str:
-        """Search for information in the knowledge base using hybrid retrieval (dense + sparse vectors)."""
-        if not ctx.acquire_knowledge_tool_slot():
-            return (
-                "TOOL_CALL_LIMIT_REACHED: search_knowledge_base has already been called once in this turn. "
-                "Use the existing retrieval result and provide the final answer directly."
-            )
-
-        # Delayed import keeps tests and lightweight imports away from RAG/embedding startup.
-        from backend.rag.pipeline import run_rag_graph
-
-        rag_result = run_rag_graph(query, ctx)
-        return _render_rag_result(ctx, rag_result)
-
-    return search_knowledge_base
-
-
 def make_checkpointed_search_knowledge_base(
-    ctx: ChatRequestContext,
+    ctx: RunRequestContext,
     *,
     run_id: str,
     worker_id: str,

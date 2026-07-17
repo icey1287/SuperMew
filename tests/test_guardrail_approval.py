@@ -8,7 +8,7 @@ from langchain_core.messages import ToolMessage
 
 from backend.agent.factory import AgentRuntimeFactory
 from backend.agent.middleware import ToolPolicyMiddleware
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AgentSettings, RunSettings, SandboxSettings
 from backend.guardrails import RunToolApprovalGrant
@@ -60,7 +60,7 @@ def _grant(*, run_id: str = "run-1") -> RunToolApprovalGrant:
 
 
 def _runtime(*, approval_grant: RunToolApprovalGrant):
-    context = ChatRequestContext.for_sync(user_id="admin", session_id="thread-1")
+    context = RunRequestContext.for_sync(user_id="admin", thread_id="thread-1")
     runtime = _factory().create(
         context,
         roles=frozenset({"admin"}),
@@ -110,9 +110,9 @@ def test_approval_grant_is_names_only_and_bound_to_one_run() -> None:
 
 
 def test_factory_rejects_a_cross_run_approval_grant() -> None:
-    request_context = ChatRequestContext.for_sync(
+    request_context = RunRequestContext.for_sync(
         user_id="admin",
-        session_id="thread-1",
+        thread_id="thread-1",
     )
     with pytest.raises(AppError) as raised:
         _factory().create(

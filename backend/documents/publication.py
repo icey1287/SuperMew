@@ -5,7 +5,6 @@ import os
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -23,7 +22,6 @@ from backend.documents.catalog import (
     IndexJobStatus,
     ManifestEntry,
     PublicationResult,
-    StorageLayout,
     UploadReservation,
 )
 from backend.indexing.document_loader import DocumentArtifactMetadata, DocumentLoader
@@ -34,7 +32,6 @@ from backend.indexing.milvus_writer import (
     MilvusWriter,
 )
 from backend.indexing.parent_chunk_store import ParentChunkStore
-from backend.security.milvus_filters import eq_filter
 from backend.security.uploads import StoredUpload
 
 
@@ -66,8 +63,6 @@ _TERMINAL_JOB_STATUSES = {
     IndexJobStatus.CANCELLED,
     IndexJobStatus.DEAD_LETTER,
 }
-
-
 ProgressCallback = Callable[[str, int, str], None]
 
 
@@ -82,7 +77,6 @@ class DocumentPublicationConfig:
     vector_collection: str
     upload_dir: Path
     max_attempts: int
-    cleanup_grace: timedelta
 
     @classmethod
     def from_runtime(cls) -> DocumentPublicationConfig:
@@ -91,13 +85,6 @@ class DocumentPublicationConfig:
         embedding_identity = (
             f"{settings.embedding.model}@{settings.embedding.revision}"
         )[:160]
-        try:
-            cleanup_seconds = max(
-                int(os.getenv("DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS", "3600")),
-                0,
-            )
-        except ValueError:
-            cleanup_seconds = 3600
         return cls(
             tenant_id=os.getenv("DEFAULT_TENANT_ID", "default").strip() or "default",
             knowledge_base_name=(
@@ -120,7 +107,6 @@ class DocumentPublicationConfig:
             vector_collection=f"{base_collection}{CATALOG_COLLECTION_SUFFIX}",
             upload_dir=settings.storage.upload_dir,
             max_attempts=settings.worker.max_attempts,
-            cleanup_grace=timedelta(seconds=cleanup_seconds),
         )
 
     @property
@@ -150,7 +136,7 @@ class DocumentRetirementOutcome:
     document_id: str
     canonical_name: str
     chunks_deleted: int
-    cleanup_pending: bool = False
+    cleanup_required: bool = False
     cleanup_error_code: str | None = None
     cleanup_step: str | None = None
     retirement_job_id: str | None = None
@@ -230,7 +216,6 @@ class DocumentPublication:
                 processing_profile=self.config.build_profile,
                 vector_collection=self.config.vector_collection,
                 max_attempts=self.config.max_attempts,
-                cleanup_grace=self.config.cleanup_grace,
             )
         except Exception:
             self._discard_upload(stored_upload)
@@ -762,7 +747,6 @@ class DocumentPublication:
                 job_id=build.job.id,
                 publication_fence=build.job.publication_fence,
                 expected_current_version_id=build.job.expected_current_version_id,
-                cleanup_grace=self.config.cleanup_grace,
                 execution=execution,
             )
         except Exception as exc:
@@ -974,101 +958,60 @@ class DocumentPublication:
         step_callback: Callable[[str], None] | None = None,
     ) -> int:
         deleted_vectors = 0
-        if version.storage_layout == StorageLayout.VERSIONED:
-            scope = self.writer.build_version_scope(
-                tenant_id=document.tenant_id,
-                knowledge_base_id=document.knowledge_base_id,
-                document_id=document.id,
-                document_version_id=version.id,
-                index_version=version.index_version,
-                collection_name=version.vector_collection,
-            )
-            try:
-                self._notify_cleanup_step(step_callback, "milvus")
-                deleted_vectors = self.writer.delete_by_version(scope)
-                self._notify_cleanup_step(step_callback, "parent_store")
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError(
-                    ErrorCode.STORAGE_UNAVAILABLE,
-                    "文档向量索引清理暂时失败",
-                    status_code=503,
-                    retryable=True,
-                    stage="milvus",
-                ) from exc
-            try:
-                self.parent_store.delete_by_version(
-                    tenant_id=scope.tenant_id,
-                    knowledge_base_id=scope.knowledge_base_id,
-                    document_id=scope.document_id,
-                    document_version_id=scope.document_version_id,
-                    index_version=scope.index_version,
-                )
-                self._notify_cleanup_step(step_callback, "object_store")
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError(
-                    ErrorCode.STORAGE_UNAVAILABLE,
-                    "文档父级分块清理暂时失败",
-                    status_code=503,
-                    retryable=True,
-                    stage="parent_store",
-                ) from exc
-            try:
-                self._unlink_version_object(version)
-                self._notify_cleanup_step(step_callback, "finalize")
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError(
-                    ErrorCode.STORAGE_UNAVAILABLE,
-                    "文档版本对象清理暂时失败",
-                    status_code=503,
-                    retryable=True,
-                    stage="object_store",
-                ) from exc
-        elif version.storage_layout == StorageLayout.LEGACY_FILENAME:
-            filename = document.canonical_name
-            store = self.writer.milvus_manager.with_collection(
-                version.vector_collection or self.writer.milvus_manager.collection_name
-            )
-            try:
-                self._notify_cleanup_step(step_callback, "milvus")
-                result = store.delete(eq_filter("filename", filename))
-                self._notify_cleanup_step(step_callback, "parent_store")
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError(
-                    ErrorCode.STORAGE_UNAVAILABLE,
-                    "legacy 文档向量清理暂时失败",
-                    status_code=503,
-                    retryable=True,
-                    stage="milvus",
-                ) from exc
-            if isinstance(result, dict):
-                deleted_vectors = int(result.get("delete_count", 0) or 0)
-            try:
-                self.parent_store.delete_legacy_by_filename(filename)
-                self._notify_cleanup_step(step_callback, "finalize")
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError(
-                    ErrorCode.STORAGE_UNAVAILABLE,
-                    "legacy 父级分块清理暂时失败",
-                    status_code=503,
-                    retryable=True,
-                    stage="parent_store",
-                ) from exc
-        else:
+        scope = self.writer.build_version_scope(
+            tenant_id=document.tenant_id,
+            knowledge_base_id=document.knowledge_base_id,
+            document_id=document.id,
+            document_version_id=version.id,
+            index_version=version.index_version,
+            collection_name=version.vector_collection,
+        )
+        try:
+            self._notify_cleanup_step(step_callback, "milvus")
+            deleted_vectors = self.writer.delete_by_version(scope)
+            self._notify_cleanup_step(step_callback, "parent_store")
+        except AppError:
+            raise
+        except Exception as exc:
             raise AppError(
-                ErrorCode.CONFLICT,
-                "未知文档存储布局，无法清理",
-                status_code=409,
+                ErrorCode.STORAGE_UNAVAILABLE,
+                "文档向量索引清理暂时失败",
+                status_code=503,
+                retryable=True,
+                stage="milvus",
+            ) from exc
+        try:
+            self.parent_store.delete_by_version(
+                tenant_id=scope.tenant_id,
+                knowledge_base_id=scope.knowledge_base_id,
+                document_id=scope.document_id,
+                document_version_id=scope.document_version_id,
+                index_version=scope.index_version,
             )
+            self._notify_cleanup_step(step_callback, "object_store")
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(
+                ErrorCode.STORAGE_UNAVAILABLE,
+                "文档父级分块清理暂时失败",
+                status_code=503,
+                retryable=True,
+                stage="parent_store",
+            ) from exc
+        try:
+            self._unlink_version_object(version)
+            self._notify_cleanup_step(step_callback, "finalize")
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(
+                ErrorCode.STORAGE_UNAVAILABLE,
+                "文档版本对象清理暂时失败",
+                status_code=503,
+                retryable=True,
+                stage="object_store",
+            ) from exc
         if finalize:
             try:
                 self.catalog.record_cleanup(document_version_id=version.id)
@@ -1104,45 +1047,20 @@ class DocumentPublication:
     def retire(
         self,
         canonical_name: str,
-        *,
-        owner_id: int | None = None,
     ) -> DocumentRetirementOutcome:
         retirement_job_id = f"retire_{uuid4().hex}"
         document = self._find_document(canonical_name)
-        knowledge_base_id = document.knowledge_base_id if document else None
-        if knowledge_base_id is None:
-            knowledge_base = self.catalog.find_knowledge_base(
-                tenant_id=self.config.tenant_id,
-                name=self.config.knowledge_base_name,
-            )
-            if knowledge_base is None:
-                if owner_id is None:
-                    raise AppError(
-                        ErrorCode.INVALID_REQUEST,
-                        "删除未接管 legacy 文档时必须提供 owner_id",
-                        status_code=400,
-                    )
-                knowledge_base = self.catalog.ensure_knowledge_base(
-                    tenant_id=self.config.tenant_id,
-                    owner_id=owner_id,
-                    name=self.config.knowledge_base_name,
-                )
-            knowledge_base_id = knowledge_base.id
-        tombstone_owner_id = document.owner_id if document else owner_id
-        if tombstone_owner_id is None:
+        if document is None:
             raise AppError(
-                ErrorCode.INVALID_REQUEST,
-                "删除未接管 legacy 文档时必须提供 owner_id",
-                status_code=400,
+                ErrorCode.NOT_FOUND,
+                "文档不存在",
+                status_code=404,
             )
         try:
-            result = self.catalog.retire_with_legacy_suppression(
+            result = self.catalog.retire(
                 tenant_id=self.config.tenant_id,
-                knowledge_base_id=knowledge_base_id,
+                knowledge_base_id=document.knowledge_base_id,
                 canonical_name=canonical_name,
-                owner_id=tombstone_owner_id,
-                vector_collection=self.writer.milvus_manager.collection_name,
-                cleanup_grace=timedelta(0),
                 retirement_job_id=retirement_job_id,
             )
         except AppError:
@@ -1157,8 +1075,14 @@ class DocumentPublication:
                     "logical_retired": False,
                     "catalog_scope_revoked": False,
                 },
-                stage="catalog_tombstone",
+                stage="document_catalog",
             ) from exc
+        if not result.found:
+            raise AppError(
+                ErrorCode.NOT_FOUND,
+                "文档不存在",
+                status_code=404,
+            )
         document = self._find_document(canonical_name)
         if document is None:
             raise AppError(
@@ -1170,7 +1094,7 @@ class DocumentPublication:
             document_id=document.id,
             canonical_name=document.canonical_name,
             chunks_deleted=0,
-            cleanup_pending=bool(result.cleanup_versions),
+            cleanup_required=bool(result.cleanup_versions),
             cleanup_error_code=None,
             cleanup_step=("pending" if result.cleanup_versions else None),
             retirement_job_id=retirement_job_id,
@@ -1194,13 +1118,13 @@ class DocumentPublication:
             offset += len(documents)
 
     def get_job_view(self, job_id: str) -> dict[str, Any]:
-        return index_job_compatibility_view(
+        return index_job_view(
             self.catalog.get_job(job_id=job_id, tenant_id=self.config.tenant_id)
         )
 
     def list_job_views(self, *, limit: int = 100) -> list[dict[str, Any]]:
         return [
-            index_job_compatibility_view(job)
+            index_job_view(job)
             for job in self.catalog.list_jobs(
                 tenant_id=self.config.tenant_id,
                 limit=limit,
@@ -1214,7 +1138,6 @@ def _view_step_key(current_step: str) -> str:
         "uploaded": "upload",
         "verified": "verify",
         "published": "publish",
-        "legacy_adopted": "publish",
         "failed": "publish",
         "superseded": "publish",
     }
@@ -1222,7 +1145,7 @@ def _view_step_key(current_step: str) -> str:
     return normalized if normalized in _STEP_ORDER else "reserve"
 
 
-def index_job_compatibility_view(job: IndexJobRecord) -> dict[str, Any]:
+def index_job_view(job: IndexJobRecord) -> dict[str, Any]:
     failed = job.status in {
         IndexJobStatus.FAILED,
         IndexJobStatus.CANCELLED,
@@ -1285,5 +1208,5 @@ __all__ = [
     "DocumentRetirementOutcome",
     "PublicationOutcome",
     "UPLOAD_STEPS",
-    "index_job_compatibility_view",
+    "index_job_view",
 ]

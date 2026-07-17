@@ -1,4 +1,4 @@
-"""Compatibility Adapter for indexing callers using the async Provider Runtime."""
+"""Indexing Adapter for the shared asynchronous Embedding Runtime."""
 
 from backend.providers.embedding import EmbeddingScope, EmbeddingService
 from backend.providers.runtime import provider_runtime

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.tools.contracts import ToolResultV1
 from backend.tools.web import make_web_fetch, make_web_search
 from backend.web_research.citations import (
@@ -145,8 +145,8 @@ def test_ledger_allows_link_shaped_text_inside_code_but_never_rewrites_it():
 
 def test_unknown_and_cross_run_evidence_fail_closed_without_identity_leakage():
     evidence = _evidence()
-    foreign = ChatRequestContext.for_sync(user_id="alice", session_id="foreign")
-    current = ChatRequestContext.for_sync(user_id="alice", session_id="current")
+    foreign = RunRequestContext.for_sync(user_id="alice", thread_id="foreign")
+    current = RunRequestContext.for_sync(user_id="alice", thread_id="current")
     foreign.record_web_search_result(_result(evidence))
     current.mark_web_research_attempted()
     token = f"[source](webcite:{evidence.evidence_id})"
@@ -273,7 +273,7 @@ def test_untrusted_source_title_is_html_and_markdown_escaped():
 def test_context_keeps_fetch_capability_separate_from_citation_evidence():
     search_evidence = _evidence(content="Search result content.")
     fetched_evidence = _evidence(content="Fetched full page content.")
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="separate-seams")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="separate-seams")
 
     try:
         ctx.record_web_search_result(_result(search_evidence))
@@ -297,7 +297,7 @@ def test_context_keeps_fetch_capability_separate_from_citation_evidence():
 
 def test_context_close_clears_ledger_and_returns_only_stable_failure():
     evidence = _evidence()
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="closed")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="closed")
     ctx.record_web_search_result(_result(evidence))
     ctx.close()
 
@@ -327,7 +327,7 @@ def test_web_tools_register_search_and_fetch_results_without_minting_fetch_ids(
         "backend.tools.web.get_web_research_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="tool-ledger")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="tool-ledger")
 
     try:
         search = make_web_search(ctx)
@@ -359,7 +359,7 @@ def test_failed_web_tool_attempt_still_enables_terminal_validation(monkeypatch):
         "backend.tools.web.get_web_research_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="failed-tool")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="failed-tool")
 
     try:
         result = make_web_search(ctx).invoke({"query": "public evidence"})

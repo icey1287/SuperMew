@@ -38,7 +38,7 @@ from backend.agent.middleware import (
 )
 from backend.agent.models import ModelRegistry, ModelRole
 from backend.agent.runtime import AgentRuntime, AgentRuntimeInput
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AgentSettings, ModelSettings, RunSettings
 from backend.guardrails import DEFAULT_GUARDRAIL_POLICY, ToolGuardrail
@@ -94,9 +94,7 @@ def _graph_budget(**overrides):
 
 
 def _context(*, note="", allowed_tools=None, budget=None):
-    request_context = ChatRequestContext.for_sync(
-        user_id="alice", session_id="thread-1"
-    )
+    request_context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
     resolved_allowed = frozenset(allowed_tools or ())
 
     class RuntimeTestToolSession:
@@ -874,8 +872,8 @@ class AgentRuntimeFactoryTests(unittest.TestCase):
             models=models,
             agent_builder=build_agent,
         )
-        request_context = ChatRequestContext.for_sync(
-            user_id="alice", session_id="thread-1"
+        request_context = RunRequestContext.for_sync(
+            user_id="alice", thread_id="thread-1"
         )
         try:
             runtime = factory.create(

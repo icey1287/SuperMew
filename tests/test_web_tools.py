@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.settings import WebResearchSettings
 from backend.tools.catalog import (
     build_default_tool_registry,
@@ -128,7 +128,7 @@ def test_tool_envelope_budget_does_not_reuse_http_response_budget(monkeypatch):
     registry = build_default_tool_registry(web_research_settings=settings)
     assert registry.descriptor("web_search").result_size_limit == 145_536
 
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-envelope")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-envelope")
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})
     session.search("public web evidence")
@@ -166,7 +166,7 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
     def cancelled() -> bool:
         return False
 
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-search")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-search")
     ctx.configure_provider_runtime(
         deadline_at=1234.5,
         cancellation_probe=cancelled,
@@ -227,7 +227,7 @@ def test_web_fetch_accepts_only_run_local_search_evidence(monkeypatch):
         "backend.tools.web.get_web_research_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-fetch")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-fetch")
     ctx.configure_provider_runtime(deadline_at=55.0, cancellation_probe=lambda: False)
     registry = build_default_tool_registry(web_research_settings=_settings())
     session = registry.bind(ctx, _access())
@@ -268,7 +268,7 @@ def test_web_runtime_stable_error_is_preserved_without_sensitive_details(monkeyp
         "backend.tools.web.get_web_research_runtime",
         lambda: Runtime(),
     )
-    ctx = ChatRequestContext.for_sync(user_id="alice", session_id="web-failure")
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-failure")
     registry = build_default_tool_registry(web_research_settings=_settings())
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})

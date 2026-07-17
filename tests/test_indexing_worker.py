@@ -149,13 +149,12 @@ def _stage(env, reservation, *, execution: IndexJobExecution | None = None):
     )
 
 
-def _publish(env, reservation, *, cleanup_grace: timedelta = timedelta(0)):
+def _publish(env, reservation):
     _stage(env, reservation)
     return env.catalog.publish(
         job_id=reservation.job.id,
         publication_fence=reservation.publication_fence,
         expected_current_version_id=reservation.expected_current_version_id,
-        cleanup_grace=cleanup_grace,
     )
 
 
@@ -183,6 +182,19 @@ def _expire_cleanup_lease(env, job_id: str) -> None:
     with env.Session.begin() as db:
         row = db.get(DocumentCleanupJob, job_id)
         row.lease_expires_at = utcnow() - timedelta(seconds=1)
+
+
+def _make_cleanup_due(env, version_id: str) -> None:
+    due = utcnow() - timedelta(seconds=1)
+    with env.Session.begin() as db:
+        version = db.get(DocumentVersion, version_id)
+        job = (
+            db.query(DocumentCleanupJob)
+            .filter(DocumentCleanupJob.document_version_id == version_id)
+            .one()
+        )
+        version.cleanup_after = due
+        job.next_retry_at = due
 
 
 def test_second_worker_cannot_claim_live_job_but_reclaims_expired_lease(catalog_env):
@@ -550,7 +562,7 @@ def test_cleanup_readiness_only_reports_currently_claimable_backlog(catalog_env)
     first = _reserve(catalog_env, "version-one")
     _publish(catalog_env, first)
     second = _reserve(catalog_env, "version-two")
-    _publish(catalog_env, second, cleanup_grace=timedelta(minutes=5))
+    _publish(catalog_env, second)
     with catalog_env.Session.begin() as db:
         version = db.get(DocumentVersion, first.version.id)
         cleanup_job = (
@@ -731,7 +743,6 @@ def test_staged_reclaim_only_publishes_and_old_execution_cannot_commit(catalog_e
             vector_collection="documents_v2",
             upload_dir=catalog_env.upload_dir,
             max_attempts=3,
-            cleanup_grace=timedelta(0),
         ),
     )
 
@@ -786,7 +797,6 @@ def test_staged_publish_still_rejects_corrupted_recorded_profile(catalog_env):
             vector_collection="documents_v2",
             upload_dir=catalog_env.upload_dir,
             max_attempts=3,
-            cleanup_grace=timedelta(0),
         ),
     )
 
@@ -833,7 +843,6 @@ def test_publication_rejects_a_claimed_job_when_runtime_profile_drifted(catalog_
             vector_collection="documents_v2",
             upload_dir=catalog_env.upload_dir,
             max_attempts=3,
-            cleanup_grace=timedelta(0),
         ),
     )
 
@@ -854,6 +863,7 @@ def test_cleanup_job_reclaim_is_fenced_and_only_current_owner_can_complete(catal
     _publish(catalog_env, first)
     second = _reserve(catalog_env, "version-two")
     _publish(catalog_env, second)
+    _make_cleanup_due(catalog_env, first.version.id)
 
     claimed = catalog_env.catalog.claim_cleanup_job(
         worker_id="cleanup-worker-a",
@@ -932,7 +942,6 @@ def test_retirement_jobs_have_unique_operation_identity_across_reuploads(catalog
         tenant_id="tenant-a",
         knowledge_base_id=catalog_env.knowledge_base.id,
         canonical_name="guide.pdf",
-        cleanup_grace=timedelta(0),
         retirement_job_id="retire-first",
     )
     with catalog_env.Session.begin() as db:
@@ -949,7 +958,6 @@ def test_retirement_jobs_have_unique_operation_identity_across_reuploads(catalog
         tenant_id="tenant-a",
         knowledge_base_id=catalog_env.knowledge_base.id,
         canonical_name="guide.pdf",
-        cleanup_grace=timedelta(0),
         retirement_job_id="retire-second",
     )
 
@@ -972,7 +980,7 @@ def test_retirement_jobs_have_unique_operation_identity_across_reuploads(catalog
     assert hidden.value.code == ErrorCode.NOT_FOUND
 
 
-def test_atomic_retirement_scope_is_revoked_before_cleanup_grace_allows_claim(
+def test_atomic_retirement_scope_is_revoked_and_cleanup_is_immediately_claimable(
     catalog_env,
     monkeypatch,
 ):
@@ -986,26 +994,23 @@ def test_atomic_retirement_scope_is_revoked_before_cleanup_grace_allows_claim(
         lambda: database_clock - timedelta(hours=2),
     )
 
-    retirement = catalog_env.catalog.retire_with_legacy_suppression(
+    retirement = catalog_env.catalog.retire(
         tenant_id="tenant-a",
         knowledge_base_id=catalog_env.knowledge_base.id,
         canonical_name="guide.pdf",
-        owner_id=1,
-        vector_collection="legacy_documents",
-        cleanup_grace=timedelta(minutes=5),
-        retirement_job_id="retire-with-grace",
+        retirement_job_id="retire-immediate",
     )
 
     assert current.version.id in {version.id for version in retirement.cleanup_versions}
     operation = catalog_env.catalog.get_retirement_job(
-        job_id="retire-with-grace",
+        job_id="retire-immediate",
         tenant_id="tenant-a",
     )
     assert set(operation.cleanup_version_ids) == {
         version.id for version in retirement.cleanup_versions
     }
     assert all(
-        version.cleanup_after == database_clock + timedelta(minutes=5)
+        version.cleanup_after == database_clock
         for version in retirement.cleanup_versions
     )
     assert (
@@ -1017,14 +1022,6 @@ def test_atomic_retirement_scope_is_revoked_before_cleanup_grace_allows_claim(
         is None
     )
     due = retirement.cleanup_versions[0].cleanup_after
-    assert (
-        catalog_env.catalog.claim_cleanup_job(
-            worker_id="cleanup-worker-a",
-            lease_seconds=30,
-            now=due - timedelta(seconds=1),
-        )
-        is None
-    )
     claimed = catalog_env.catalog.claim_cleanup_job(
         worker_id="cleanup-worker-a",
         lease_seconds=30,
@@ -1034,54 +1031,12 @@ def test_atomic_retirement_scope_is_revoked_before_cleanup_grace_allows_claim(
     assert claimed.version.id in set(operation.cleanup_version_ids)
 
 
-def test_atomic_retirement_rolls_back_scope_revoke_when_tombstone_fails(
-    catalog_env,
-    monkeypatch,
-):
-    current = _reserve(catalog_env, "version-one")
-    _publish(catalog_env, current)
-
-    def fail_tombstone(*_args, **_kwargs):
-        raise RuntimeError("simulated crash before legacy tombstone commit")
-
-    monkeypatch.setattr(
-        DocumentCatalog,
-        "_append_legacy_tombstone",
-        staticmethod(fail_tombstone),
-    )
-
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        catalog_env.catalog.retire_with_legacy_suppression(
-            tenant_id="tenant-a",
-            knowledge_base_id=catalog_env.knowledge_base.id,
-            canonical_name="guide.pdf",
-            owner_id=1,
-            vector_collection="legacy_documents",
-            cleanup_grace=timedelta(minutes=5),
-            retirement_job_id="retire-rollback",
-        )
-
-    visible = catalog_env.catalog.get_current(
-        tenant_id="tenant-a",
-        knowledge_base_id=catalog_env.knowledge_base.id,
-        canonical_name="guide.pdf",
-    )
-    assert visible.current_version.id == current.version.id
-    with pytest.raises(AppError) as missing_operation:
-        catalog_env.catalog.get_retirement_job(
-            job_id="retire-rollback",
-            tenant_id="tenant-a",
-        )
-    assert missing_operation.value.code == ErrorCode.NOT_FOUND
-    with catalog_env.Session() as db:
-        assert db.query(DocumentCleanupJob).count() == 0
-
-
 def test_cleanup_retry_wait_and_attempt_exhaustion_are_durable(catalog_env):
     first = _reserve(catalog_env, "version-one")
     _publish(catalog_env, first)
     second = _reserve(catalog_env, "version-two")
     _publish(catalog_env, second)
+    _make_cleanup_due(catalog_env, first.version.id)
     with catalog_env.Session.begin() as db:
         cleanup_job = (
             db.query(DocumentCleanupJob)

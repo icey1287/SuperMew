@@ -53,7 +53,7 @@ class RerankStage:
         deadline: float | None = None,
         cancellation: CancellationProbe | None = None,
     ) -> RerankStageOutput:
-        """Compatibility Seam for synchronous graph nodes."""
+        """Synchronous Seam for graph nodes."""
 
         if self._loop_bridge is None:
             raise RuntimeError("sync rerank requires an injected ProviderLoopBridge")

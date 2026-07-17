@@ -22,14 +22,12 @@ def _utils(**overrides):
 def _target(
     collection: str,
     *,
-    layout: str = "versioned",
     required: bool = True,
     filter_expr: str = "chunk_level == 3",
 ):
     return SimpleNamespace(
         collection_name=collection,
         filter_expr=filter_expr,
-        storage_layout=layout,
         required=required,
     )
 
@@ -161,11 +159,11 @@ def test_zero_target_snapshot_short_circuits_without_embedding_or_milvus():
     assert embedding.calls == []
 
 
-def test_legacy_dual_read_routes_both_collections_and_deduplicates_hits():
+def test_multiple_catalog_collections_are_routed_and_deduplicated():
     utils = _utils()
-    versioned = _target("catalog_v1")
-    legacy = _target("legacy", layout="legacy_filename", required=False)
-    utils._document_retrieval_scope = Scope(_snapshot(versioned, legacy))
+    primary = _target("catalog_v1")
+    archive = _target("archive_catalog_v1", required=False)
+    utils._document_retrieval_scope = Scope(_snapshot(primary, archive))
     utils._embedding_service = Embedding()
     utils._milvus_manager = RoutedStore(
         {
@@ -175,9 +173,9 @@ def test_legacy_dual_read_routes_both_collections_and_deduplicates_hits():
                     _doc("shared", "shared evidence", 0.8),
                 ]
             ),
-            "legacy": TargetStore(
+            "archive_catalog_v1": TargetStore(
                 hybrid=[
-                    _doc("legacy-1", "legacy evidence"),
+                    _doc("archive-1", "archive evidence"),
                     _doc("shared", "shared evidence", 0.7),
                 ]
             ),
@@ -188,7 +186,7 @@ def test_legacy_dual_read_routes_both_collections_and_deduplicates_hits():
 
     assert [item["chunk_id"] for item in result["docs"]] == [
         "versioned-1",
-        "legacy-1",
+        "archive-1",
         "shared",
     ]
     assert result["meta"]["recall_count"] == 4
@@ -259,12 +257,14 @@ def test_required_missing_collection_is_typed_provider_failure():
     assert store.has_calls == 2
 
 
-def test_optional_missing_legacy_collection_is_a_healthy_skip():
+def test_optional_missing_catalog_collection_is_a_healthy_skip():
     utils = _utils()
-    legacy = _target("legacy", layout="legacy_filename", required=False)
-    utils._document_retrieval_scope = Scope(_snapshot(legacy))
+    archive = _target("archive_catalog_v1", required=False)
+    utils._document_retrieval_scope = Scope(_snapshot(archive))
     utils._embedding_service = Embedding()
-    utils._milvus_manager = RoutedStore({"legacy": TargetStore(exists=False)})
+    utils._milvus_manager = RoutedStore(
+        {"archive_catalog_v1": TargetStore(exists=False)}
+    )
 
     result = utils.retrieve_documents("question", top_k=1)
 

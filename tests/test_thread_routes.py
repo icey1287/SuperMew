@@ -7,29 +7,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import backend.api.routes.runs as run_routes
-import backend.api.routes.sessions as session_routes
 import backend.api.routes.threads as thread_routes
 from backend.api.router import router as application_router
-from backend.chat.repository import MessageRecord
 from backend.core.errors import AppError, ErrorCode, install_exception_handlers
 from backend.infra.auth import get_current_user
-from backend.threads.service import (
-    LegacyMessagePage,
-    ThreadMessage,
-    ThreadMessagePage,
-    ThreadSummary,
-)
+from backend.threads.service import ThreadMessage, ThreadMessagePage, ThreadSummary
 
 
 NOW = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
 
 
-def _app(*, authenticated: bool = True, include_legacy: bool = False) -> FastAPI:
+def _app(*, authenticated: bool = True) -> FastAPI:
     app = FastAPI()
     install_exception_handlers(app)
     app.include_router(thread_routes.router)
-    if include_legacy:
-        app.include_router(session_routes.router)
     if authenticated:
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
             username="alice",
@@ -270,79 +261,6 @@ def test_canonical_thread_routes_require_authentication(
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
-
-
-def test_legacy_session_adapter_keeps_old_shape_and_after_cursor() -> None:
-    record = MessageRecord(
-        id=1,
-        thread_id="legacy id",
-        sequence=1,
-        role="human",
-        content="旧消息",
-        status="completed",
-        run_id=None,
-        client_message_id=None,
-        timestamp=datetime(2026, 7, 16, 8, 0),
-        updated_at=datetime(2026, 7, 16, 8, 0),
-        rag_trace=None,
-    )
-    legacy_messages = Mock(
-        return_value=LegacyMessagePage(messages=(record,), next_cursor=1)
-    )
-    list_threads = Mock(return_value=[_thread_summary("thread-1")])
-
-    with (
-        patch.object(
-            session_routes.thread_service,
-            "legacy_messages",
-            legacy_messages,
-        ),
-        patch.object(
-            session_routes.thread_service,
-            "list_threads",
-            list_threads,
-        ),
-        TestClient(_app(include_legacy=True)) as client,
-    ):
-        messages = client.get("/sessions/legacy%20id?after=0&limit=1")
-        sessions = client.get("/sessions")
-
-    assert messages.status_code == 200
-    assert messages.json() == {
-        "messages": [
-            {
-                "id": 1,
-                "run_id": None,
-                "sequence": 1,
-                "status": "completed",
-                "type": "human",
-                "content": "旧消息",
-                "timestamp": "2026-07-16T08:00:00",
-                "rag_trace": None,
-            }
-        ],
-        "next_cursor": 1,
-    }
-    assert sessions.json()["sessions"][0]["session_id"] == "thread-1"
-    legacy_messages.assert_called_once_with(
-        username="alice",
-        session_id="legacy id",
-        after=0,
-        limit=1,
-    )
-
-
-def test_legacy_routes_are_deprecated_without_importing_canonical_adapter() -> None:
-    app = _app(include_legacy=True)
-    schema = app.openapi()
-
-    assert schema["paths"]["/v1/threads"]["get"].get("deprecated") is not True
-    for path, method in (
-        ("/sessions", "get"),
-        ("/sessions/{session_id}", "get"),
-        ("/sessions/{session_id}", "delete"),
-    ):
-        assert schema["paths"][path][method]["deprecated"] is True
 
 
 def test_thread_create_route_belongs_only_to_thread_adapter() -> None:

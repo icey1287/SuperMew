@@ -14,7 +14,7 @@ from uuid import UUID
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.tools.contracts import ToolResultV1, new_tool_failure, new_tool_success
 
 
@@ -129,7 +129,7 @@ def _sql_failure(error: Exception) -> ToolResultV1 | None:
     )
 
 
-def make_sql_schema(_ctx: ChatRequestContext) -> BaseTool:
+def make_sql_schema(_ctx: RunRequestContext) -> BaseTool:
     """Build a request-owned schema Adapter over the shared SQL runtime."""
 
     @tool("sql_schema")
@@ -151,7 +151,7 @@ def make_sql_schema(_ctx: ChatRequestContext) -> BaseTool:
     return sql_schema
 
 
-def make_sql_query(ctx: ChatRequestContext) -> BaseTool:
+def make_sql_query(ctx: RunRequestContext) -> BaseTool:
     """Build a request-owned query Adapter with Run deadline and cancellation."""
 
     @tool("sql_query")

@@ -4,6 +4,7 @@ import os
 from functools import partial
 from typing import Annotated, Literal
 
+from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.core.settings import (
@@ -13,7 +14,6 @@ from backend.core.settings import (
 )
 from backend.tools.sandbox import SANDBOX_METADATA_KEYS
 from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA
-from backend.tools.knowledge import make_search_knowledge_base
 from backend.tools.registry import (
     ToolDescriptor,
     ToolExposure,
@@ -98,6 +98,19 @@ def _control_placeholder(name: str):
     return build
 
 
+def _knowledge_placeholder(_request_context):
+    @tool("search_knowledge_base")
+    def search_knowledge_base(query: str) -> str:
+        """Search the current Document Version Catalog."""
+
+        del query
+        raise RuntimeError(
+            "search_knowledge_base requires the Run-owned checkpoint Adapter"
+        )
+
+    return search_knowledge_base
+
+
 def build_default_tool_registry(
     *,
     sql_assistant_settings: SqlAssistantSettings | None = None,
@@ -136,7 +149,7 @@ def build_default_tool_registry(
             result_size_limit=524_288,
             resource_scope="knowledge-read",
         ),
-        make_search_knowledge_base,
+        _knowledge_placeholder,
         exposure=ToolExposure.RESIDENT,
     )
     registry.register(

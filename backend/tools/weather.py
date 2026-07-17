@@ -4,7 +4,7 @@ from typing import Optional
 
 import requests
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.providers import (
     ProviderCode,
     ProviderCallContext,
@@ -32,7 +32,7 @@ def _tool_error(error: ProviderError) -> str:
     return f"{code}: {error.message}"
 
 
-def _call_context(ctx: ChatRequestContext | None = None) -> ProviderCallContext:
+def _call_context(ctx: RunRequestContext | None = None) -> ProviderCallContext:
     request_deadline = None
     cancellation = None
     if ctx is not None:
@@ -143,7 +143,7 @@ def _query_weather(
 
 
 def get_current_weather(location: str, extensions: Optional[str] = "base") -> str:
-    """Compatibility adapter returning a safe string instead of raising."""
+    """Return a safe Tool result instead of exposing Provider failures."""
 
     try:
         return _query_weather(location, extensions, context=_call_context())
@@ -159,7 +159,7 @@ def get_current_weather_tool(location: str, extensions: Optional[str] = "base") 
     return get_current_weather(location, extensions)
 
 
-def make_weather_tool(ctx: ChatRequestContext):
+def make_weather_tool(ctx: RunRequestContext):
     """Build a request-owned weather Adapter with Run deadline/cancellation."""
 
     @tool("get_current_weather")

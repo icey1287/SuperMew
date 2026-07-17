@@ -53,31 +53,13 @@ class FakeEmbeddingService:
         return [[float(idx)] for idx, _ in enumerate(texts, start=1)]
 
 
-class FakeMilvusStore:
-    collection_name = "test_collection"
-
-    def __init__(self, events):
-        self.events = events
-
-    def init_collection(self, dense_dim):
-        self.events.append(("init_collection", dense_dim))
-
-    def insert(self, data):
-        self.events.append(("insert", [item["chunk_id"] for item in data]))
-
-    def session(self):
-        raise AssertionError(
-            "write_documents must not hold a Milvus session while embedding"
-        )
-
-
 class ShortEmbeddingService:
     def get_embeddings(self, texts):
         return [[1.0]] * max(len(texts) - 1, 0)
 
 
 class VersionedStore:
-    def __init__(self, events, collection_name="legacy_collection", registry=None):
+    def __init__(self, events, collection_name="documents", registry=None):
         self.events = events
         self.collection_name = collection_name
         self.registry = registry if registry is not None else {}
@@ -93,7 +75,7 @@ class VersionedStore:
         return self.registry[name]
 
     def init_collection(self, dense_dim):
-        self.events.append(("legacy_init", self.collection_name, dense_dim))
+        self.events.append(("base_init", self.collection_name, dense_dim))
 
     def init_versioned_collection(self, dense_dim):
         self.events.append(("versioned_init", self.collection_name, dense_dim))
@@ -156,71 +138,6 @@ def versioned_document(index, *, version="version-1", document="doc-1"):
 
 
 class MilvusWriterTests(unittest.TestCase):
-    def test_write_documents_opens_short_insert_calls_after_embedding_batches(self):
-        module = load_milvus_writer_module()
-        events = []
-        writer = module.MilvusWriter(
-            embedding_service=FakeEmbeddingService(events),
-            milvus_manager=FakeMilvusStore(events),
-        )
-        documents = [
-            {
-                "text": f"text {idx}",
-                "filename": "doc.pdf",
-                "file_type": "PDF",
-                "chunk_id": f"chunk-{idx}",
-            }
-            for idx in range(3)
-        ]
-
-        progress = []
-        writer.write_documents(
-            documents,
-            batch_size=2,
-            progress_callback=lambda processed, total: progress.append(
-                (processed, total)
-            ),
-        )
-
-        self.assertEqual(
-            events,
-            [
-                ("init_collection", 1024),
-                ("embed", ["text 0", "text 1"]),
-                ("insert", ["chunk-0", "chunk-1"]),
-                ("embed", ["text 2"]),
-                ("insert", ["chunk-2"]),
-            ],
-        )
-        self.assertEqual(progress, [(2, 3), (3, 3)])
-
-    def test_vector_count_mismatch_is_rejected_before_zip_can_drop_documents(self):
-        module = load_milvus_writer_module()
-        events = []
-        writer = module.MilvusWriter(
-            embedding_service=ShortEmbeddingService(),
-            milvus_manager=FakeMilvusStore(events),
-        )
-        documents = [
-            {
-                "text": "first",
-                "filename": "doc.pdf",
-                "file_type": "PDF",
-                "chunk_id": "chunk-1",
-            },
-            {
-                "text": "second",
-                "filename": "doc.pdf",
-                "file_type": "PDF",
-                "chunk_id": "chunk-2",
-            },
-        ]
-
-        with self.assertRaisesRegex(RuntimeError, "vector count"):
-            writer.write_documents(documents)
-
-        self.assertEqual([("init_collection", 1024)], events)
-
     def test_versioned_write_defaults_to_isolated_catalog_collection_and_receipt(self):
         module = load_milvus_writer_module()
         events = []
@@ -235,7 +152,7 @@ class MilvusWriterTests(unittest.TestCase):
             batch_size=2,
         )
 
-        self.assertEqual("legacy_collection_catalog_v1", receipt.collection_name)
+        self.assertEqual("documents_catalog_v1", receipt.collection_name)
         self.assertEqual("tenant-1", receipt.tenant_id)
         self.assertEqual("kb-1", receipt.knowledge_base_id)
         self.assertEqual("doc-1", receipt.document_id)
@@ -257,17 +174,14 @@ class MilvusWriterTests(unittest.TestCase):
         ]
         self.assertEqual(2, len(versioned_inserts))
         self.assertTrue(
-            all(
-                event[1] == "legacy_collection_catalog_v1"
-                for event in versioned_inserts
-            )
+            all(event[1] == "documents_catalog_v1" for event in versioned_inserts)
         )
         first_payload = versioned_inserts[0][2][0]
         self.assertEqual(["team:legal"], first_payload["acl_tags"])
         self.assertEqual("version-1", first_payload["document_version_id"])
         self.assertEqual("index-v2", first_payload["index_version"])
         self.assertNotIn(
-            "legacy_collection",
+            "documents",
             [event[1] for event in versioned_inserts],
         )
         cleanup_index = next(
@@ -311,7 +225,7 @@ class MilvusWriterTests(unittest.TestCase):
 
         events = []
         store = VersionedStore(events)
-        candidate = store.with_collection("legacy_collection_catalog_v1")
+        candidate = store.with_collection("documents_catalog_v1")
         candidate.insert_responses = [{"insert_count": 1}]
         writer = module.MilvusWriter(
             embedding_service=FakeEmbeddingService(events),

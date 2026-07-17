@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from backend.agent.factory import AgentRuntimeFactory, runtime_factory
 from backend.agent.runtime import AgentRuntimeInput, AgentRuntimeResult
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
 from backend.guardrails import RunToolApprovalGrant
@@ -371,9 +371,9 @@ class RunAgentExecutor:
         token: CancellationToken,
     ) -> RagRunOutcome:
         output_queue: asyncio.Queue = asyncio.Queue()
-        context = ChatRequestContext.for_stream(
+        context = RunRequestContext.for_stream(
             user_id=snapshot.username,
-            session_id=snapshot.run.thread_id,
+            thread_id=snapshot.run.thread_id,
             output_queue=output_queue,
         )
         remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
@@ -477,9 +477,9 @@ class RunAgentExecutor:
     ) -> RunExecutionOutcome:
         output_queue: asyncio.Queue = asyncio.Queue()
         trace_queue: asyncio.Queue = asyncio.Queue()
-        request_context = ChatRequestContext.for_stream(
+        request_context = RunRequestContext.for_stream(
             user_id=snapshot.username,
-            session_id=snapshot.run.thread_id,
+            thread_id=snapshot.run.thread_id,
             output_queue=output_queue,
         )
         remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)

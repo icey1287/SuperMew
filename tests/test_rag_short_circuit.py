@@ -1,11 +1,12 @@
 import importlib.util
+import hashlib
 import sys
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.providers import ProviderCode, ProviderError, ProviderOperation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +122,11 @@ def _doc(text, chunk_id="chunk-1", filename="doc.md"):
         "page_number": 1,
         "text": text,
         "chunk_id": chunk_id,
+        "document_id": "doc-1",
+        "document_version_id": "version-1",
+        "section_id": "section-1",
+        "index_version": "catalog-v1",
+        "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
 
 
@@ -137,7 +143,7 @@ def _meta(count):
 
 class RagShortCircuitTests(unittest.TestCase):
     def _ctx(self):
-        return ChatRequestContext.for_sync(user_id="u", session_id="s")
+        return RunRequestContext.for_sync(user_id="u", thread_id="s")
 
     def test_grader_uses_only_grade_model(self):
         pipeline = load_pipeline(
@@ -603,49 +609,6 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertTrue(resume_state["checkpoint_thread_id"].startswith("rag_"))
         self.assertTrue(resume_state["checkpoint_id"])
         self.assertTrue(resume_state["interrupt_id"])
-
-    def test_resume_goes_directly_to_targeted_retrieval_after_hitl_answer(self):
-        calls = {"retrieve": []}
-
-        def retrieve(query, top_k=5):
-            calls["retrieve"].append(query)
-            return {"docs": [_doc("丹瑾是湮灭属性", "retrieved")], "meta": _meta(1)}
-
-        def grade(schema, prompt):
-            return {
-                "relevance": "strong",
-                "answerability": "sufficient",
-                "ambiguity": "none",
-                "route": "answer",
-                "confidence": 0.9,
-            }
-
-        pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
-        resume_state = {
-            "question": "这个角色的属性是什么？",
-            "route": "clarify",
-            "retrieval_status": "needs_clarification",
-        }
-
-        ctx = self._ctx()
-        try:
-            result = pipeline.resume_rag_from_hitl(resume_state, "丹瑾", ctx)
-        finally:
-            ctx.close()
-
-        self.assertEqual(["丹瑾：这个角色的属性是什么？"], calls["retrieve"])
-        self.assertEqual("answerable", result.get("retrieval_status"))
-        self.assertEqual(1, len(result.get("docs", [])))
-        self.assertTrue(result.get("rag_trace", {}).get("hitl_resumed"))
-        self.assertEqual(
-            "targeted_retrieval",
-            result.get("rag_trace", {}).get("hitl_resume_strategy"),
-        )
-        self.assertEqual(
-            "hitl_targeted_retrieval",
-            result.get("rag_trace", {}).get("retrieval_stage"),
-        )
 
     def test_complex_sub_agents_keep_partial_docs_without_rewrite(self):
         calls = {"retrieve": [], "step_back": 0}

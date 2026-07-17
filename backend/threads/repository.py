@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Iterable
+from typing import Callable
 
 from sqlalchemy import and_, case
 from sqlalchemy.exc import IntegrityError
@@ -10,10 +10,10 @@ from sqlalchemy.orm import Query, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import ChatMessage, ChatSession, Run, User, utcnow
+from backend.db.models import Message, Thread, Run, User, utcnow
 from backend.runs.state import TERMINAL_RUN_STATUSES, RunStatus
 from backend.infra.database import SessionLocal
-from backend.schemas.chat import normalize_rag_trace
+from backend.schemas.rag import normalize_rag_trace
 
 
 SessionFactory = Callable[[], Session]
@@ -76,7 +76,7 @@ def _active_run_priority() -> ColumnElement[int]:
     )
 
 
-class ConversationRepository:
+class ThreadRepository:
     """Thread 与消息 journal 的唯一持久化 interface。"""
 
     def __init__(self, session_factory: SessionFactory = SessionLocal):
@@ -111,10 +111,10 @@ class ConversationRepository:
         db: Session,
         user_id: int,
         thread_id: str,
-    ) -> Query[ChatSession]:
-        return db.query(ChatSession).filter(
-            ChatSession.user_id == user_id,
-            ChatSession.session_id == thread_id,
+    ) -> Query[Thread]:
+        return db.query(Thread).filter(
+            Thread.user_id == user_id,
+            Thread.thread_id == thread_id,
         )
 
     def _get_or_create_thread(
@@ -125,16 +125,16 @@ class ConversationRepository:
         *,
         metadata: dict | None = None,
         lock: bool = False,
-    ) -> ChatSession:
+    ) -> Thread:
         query = self._thread_query(db, user.id, thread_id)
         if lock:
             query = query.with_for_update()
         thread = query.first()
         if thread:
             return thread
-        thread = ChatSession(
+        thread = Thread(
             user_id=user.id,
-            session_id=thread_id,
+            thread_id=thread_id,
             metadata_json=metadata or {},
             status="active",
             version=0,
@@ -146,7 +146,7 @@ class ConversationRepository:
         return thread
 
     @staticmethod
-    def _record(message: ChatMessage, thread_id: str) -> MessageRecord:
+    def _record(message: Message, thread_id: str) -> MessageRecord:
         return MessageRecord(
             id=message.id,
             thread_id=thread_id,
@@ -162,7 +162,7 @@ class ConversationRepository:
         )
 
     @staticmethod
-    def _assert_version(thread: ChatSession, expected_version: int | None) -> None:
+    def _assert_version(thread: Thread, expected_version: int | None) -> None:
         if expected_version is not None and thread.version != expected_version:
             raise AppError(
                 ErrorCode.CONFLICT,
@@ -196,10 +196,10 @@ class ConversationRepository:
                 self._assert_version(thread, expected_version)
                 if message.client_message_id:
                     existing = (
-                        db.query(ChatMessage)
+                        db.query(Message)
                         .filter(
-                            ChatMessage.session_ref_id == thread.id,
-                            ChatMessage.client_message_id == message.client_message_id,
+                            Message.thread_ref_id == thread.id,
+                            Message.client_message_id == message.client_message_id,
                         )
                         .first()
                     )
@@ -207,8 +207,8 @@ class ConversationRepository:
                         return self._record(existing, thread_id)
 
                 now = utcnow()
-                row = ChatMessage(
-                    session_ref_id=thread.id,
+                row = Message(
+                    thread_ref_id=thread.id,
                     run_id=message.run_id,
                     client_message_id=message.client_message_id,
                     sequence=thread.last_sequence + 1,
@@ -283,10 +283,10 @@ class ConversationRepository:
                 if not thread:
                     return None
                 row = (
-                    db.query(ChatMessage)
+                    db.query(Message)
                     .filter(
-                        ChatMessage.id == message_id,
-                        ChatMessage.session_ref_id == thread.id,
+                        Message.id == message_id,
+                        Message.thread_ref_id == thread.id,
                     )
                     .with_for_update()
                     .first()
@@ -310,115 +310,6 @@ class ConversationRepository:
         finally:
             db.close()
 
-    def sync_legacy_snapshot(
-        self,
-        username: str,
-        thread_id: str,
-        messages: Iterable,
-        *,
-        metadata: dict | None = None,
-        extra_message_data: list | None = None,
-    ) -> None:
-        """旧 ChatService adapter：只追加快照中尚未持久化的尾部。"""
-        incoming = list(messages)
-        db = self._session_factory()
-        try:
-            with db.begin():
-                user = self._user(db, username)
-                if not user:
-                    return
-                thread = self._get_or_create_thread(
-                    db,
-                    user,
-                    thread_id,
-                    metadata=metadata,
-                    lock=True,
-                )
-                rows = (
-                    db.query(ChatMessage)
-                    .filter(ChatMessage.session_ref_id == thread.id)
-                    .order_by(ChatMessage.sequence.asc())
-                    .all()
-                )
-                now = utcnow()
-                for index in range(len(rows), len(incoming)):
-                    item = incoming[index]
-                    extra = (
-                        extra_message_data[index]
-                        if extra_message_data and index < len(extra_message_data)
-                        else None
-                    ) or {}
-                    row = ChatMessage(
-                        session_ref_id=thread.id,
-                        sequence=thread.last_sequence + 1,
-                        message_type=item.type,
-                        content=str(item.content),
-                        status="completed",
-                        timestamp=now,
-                        updated_at=now,
-                        rag_trace=normalize_rag_trace(extra.get("rag_trace")),
-                    )
-                    db.add(row)
-                    rows.append(row)
-                    thread.last_sequence = row.sequence
-                    thread.message_count += 1
-                    thread.version += 1
-
-                if extra_message_data:
-                    for index, row in enumerate(rows[: len(incoming)]):
-                        extra = (
-                            extra_message_data[index]
-                            if index < len(extra_message_data)
-                            else None
-                        ) or {}
-                        if "rag_trace" in extra:
-                            row.rag_trace = normalize_rag_trace(extra.get("rag_trace"))
-                            row.updated_at = now
-
-                if metadata is not None:
-                    thread.metadata_json = {**(thread.metadata_json or {}), **metadata}
-                thread.updated_at = now
-        except IntegrityError as exc:
-            db.rollback()
-            raise AppError(
-                ErrorCode.CONFLICT,
-                "并发追加消息失败，请重试",
-                status_code=409,
-                retryable=True,
-            ) from exc
-        finally:
-            db.close()
-
-    def list_messages(
-        self,
-        username: str,
-        thread_id: str,
-        *,
-        after: int = 0,
-        limit: int = 200,
-    ) -> list[MessageRecord]:
-        db = self._session_factory()
-        try:
-            user = self._user(db, username)
-            if not user:
-                return []
-            thread = self._thread_query(db, user.id, thread_id).first()
-            if not thread:
-                return []
-            rows = (
-                db.query(ChatMessage)
-                .filter(
-                    ChatMessage.session_ref_id == thread.id,
-                    ChatMessage.sequence > max(after, 0),
-                )
-                .order_by(ChatMessage.sequence.asc())
-                .limit(max(1, min(limit, 500)))
-                .all()
-            )
-            return [self._record(row, thread_id) for row in rows]
-        finally:
-            db.close()
-
     def list_messages_before(
         self,
         username: str,
@@ -437,13 +328,11 @@ class ConversationRepository:
             thread = self._thread_query(db, user.id, thread_id).first()
             if not thread:
                 return None
-            query = db.query(ChatMessage).filter(
-                ChatMessage.session_ref_id == thread.id
-            )
+            query = db.query(Message).filter(Message.thread_ref_id == thread.id)
             if before is not None:
-                query = query.filter(ChatMessage.sequence < before)
+                query = query.filter(Message.sequence < before)
             rows = (
-                query.order_by(ChatMessage.sequence.desc())
+                query.order_by(Message.sequence.desc())
                 .limit(max(1, min(limit, 501)))
                 .all()
             )
@@ -451,25 +340,14 @@ class ConversationRepository:
         finally:
             db.close()
 
-    def thread_metadata(self, username: str, thread_id: str) -> dict:
-        db = self._session_factory()
-        try:
-            user = self._user(db, username)
-            if not user:
-                return {}
-            thread = self._thread_query(db, user.id, thread_id).first()
-            return dict(thread.metadata_json or {}) if thread else {}
-        finally:
-            db.close()
-
     @staticmethod
     def _summary_record(
-        thread: ChatSession,
+        thread: Thread,
         active_run: Run | None,
     ) -> ThreadSummaryRecord:
         return ThreadSummaryRecord(
-            thread_id=thread.session_id,
-            title=str((thread.metadata_json or {}).get("title") or thread.session_id),
+            thread_id=thread.thread_id,
+            title=str((thread.metadata_json or {}).get("title") or thread.thread_id),
             created_at=thread.created_at,
             updated_at=thread.updated_at,
             message_count=thread.message_count,
@@ -522,17 +400,17 @@ class ConversationRepository:
             if user is None:
                 return None
             row = (
-                db.query(ChatSession, Run)
+                db.query(Thread, Run)
                 .outerjoin(
                     Run,
                     and_(
-                        Run.thread_ref_id == ChatSession.id,
+                        Run.thread_ref_id == Thread.id,
                         Run.status.notin_(tuple(TERMINAL_RUN_STATUSES)),
                     ),
                 )
                 .filter(
-                    ChatSession.user_id == user.id,
-                    ChatSession.session_id == thread_id,
+                    Thread.user_id == user.id,
+                    Thread.thread_id == thread_id,
                 )
                 .order_by(_active_run_priority(), Run.created_at.asc(), Run.id.asc())
                 .first()
@@ -551,17 +429,17 @@ class ConversationRepository:
             if user is None:
                 return []
             rows = (
-                db.query(ChatSession, Run)
+                db.query(Thread, Run)
                 .outerjoin(
                     Run,
                     and_(
-                        Run.thread_ref_id == ChatSession.id,
+                        Run.thread_ref_id == Thread.id,
                         Run.status.notin_(tuple(TERMINAL_RUN_STATUSES)),
                     ),
                 )
-                .filter(ChatSession.user_id == user.id)
+                .filter(Thread.user_id == user.id)
                 .order_by(
-                    ChatSession.updated_at.desc(),
+                    Thread.updated_at.desc(),
                     _active_run_priority(),
                     Run.created_at.asc(),
                     Run.id.asc(),
@@ -578,19 +456,6 @@ class ConversationRepository:
             return summaries
         finally:
             db.close()
-
-    def list_threads(self, username: str) -> list[dict]:
-        return [
-            {
-                "session_id": record.thread_id,
-                "title": record.title,
-                "updated_at": record.updated_at.isoformat(),
-                "message_count": record.message_count,
-                "version": record.version,
-                "status": record.thread_status,
-            }
-            for record in self.list_thread_summaries(username)
-        ]
 
     def delete_thread(self, username: str, thread_id: str) -> bool:
         db = self._session_factory()
@@ -628,4 +493,4 @@ class ConversationRepository:
             db.close()
 
 
-repository = ConversationRepository()
+thread_repository = ThreadRepository()

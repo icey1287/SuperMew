@@ -15,7 +15,7 @@ from backend.guardrails import (
     RunDestinationCapabilityAuthority,
 )
 
-from backend.schemas.chat import HitlResumeState, normalize_rag_trace
+from backend.schemas.rag import HitlResumeState, normalize_rag_trace
 from backend.web_research.citations import (
     WebCitationLedger,
     WebCitationLedgerCode,
@@ -37,11 +37,11 @@ class _WebFetchAuthorization:
 
 
 @dataclass
-class ChatRequestContext:
-    """Request-owned state shared explicitly across agent tools and RAG nodes."""
+class RunRequestContext:
+    """Run-owned state shared explicitly across agent tools and RAG nodes."""
 
     user_id: str
-    session_id: str
+    thread_id: str
     output_queue: Optional[asyncio.Queue] = None
     loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -72,12 +72,12 @@ class ChatRequestContext:
         cls,
         *,
         user_id: str,
-        session_id: str,
+        thread_id: str,
         output_queue: asyncio.Queue,
-    ) -> ChatRequestContext:
+    ) -> RunRequestContext:
         return cls(
             user_id=user_id,
-            session_id=session_id,
+            thread_id=thread_id,
             output_queue=output_queue,
             loop=asyncio.get_running_loop(),
         )
@@ -87,9 +87,9 @@ class ChatRequestContext:
         cls,
         *,
         user_id: str,
-        session_id: str,
-    ) -> ChatRequestContext:
-        return cls(user_id=user_id, session_id=session_id)
+        thread_id: str,
+    ) -> RunRequestContext:
+        return cls(user_id=user_id, thread_id=thread_id)
 
     def emit_rag_step(
         self,
@@ -235,7 +235,7 @@ class ChatRequestContext:
         binding = DestinationCapabilityBinding(
             user_id=self.user_id,
             tenant_id=tenant_id,
-            thread_id=self.session_id,
+            thread_id=self.thread_id,
             run_id=run_id,
         )
         with self._lock:

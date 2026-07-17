@@ -21,8 +21,8 @@ from backend.core.errors import (
 )
 from backend.core.settings import get_settings
 from backend.db.models import (
-    ChatMessage,
-    ChatSession,
+    Message,
+    Thread,
     Run,
     RunCheckpoint,
     ToolAudit,
@@ -109,7 +109,7 @@ def hash_run_request(
     *,
     model_name: str = "",
     tenant_id: str = "default",
-    channel: str = "chat",
+    channel: str = "run",
     approved_tools: frozenset[str] = frozenset(),
     schema_version: int = 1,
 ) -> str:
@@ -235,10 +235,10 @@ class RunRepository:
         db: Session,
         user_id: int,
         thread_id: str,
-    ) -> Query[ChatSession]:
-        return db.query(ChatSession).filter(
-            ChatSession.user_id == user_id,
-            ChatSession.session_id == thread_id,
+    ) -> Query[Thread]:
+        return db.query(Thread).filter(
+            Thread.user_id == user_id,
+            Thread.thread_id == thread_id,
         )
 
     @staticmethod
@@ -249,7 +249,7 @@ class RunRepository:
         *,
         title: str | None = None,
         allow_create: bool,
-    ) -> ChatSession:
+    ) -> Thread:
         thread = (
             RunRepository._thread_query(db, user.id, thread_id)
             .with_for_update()
@@ -265,9 +265,9 @@ class RunRepository:
         if not allow_create:
             raise AppError(ErrorCode.NOT_FOUND, "Thread 不存在", status_code=404)
         metadata = {"title": title} if title else {}
-        thread = ChatSession(
+        thread = Thread(
             user_id=user.id,
-            session_id=thread_id,
+            thread_id=thread_id,
             status="active",
             version=0,
             message_count=0,
@@ -347,7 +347,7 @@ class RunRepository:
         multitask_strategy: MultitaskStrategy | str | None = None,
         title: str | None = None,
         tenant_id: str = "default",
-        channel: str = "chat",
+        channel: str = "run",
         approved_tools: frozenset[str] = frozenset(),
         _allow_implicit_thread: bool = False,
     ) -> RunReservation:
@@ -458,8 +458,8 @@ class RunRepository:
                 db.add(run)
                 db.flush()
 
-                user_message = ChatMessage(
-                    session_ref_id=thread.id,
+                user_message = Message(
+                    thread_ref_id=thread.id,
                     run_id=run_id,
                     client_message_id=f"{run_id}:user",
                     sequence=thread.last_sequence + 1,
@@ -469,8 +469,8 @@ class RunRepository:
                     timestamp=now,
                     updated_at=now,
                 )
-                assistant_message = ChatMessage(
-                    session_ref_id=thread.id,
+                assistant_message = Message(
+                    thread_ref_id=thread.id,
                     run_id=run_id,
                     client_message_id=f"{run_id}:assistant",
                     sequence=thread.last_sequence + 2,
@@ -528,8 +528,8 @@ class RunRepository:
         db = self._session_factory()
         try:
             row = (
-                db.query(Run, ChatSession)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .join(User, User.id == Run.user_id)
                 .filter(Run.id == run_id, User.username == username)
                 .first()
@@ -541,7 +541,7 @@ class RunRepository:
                     status_code=404,
                 )
             run, thread = row
-            return self._record(run, thread.session_id)
+            return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -549,8 +549,8 @@ class RunRepository:
         db = self._session_factory()
         try:
             row = (
-                db.query(Run, ChatSession)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .filter(Run.id == run_id)
                 .first()
             )
@@ -561,7 +561,7 @@ class RunRepository:
                     status_code=404,
                 )
             run, thread = row
-            return self._record(run, thread.session_id)
+            return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -581,12 +581,12 @@ class RunRepository:
         db = self._session_factory()
         try:
             row = (
-                db.query(Run, ChatSession)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .join(User, User.id == Run.user_id)
                 .filter(
                     User.username == username,
-                    ChatSession.session_id == thread_id,
+                    Thread.thread_id == thread_id,
                     Run.status == RunStatus.PENDING.value,
                 )
                 .order_by(Run.created_at.asc())
@@ -595,7 +595,7 @@ class RunRepository:
             if not row:
                 return None
             run, thread = row
-            return self._record(run, thread.session_id)
+            return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -603,8 +603,8 @@ class RunRepository:
         db = self._session_factory()
         try:
             rows = (
-                db.query(Run, ChatSession, User)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread, User)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .join(User, User.id == Run.user_id)
                 .filter(Run.status == RunStatus.PENDING.value)
                 .order_by(Run.created_at.asc())
@@ -612,7 +612,7 @@ class RunRepository:
                 .all()
             )
             return [
-                (user.username, self._record(run, thread.session_id))
+                (user.username, self._record(run, thread.thread_id))
                 for run, thread, user in rows
             ]
         finally:
@@ -629,8 +629,8 @@ class RunRepository:
         db = self._session_factory()
         try:
             row = (
-                db.query(Run, ChatSession, User)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread, User)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .join(User, User.id == Run.user_id)
                 .filter(Run.id == run_id, User.username == username)
                 .first()
@@ -653,11 +653,11 @@ class RunRepository:
                     status_code=409,
                 )
             user_message = (
-                db.query(ChatMessage)
+                db.query(Message)
                 .filter(
-                    ChatMessage.id == run.user_message_id,
-                    ChatMessage.session_ref_id == thread.id,
-                    ChatMessage.run_id == run.id,
+                    Message.id == run.user_message_id,
+                    Message.thread_ref_id == thread.id,
+                    Message.run_id == run.id,
                 )
                 .first()
             )
@@ -668,17 +668,17 @@ class RunRepository:
                     status_code=409,
                 )
             history_rows = (
-                db.query(ChatMessage)
+                db.query(Message)
                 .filter(
-                    ChatMessage.session_ref_id == thread.id,
-                    ChatMessage.sequence < user_message.sequence,
-                    ChatMessage.status == "completed",
+                    Message.thread_ref_id == thread.id,
+                    Message.sequence < user_message.sequence,
+                    Message.status == "completed",
                 )
-                .order_by(ChatMessage.sequence.asc())
+                .order_by(Message.sequence.asc())
                 .all()
             )
             return RunExecutionSnapshot(
-                run=self._record(run, thread.session_id),
+                run=self._record(run, thread.thread_id),
                 user_db_id=user.id,
                 username=user.username,
                 role=user.role,
@@ -714,8 +714,8 @@ class RunRepository:
         db = self._session_factory()
         try:
             row = (
-                db.query(Run, ChatSession)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .filter(Run.id == run_id)
                 .with_for_update()
                 .first()
@@ -759,7 +759,7 @@ class RunRepository:
                 run.skill_activation_source = source
                 db.commit()
                 db.refresh(run)
-            return self._record(run, thread.session_id)
+            return self._record(run, thread.thread_id)
         except Exception:
             db.rollback()
             raise
@@ -795,8 +795,8 @@ class RunRepository:
             ):
                 raise ValueError("audit_key must be a lowercase SHA-256 digest")
             row = (
-                db.query(Run, ChatSession)
-                .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                db.query(Run, Thread)
+                .join(Thread, Thread.id == Run.thread_ref_id)
                 .filter(Run.id == run_id)
                 .with_for_update()
                 .first()
@@ -893,7 +893,7 @@ class RunRepository:
             db.add(
                 ToolAudit(
                     user_id=run.user_id,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     run_id=run.id,
                     audit_key=audit_key,
                     tool_call_id=normalized_tool_call_id,
@@ -957,16 +957,12 @@ class RunRepository:
                     raise AppError(
                         ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
                     )
-                thread = (
-                    db.query(ChatSession)
-                    .filter(ChatSession.id == run.thread_ref_id)
-                    .first()
-                )
+                thread = db.query(Thread).filter(Thread.id == run.thread_ref_id).first()
                 if run.status == RunStatus.RUNNING.value:
                     if run.owner_worker_id == worker_id and (
                         not run.lease_expires_at or run.lease_expires_at >= now
                     ):
-                        return self._record(run, thread.session_id)
+                        return self._record(run, thread.thread_id)
                     if run.lease_expires_at and run.lease_expires_at >= now:
                         raise AppError(
                             ErrorCode.RUN_ACTIVE,
@@ -987,7 +983,7 @@ class RunRepository:
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.RUN_STARTED,
                     data={
                         "status": run.status,
@@ -996,7 +992,7 @@ class RunRepository:
                     },
                 )
                 db.flush()
-                return self._record(run, thread.session_id)
+                return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -1029,12 +1025,8 @@ class RunRepository:
                     )
                 run.lease_expires_at = utcnow() + timedelta(seconds=lease_seconds)
                 run.updated_at = utcnow()
-                thread = (
-                    db.query(ChatSession)
-                    .filter(ChatSession.id == run.thread_ref_id)
-                    .first()
-                )
-                return self._record(run, thread.session_id)
+                thread = db.query(Thread).filter(Thread.id == run.thread_ref_id).first()
+                return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -1063,15 +1055,11 @@ class RunRepository:
                 self._transition(run, RunStatus.WAITING_INPUT)
                 run.owner_worker_id = None
                 run.lease_expires_at = None
-                thread = (
-                    db.query(ChatSession)
-                    .filter(ChatSession.id == run.thread_ref_id)
-                    .first()
-                )
+                thread = db.query(Thread).filter(Thread.id == run.thread_ref_id).first()
                 if run.assistant_message_id:
                     message = (
-                        db.query(ChatMessage)
-                        .filter(ChatMessage.id == run.assistant_message_id)
+                        db.query(Message)
+                        .filter(Message.id == run.assistant_message_id)
                         .first()
                     )
                     if message:
@@ -1080,11 +1068,11 @@ class RunRepository:
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.RUN_WAITING_INPUT,
                     data={"status": run.status},
                 )
-                return self._record(run, thread.session_id)
+                return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -1093,8 +1081,8 @@ class RunRepository:
         try:
             with db.begin():
                 row = (
-                    db.query(Run, ChatSession)
-                    .join(ChatSession, ChatSession.id == Run.thread_ref_id)
+                    db.query(Run, Thread)
+                    .join(Thread, Thread.id == Run.thread_ref_id)
                     .join(User, User.id == Run.user_id)
                     .filter(Run.id == run_id, User.username == username)
                     .with_for_update()
@@ -1109,19 +1097,19 @@ class RunRepository:
                     run.status in TERMINAL_RUN_STATUSES
                     or run.status == RunStatus.CANCELLING
                 ):
-                    return self._record(run, thread.session_id)
+                    return self._record(run, thread.thread_id)
                 self._transition(run, RunStatus.CANCELLING)
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.WARNING_CREATED,
                     data={
                         "code": "CANCEL_REQUESTED",
                         "message": "用户已请求停止运行",
                     },
                 )
-                return self._record(run, thread.session_id)
+                return self._record(run, thread.thread_id)
         finally:
             db.close()
 
@@ -1135,9 +1123,7 @@ class RunRepository:
             return "cancelled"
         return "failed"
 
-    def _promote_next_queued(
-        self, db: Session, thread: ChatSession, now: datetime
-    ) -> None:
+    def _promote_next_queued(self, db: Session, thread: Thread, now: datetime) -> None:
         queued = (
             db.query(Run)
             .filter(
@@ -1154,8 +1140,8 @@ class RunRepository:
         queued.updated_at = now
         if queued.assistant_message_id:
             message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == queued.assistant_message_id)
+                db.query(Message)
+                .filter(Message.id == queued.assistant_message_id)
                 .first()
             )
             if message:
@@ -1191,14 +1177,14 @@ class RunRepository:
                         ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
                     )
                 thread = (
-                    db.query(ChatSession)
-                    .filter(ChatSession.id == run.thread_ref_id)
+                    db.query(Thread)
+                    .filter(Thread.id == run.thread_ref_id)
                     .with_for_update()
                     .first()
                 )
                 assistant = (
-                    db.query(ChatMessage)
-                    .filter(ChatMessage.id == run.assistant_message_id)
+                    db.query(Message)
+                    .filter(Message.id == run.assistant_message_id)
                     .with_for_update()
                     .first()
                 )
@@ -1221,7 +1207,7 @@ class RunRepository:
                             f"Run 已终结为 {run.status}",
                             status_code=409,
                         )
-                    return self._record(run, thread.session_id)
+                    return self._record(run, thread.thread_id)
                 if (
                     run.status == RunStatus.CANCELLING.value
                     and target != RunStatus.CANCELLED.value
@@ -1251,7 +1237,7 @@ class RunRepository:
                     append_event_in_session(
                         db,
                         run=run,
-                        thread_id=thread.session_id,
+                        thread_id=thread.thread_id,
                         event_type=RunEventType.USAGE_UPDATED,
                         data={
                             "input_tokens": run.input_tokens,
@@ -1262,7 +1248,7 @@ class RunRepository:
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=RunEventType.MESSAGE_COMPLETED,
                     data={
                         "message_id": run.assistant_message_id,
@@ -1283,7 +1269,7 @@ class RunRepository:
                 append_event_in_session(
                     db,
                     run=run,
-                    thread_id=thread.session_id,
+                    thread_id=thread.thread_id,
                     event_type=terminal_type,
                     data={
                         "status": run.status,
@@ -1295,7 +1281,7 @@ class RunRepository:
                 db.flush()
                 self._promote_next_queued(db, thread, now)
                 db.flush()
-                return self._record(run, thread.session_id)
+                return self._record(run, thread.thread_id)
         finally:
             db.close()
 

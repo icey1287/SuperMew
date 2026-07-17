@@ -1,32 +1,14 @@
 import unittest
-from unittest.mock import patch
 
-from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.chat.repository import ConversationRepository, MessageAppend
-import backend.chat.storage as storage_module
-from backend.chat.storage import ConversationStorage
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, ChatSession, User
+from backend.db.models import Base, Message, User
 from backend.runs.repository import RunRepository
 from backend.runs.state import RunStatus
-
-
-class _MemoryCache:
-    def __init__(self):
-        self.values = {}
-
-    def get_json(self, key):
-        return self.values.get(key)
-
-    def set_json(self, key, value):
-        self.values[key] = value
-
-    def delete(self, key):
-        self.values.pop(key, None)
+from backend.threads.repository import MessageAppend, ThreadRepository
 
 
 class MessageRepositoryTests(unittest.TestCase):
@@ -40,45 +22,10 @@ class MessageRepositoryTests(unittest.TestCase):
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         with self.Session.begin() as db:
             db.add(User(username="alice", password_hash="hash", role="user"))
-        self.repository = ConversationRepository(self.Session)
+        self.repository = ThreadRepository(self.Session)
 
     def tearDown(self):
         self.engine.dispose()
-
-    def test_legacy_snapshot_appends_without_rewriting_existing_rows(self):
-        storage = ConversationStorage(self.repository)
-        storage.save("alice", "thread-1", [HumanMessage(content="hello")])
-        with self.Session() as db:
-            first = db.query(ChatMessage).one()
-            first_id = first.id
-            first_timestamp = first.timestamp
-
-        statements = []
-
-        def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
-            statements.append(statement.lower().strip())
-
-        event.listen(self.engine, "before_cursor_execute", capture)
-        try:
-            storage.save(
-                "alice",
-                "thread-1",
-                [HumanMessage(content="hello"), AIMessage(content="world")],
-            )
-        finally:
-            event.remove(self.engine, "before_cursor_execute", capture)
-
-        with self.Session() as db:
-            rows = db.query(ChatMessage).order_by(ChatMessage.sequence).all()
-            thread = db.query(ChatSession).one()
-            self.assertEqual([1, 2], [row.sequence for row in rows])
-            self.assertEqual(first_id, rows[0].id)
-            self.assertEqual(first_timestamp, rows[0].timestamp)
-            self.assertEqual(2, thread.message_count)
-            self.assertEqual(2, thread.last_sequence)
-        self.assertFalse(
-            any(statement.startswith("delete") for statement in statements)
-        )
 
     def test_current_user_access_reloads_role_from_database(self):
         first = self.repository.current_user_access("alice")
@@ -105,7 +52,7 @@ class MessageRepositoryTests(unittest.TestCase):
 
         self.assertEqual(first.id, second.id)
         with self.Session() as db:
-            self.assertEqual(1, db.query(ChatMessage).count())
+            self.assertEqual(1, db.query(Message).count())
 
     def test_placeholder_and_finalize_are_idempotent(self):
         placeholder = self.repository.create_assistant_placeholder(
@@ -153,12 +100,14 @@ class MessageRepositoryTests(unittest.TestCase):
                 "thread-1",
                 MessageAppend(role="human", content=str(index)),
             )
-        first_page = self.repository.list_messages("alice", "thread-1", limit=2)
-        second_page = self.repository.list_messages(
-            "alice", "thread-1", after=first_page[-1].sequence, limit=2
+        first_page = self.repository.list_messages_before(
+            "alice", "thread-1", before=None, limit=2
         )
-        self.assertEqual(["0", "1"], [item.content for item in first_page])
-        self.assertEqual(["2", "3"], [item.content for item in second_page])
+        second_page = self.repository.list_messages_before(
+            "alice", "thread-1", before=first_page[-1].sequence, limit=2
+        )
+        self.assertEqual(["4", "3"], [item.content for item in first_page])
+        self.assertEqual(["2", "1"], [item.content for item in second_page])
 
     def test_thread_listing_has_no_message_count_query(self):
         self.repository.append_message(
@@ -171,79 +120,63 @@ class MessageRepositoryTests(unittest.TestCase):
 
         event.listen(self.engine, "before_cursor_execute", capture)
         try:
-            rows = self.repository.list_threads("alice")
+            rows = self.repository.list_thread_summaries("alice")
         finally:
             event.remove(self.engine, "before_cursor_execute", capture)
 
-        self.assertEqual(1, rows[0]["message_count"])
+        self.assertEqual(1, rows[0].message_count)
         self.assertFalse(
             any(
-                "count(" in statement and "chat_messages" in statement
+                "count(" in statement and "messages" in statement
                 for statement in statements
             )
         )
 
-    def test_session_reads_reflect_durable_run_writes_after_list_warmup(self):
-        storage = ConversationStorage(self.repository)
+    def test_thread_reads_reflect_durable_run_writes(self):
         run_repository = RunRepository(self.Session)
-        cache = _MemoryCache()
-
-        with patch.object(storage_module, "cache", cache, create=True):
-            storage.save(
-                "alice",
-                "thread-1",
-                [HumanMessage(content="legacy message")],
-            )
-            warmed = storage.list_session_infos("alice")
-            self.assertEqual(1, warmed[0]["message_count"])
-
-            reservation = run_repository.reserve(
-                username="alice",
-                thread_id="thread-1",
-                message="durable question",
-                idempotency_key="request-1",
-                _allow_implicit_thread=True,
-            )
-            claimed = run_repository.claim(
-                run_id=reservation.run.id,
-                worker_id="worker-1",
-            )
-            run_repository.finalize(
-                run_id=reservation.run.id,
-                target_status=RunStatus.SUCCEEDED,
-                content="durable answer",
-                fencing_token=claimed.fencing_token,
-            )
-
-            messages = storage.get_session_messages("alice", "thread-1")
-            sessions = storage.list_session_infos("alice")
-            thread_messages = storage.get_thread_messages("alice", "thread-1")
-            threads = storage.list_thread_infos("alice")
-
-        self.assertEqual(
-            ["legacy message", "durable question", "durable answer"],
-            [message["content"] for message in messages],
-        )
-        self.assertEqual("completed", messages[-1]["status"])
-        self.assertEqual(3, sessions[0]["message_count"])
-        self.assertEqual(3, sessions[0]["version"])
-        self.assertEqual(messages, thread_messages)
-        self.assertEqual("thread-1", threads[0]["thread_id"])
-        self.assertNotIn("session_id", threads[0])
-
-    def test_thread_delete_rejects_nonterminal_run_and_allows_terminal_history(self):
-        storage = ConversationStorage(self.repository)
-        run_repository = RunRepository(self.Session)
+        self.repository.create_thread(username="alice", thread_id="thread-1")
         reservation = run_repository.reserve(
             username="alice",
             thread_id="thread-1",
             message="durable question",
             idempotency_key="request-1",
-            _allow_implicit_thread=True,
+        )
+        claimed = run_repository.claim(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+        )
+        run_repository.finalize(
+            run_id=reservation.run.id,
+            target_status=RunStatus.SUCCEEDED,
+            content="durable answer",
+            fencing_token=claimed.fencing_token,
+        )
+
+        messages = self.repository.list_messages_before(
+            "alice", "thread-1", before=None, limit=10
+        )
+        threads = self.repository.list_thread_summaries("alice")
+        self.assertEqual(
+            ["durable answer", "durable question"],
+            [message.content for message in messages],
+        )
+        self.assertEqual("completed", messages[0].status)
+        self.assertEqual(2, threads[0].message_count)
+        self.assertEqual(2, threads[0].version)
+        self.assertEqual("thread-1", threads[0].thread_id)
+
+    def test_thread_delete_rejects_nonterminal_run_and_allows_terminal_history(self):
+        run_repository = RunRepository(self.Session)
+        self.repository.create_thread(username="alice", thread_id="thread-1")
+        reservation = run_repository.reserve(
+            username="alice",
+            thread_id="thread-1",
+            message="durable question",
+            idempotency_key="request-1",
         )
 
         with self.assertRaises(AppError) as raised:
-            storage.delete_thread("alice", "thread-1")
+            self.repository.delete_thread("alice", "thread-1")
         self.assertEqual(ErrorCode.RUN_ACTIVE, raised.exception.code)
 
         claimed = run_repository.claim(
@@ -257,7 +190,7 @@ class MessageRepositoryTests(unittest.TestCase):
             fencing_token=claimed.fencing_token,
         )
 
-        self.assertTrue(storage.delete_thread("alice", "thread-1"))
+        self.assertTrue(self.repository.delete_thread("alice", "thread-1"))
 
 
 if __name__ == "__main__":

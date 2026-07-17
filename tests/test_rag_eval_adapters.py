@@ -242,9 +242,9 @@ def _install_live_modules(monkeypatch, *, runtime, run_graph):
         def close(self):
             return None
 
-    context_module = types.ModuleType("backend.chat.request_context")
-    context_module.ChatRequestContext = FakeContext
-    monkeypatch.setitem(sys.modules, "backend.chat.request_context", context_module)
+    context_module = types.ModuleType("backend.runs.request_context")
+    context_module.RunRequestContext = FakeContext
+    monkeypatch.setitem(sys.modules, "backend.runs.request_context", context_module)
 
     class FakeProviderError(Exception):
         pass
@@ -412,7 +412,7 @@ def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
         index_id="catalog-index-v2",
         targets=(
             SimpleNamespace(collection_name="catalog_v1"),
-            SimpleNamespace(collection_name="legacy"),
+            SimpleNamespace(collection_name="archive_catalog_v1"),
         ),
     )
     utils = SimpleNamespace(
@@ -441,7 +441,10 @@ def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
 
     assert profile["index_id"] == "catalog-index-v2"
     assert profile["retrieval"]["embedding_scope_index_id"] == "catalog-index-v2"
-    assert profile["retrieval"]["collection_names"] == ["catalog_v1", "legacy"]
+    assert profile["retrieval"]["collection_names"] == [
+        "archive_catalog_v1",
+        "catalog_v1",
+    ]
     assert profile["retrieval"]["target_count"] == 2
 
     with pytest.raises(RagEvalExecutionError, match="effective RAG index"):

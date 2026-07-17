@@ -21,23 +21,11 @@ class DocumentInfo(BaseModel):
     embedding_model: str | None = None
     index_version: str | None = None
     vector_collection: str | None = None
-    storage_layout: str | None = None
     error_code: str | None = None
 
 
 class DocumentListResponse(BaseModel):
     documents: list[DocumentInfo]
-
-
-class DocumentUploadResponse(BaseModel):
-    filename: str
-    chunks_processed: int
-    message: str
-    document_id: str | None = None
-    document_version_id: str | None = None
-    version_number: int | None = None
-    published: bool = True
-    reused_current: bool = False
 
 
 class DocumentUploadStartResponse(BaseModel):
@@ -88,14 +76,3 @@ class DocumentDeleteStartResponse(BaseModel):
 
 class DocumentDeleteJobResponse(DocumentUploadJobResponse):
     pass
-
-
-class DocumentDeleteResponse(BaseModel):
-    filename: str
-    job_id: str
-    chunks_deleted: int
-    message: str
-    document_id: str | None = None
-    status: str = "completed"
-    cleanup_pending: bool = False
-    error_code: str | None = None

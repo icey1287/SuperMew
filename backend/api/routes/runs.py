@@ -66,7 +66,7 @@ async def _reserve_run(*, user: User, thread_id: ThreadId, request: RunCreateReq
         multitask_strategy=request.multitask_strategy,
         on_disconnect=request.on_disconnect,
         tenant_id=settings.app.default_tenant_id,
-        channel="chat",
+        channel="run",
         approved_tools=approved_tools,
     )
     if reservation.run.supersedes_run_id:

@@ -1,4 +1,4 @@
-"""文档向量化并写入 Milvus - 支持 legacy 与版本化候选索引。"""
+"""文档版本向量化、精确核验与按版本清理。"""
 
 import os
 import re
@@ -133,7 +133,7 @@ def _insert_count(response, expected: int) -> int:
 
 
 class MilvusWriter:
-    """文档向量化并写入 Milvus；legacy 与候选版本使用隔离 collection。"""
+    """文档版本向量化并写入独立的 Catalog collection。"""
 
     def __init__(
         self,
@@ -186,56 +186,6 @@ class MilvusWriter:
             document_version_id=document_version_id,
             index_version=index_version,
         )
-
-    def write_documents(
-        self,
-        documents: list[dict],
-        batch_size: int = 50,
-        progress_callback=None,
-    ):
-        """写入 legacy collection；保持旧调用与旧 metadata 形状不变。"""
-
-        if not documents:
-            return
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-
-        dense_dim = int(os.getenv("DENSE_EMBEDDING_DIM", "1024"))
-
-        total = len(documents)
-        self.milvus_manager.init_collection(dense_dim)
-
-        for i in range(0, total, batch_size):
-            batch = documents[i : i + batch_size]
-            texts = [doc["text"] for doc in batch]
-            dense_embeddings = self.embedding_service.get_embeddings(texts)
-            if len(dense_embeddings) != len(batch):
-                raise RuntimeError(
-                    "embedding provider returned an unexpected vector count"
-                )
-
-            insert_data = [
-                {
-                    "dense_embedding": dense_emb,
-                    "text": doc["text"],
-                    "filename": doc["filename"],
-                    "file_type": doc["file_type"],
-                    "file_path": doc.get("file_path", ""),
-                    "page_number": doc.get("page_number", 0),
-                    "chunk_idx": doc.get("chunk_idx", 0),
-                    "chunk_id": doc.get("chunk_id", ""),
-                    "parent_chunk_id": doc.get("parent_chunk_id", ""),
-                    "root_chunk_id": doc.get("root_chunk_id", ""),
-                    "chunk_level": doc.get("chunk_level", 0),
-                }
-                for doc, dense_emb in zip(batch, dense_embeddings)
-            ]
-
-            self.milvus_manager.insert(insert_data)
-
-            if progress_callback:
-                processed = min(i + batch_size, total)
-                progress_callback(processed, total)
 
     def write_versioned_documents(
         self,

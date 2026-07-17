@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, ChatMessage, ChatSession, Run, User
+from backend.db.models import Base, Message, Thread, Run, User
 from backend.runs.repository import RunRepository, hash_run_request
 from backend.runs.state import MultitaskStrategy, RunStatus
 
@@ -46,7 +46,7 @@ class RunReservationTests(unittest.TestCase):
         self.assertEqual(first.run.id, second.run.id)
         with self.Session() as db:
             self.assertEqual(1, db.query(Run).count())
-            self.assertEqual(2, db.query(ChatMessage).count())
+            self.assertEqual(2, db.query(Message).count())
 
     def test_same_key_with_different_hash_is_rejected(self):
         self.reserve("request-1", "first")
@@ -60,7 +60,7 @@ class RunReservationTests(unittest.TestCase):
             self.reserve("request-2", "second")
         self.assertEqual(ErrorCode.RUN_ACTIVE, raised.exception.code)
         with self.Session() as db:
-            self.assertEqual(2, db.query(ChatMessage).count())
+            self.assertEqual(2, db.query(Message).count())
 
     def test_enqueue_reserves_monotonic_messages_without_overwrite(self):
         first = self.reserve("request-1")
@@ -73,8 +73,8 @@ class RunReservationTests(unittest.TestCase):
         self.assertEqual(RunStatus.PENDING, first.run.status)
         self.assertEqual(RunStatus.QUEUED, second.run.status)
         with self.Session() as db:
-            rows = db.query(ChatMessage).order_by(ChatMessage.sequence).all()
-            thread = db.query(ChatSession).one()
+            rows = db.query(Message).order_by(Message.sequence).all()
+            thread = db.query(Thread).one()
             self.assertEqual([1, 2, 3, 4], [row.sequence for row in rows])
             self.assertEqual(4, thread.message_count)
             self.assertEqual(4, thread.version)
@@ -111,7 +111,7 @@ class RunReservationTests(unittest.TestCase):
         approved = hash_run_request(
             "hello",
             tenant_id="tenant-a",
-            channel="chat",
+            channel="run",
             approved_tools=frozenset({"sandbox_execute"}),
         )
         other_channel = hash_run_request(

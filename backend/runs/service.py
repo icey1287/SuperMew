@@ -38,7 +38,7 @@ class RunService:
         multitask_strategy: MultitaskStrategy | str | None = None,
         on_disconnect: str | None = None,
         tenant_id: str = "default",
-        channel: str = "chat",
+        channel: str = "run",
         approved_tools: frozenset[str] = frozenset(),
     ) -> RunReservation:
         compact_message = message.strip()

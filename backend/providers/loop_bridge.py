@@ -16,12 +16,12 @@ CancellationProbe = Callable[[], bool]
 
 
 class ProviderLoopBridge:
-    """Run async compatibility adapters on one long-lived background loop.
+    """Run synchronous Provider callers on one long-lived background loop.
 
     Async server paths should call providers directly. This bridge exists for
-    synchronous compatibility callers that cannot own an event loop. A factory
-    is accepted instead of an already-created coroutine so rejected calls never
-    leak an un-awaited coroutine object.
+    synchronous callers that cannot own an event loop. A factory is accepted
+    instead of an already-created coroutine so rejected calls never leak an
+    un-awaited coroutine object.
     """
 
     def __init__(

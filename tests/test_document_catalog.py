@@ -24,20 +24,11 @@ from backend.documents.catalog import (
     DocumentVersionStatus,
     IndexJobStatus,
     ManifestEntry,
-    StorageLayout,
-    legacy_source_identity,
 )
 
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def legacy_identity(name: str, collection: str = "documents") -> str:
-    return legacy_source_identity(
-        vector_collection=collection,
-        canonical_name=name,
-    )
 
 
 class DocumentCatalogTests(unittest.TestCase):
@@ -82,26 +73,6 @@ class DocumentCatalogTests(unittest.TestCase):
             vector_collection="documents_v2",
         )
 
-    def legacy_adoption_args(
-        self,
-        *,
-        tenant_id: str = "tenant-a",
-        knowledge_base_name: str = "default",
-        collection: str = "documents",
-        corpus: str = "legacy-corpus",
-    ) -> dict:
-        fingerprint = digest(corpus)
-        state = self.catalog.begin_legacy_adoption(
-            tenant_id=tenant_id,
-            legacy_collection=collection,
-            knowledge_base_name=knowledge_base_name,
-            corpus_fingerprint=fingerprint,
-        )
-        return {
-            "corpus_fingerprint": fingerprint,
-            "adoption_fence": state.fence,
-        }
-
     def stage(self, reservation):
         vector_hash = digest(f"{reservation.version.id}:vector")
         parent_hash = digest(f"{reservation.version.id}:parent")
@@ -134,7 +105,6 @@ class DocumentCatalogTests(unittest.TestCase):
             job_id=reservation.job.id,
             publication_fence=reservation.publication_fence,
             expected_current_version_id=reservation.expected_current_version_id,
-            cleanup_grace=timedelta(minutes=30),
         )
 
     def test_same_content_and_build_is_idempotent_but_new_build_is_new_version(self):
@@ -175,47 +145,6 @@ class DocumentCatalogTests(unittest.TestCase):
         snapshot = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
 
         self.assertEqual((), snapshot.documents)
-
-    def test_legacy_adoption_state_is_tenant_scoped_and_explicit(self):
-        missing = self.catalog.legacy_adoption_state(tenant_id="tenant-a")
-        self.assertFalse(missing.state_exists)
-        self.assertFalse(missing.complete)
-
-        bootstrapped = self.catalog.bootstrap_empty_legacy_corpus(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="default",
-        )
-        self.assertTrue(bootstrapped.complete)
-        self.assertEqual("documents", bootstrapped.legacy_collection)
-
-        self.catalog.ensure_knowledge_base(
-            tenant_id="tenant-a",
-            owner_id=1,
-            name="legacy-upgrade",
-            knowledge_base_id="kb-legacy-upgrade",
-        )
-        still_complete = self.catalog.legacy_adoption_state(tenant_id="tenant-a")
-        self.assertTrue(still_complete.complete)
-
-        incomplete = self.catalog.begin_legacy_adoption(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="default",
-            corpus_fingerprint="b" * 64,
-        )
-        self.assertFalse(incomplete.complete)
-
-        self.catalog.mark_legacy_adoption_complete(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="default",
-            corpus_fingerprint="b" * 64,
-            adoption_fence=incomplete.fence,
-        )
-        complete = self.catalog.legacy_adoption_state(tenant_id="tenant-a")
-        self.assertTrue(complete.complete)
-        self.assertEqual("b" * 64, complete.fingerprint)
 
     def test_failed_version_retry_gets_new_identity_and_refreshes_source_object(self):
         failed = self.reserve("version-one")
@@ -313,6 +242,11 @@ class DocumentCatalogTests(unittest.TestCase):
             DocumentVersionStatus.SUPERSEDED, result.previous_version.status
         )
         self.assertIsNotNone(result.previous_version.cleanup_after)
+        self.assertEqual(
+            timedelta(hours=1),
+            result.previous_version.cleanup_after
+            - result.previous_version.superseded_at,
+        )
         self.assertGreater(result.document.catalog_revision, 0)
 
         repeated = self.catalog.publish(
@@ -477,7 +411,6 @@ class DocumentCatalogTests(unittest.TestCase):
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
             canonical_name="guide.pdf",
-            cleanup_grace=timedelta(minutes=5),
         )
         self.assertTrue(retired.found)
         self.assertFalse(retired.already_deleted)
@@ -516,35 +449,6 @@ class DocumentCatalogTests(unittest.TestCase):
         )
         self.assertTrue(repeated.already_deleted)
 
-    def test_repeated_retire_can_expedite_an_existing_cleanup_grace(self):
-        current = self.reserve("version-one")
-        self.publish(current)
-
-        delayed = self.catalog.retire(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-            cleanup_grace=timedelta(hours=1),
-        )
-        delayed_due = delayed.cleanup_versions[0].cleanup_after
-
-        expedited = self.catalog.retire(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-            cleanup_grace=timedelta(0),
-        )
-        expedited_due = expedited.cleanup_versions[0].cleanup_after
-
-        self.assertLess(expedited_due, delayed_due)
-        claimed = self.catalog.claim_cleanup_job(
-            worker_id="cleanup-worker",
-            lease_seconds=30,
-            now=expedited_due + timedelta(seconds=1),
-        )
-        self.assertIsNotNone(claimed)
-        self.assertEqual(current.version.id, claimed.version.id)
-
     def test_repeated_retire_preserves_cleanup_retry_backoff(self):
         current = self.reserve("version-one")
         self.publish(current)
@@ -552,7 +456,6 @@ class DocumentCatalogTests(unittest.TestCase):
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
             canonical_name="guide.pdf",
-            cleanup_grace=timedelta(0),
         )
         retry_at = retired.cleanup_versions[0].cleanup_after + timedelta(minutes=5)
         with self.Session.begin() as db:
@@ -568,7 +471,6 @@ class DocumentCatalogTests(unittest.TestCase):
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
             canonical_name="guide.pdf",
-            cleanup_grace=timedelta(0),
         )
 
         with self.Session() as db:
@@ -587,7 +489,6 @@ class DocumentCatalogTests(unittest.TestCase):
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
             canonical_name="guide.pdf",
-            cleanup_grace=timedelta(0),
         )
         stale_cleanup_version = retired.cleanup_versions[0]
 
@@ -611,417 +512,6 @@ class DocumentCatalogTests(unittest.TestCase):
             self.assertEqual(DocumentVersionStatus.SUPERSEDED, old.status)
             self.assertIsNotNone(old.index_cleaned_at)
             self.assertEqual(DocumentVersionStatus.READY, new.status)
-
-    def test_legacy_adoption_is_idempotent_and_never_overwrites_catalog(self):
-        adopted = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=4,
-            parent_chunk_count=2,
-            content_sha256=digest("legacy-content"),
-            **self.legacy_adoption_args(),
-        )
-        self.assertTrue(adopted.adopted)
-        self.assertEqual(StorageLayout.LEGACY_FILENAME, adopted.version.storage_layout)
-        self.assertEqual(4, adopted.version.chunk_count)
-        self.assertEqual(IndexJobStatus.COMPLETED, adopted.job.status)
-
-        repeated = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=4,
-            parent_chunk_count=2,
-            content_sha256=digest("legacy-content"),
-            **self.legacy_adoption_args(),
-        )
-        self.assertFalse(repeated.adopted)
-        self.assertEqual("already_adopted", repeated.reason)
-        blocked = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            source_object_key="legacy-new.pdf",
-            vector_collection="documents",
-            chunk_count=5,
-            parent_chunk_count=2,
-            content_sha256=digest("legacy-content-changed"),
-            **self.legacy_adoption_args(corpus="legacy-corpus-changed"),
-        )
-        self.assertFalse(blocked.adopted)
-        self.assertEqual("legacy_content_drift", blocked.reason)
-        with self.Session() as db:
-            self.assertEqual(1, db.query(DocumentVersion).count())
-
-    def test_legacy_source_identity_cannot_be_claimed_by_another_tenant(self):
-        identity = legacy_identity("legacy.pdf")
-        self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=identity,
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=4,
-            parent_chunk_count=2,
-            content_sha256=digest("legacy-content"),
-            **self.legacy_adoption_args(),
-        )
-        with self.Session.begin() as db:
-            db.add(User(id=2, username="bob", password_hash="hash", role="user"))
-        other_kb = self.catalog.ensure_knowledge_base(
-            tenant_id="tenant-b",
-            owner_id=2,
-            name="default",
-            knowledge_base_id="kb-tenant-b",
-        )
-
-        with self.assertRaises(AppError) as raised:
-            self.catalog.adopt_legacy(
-                tenant_id="tenant-b",
-                knowledge_base_id=other_kb.id,
-                canonical_name="legacy.pdf",
-                owner_id=2,
-                legacy_identity=identity,
-                source_object_key="legacy.pdf",
-                vector_collection="documents",
-                chunk_count=4,
-                parent_chunk_count=2,
-                content_sha256=digest("legacy-content"),
-                **self.legacy_adoption_args(
-                    tenant_id="tenant-b",
-                    knowledge_base_name="default",
-                ),
-            )
-
-        self.assertEqual(ErrorCode.CONFLICT, raised.exception.code)
-
-    def test_legacy_adoption_fence_blocks_interleaved_knowledge_base_claims(self):
-        other = self.catalog.ensure_knowledge_base(
-            tenant_id="tenant-a",
-            owner_id=1,
-            name="other",
-            knowledge_base_id="kb-other",
-        )
-        fingerprint = digest("shared-corpus")
-        stale = self.catalog.begin_legacy_adoption(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="default",
-            corpus_fingerprint=fingerprint,
-        )
-        current = self.catalog.begin_legacy_adoption(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="other",
-            corpus_fingerprint=fingerprint,
-        )
-        self.assertGreater(current.fence, stale.fence)
-
-        with self.assertRaises(AppError) as raised:
-            self.catalog.adopt_legacy(
-                tenant_id="tenant-a",
-                knowledge_base_id=self.knowledge_base.id,
-                canonical_name="legacy.pdf",
-                owner_id=1,
-                legacy_identity=legacy_identity("legacy.pdf"),
-                corpus_fingerprint=fingerprint,
-                adoption_fence=stale.fence,
-                source_object_key="legacy.pdf",
-                vector_collection="documents",
-                chunk_count=1,
-                parent_chunk_count=0,
-                content_sha256=digest("legacy-content"),
-            )
-        self.assertEqual(ErrorCode.CONFLICT, raised.exception.code)
-
-        adopted = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=other.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            corpus_fingerprint=fingerprint,
-            adoption_fence=current.fence,
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=1,
-            parent_chunk_count=0,
-            content_sha256=digest("legacy-content"),
-        )
-        self.assertTrue(adopted.adopted)
-
-    def test_stable_legacy_claim_blocks_content_drift_and_cross_kb_tombstone_claim(
-        self,
-    ):
-        fingerprint = digest("corpus-a")
-        state = self.catalog.begin_legacy_adoption(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="default",
-            corpus_fingerprint=fingerprint,
-        )
-        self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="claimed.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("claimed.pdf"),
-            corpus_fingerprint=fingerprint,
-            adoption_fence=state.fence,
-            source_object_key="claimed.pdf",
-            vector_collection="documents",
-            chunk_count=1,
-            parent_chunk_count=0,
-            content_sha256=digest("content-a"),
-        )
-        self.catalog.suppress_legacy_name(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="deleted.pdf",
-            owner_id=1,
-            vector_collection="documents",
-        )
-        other = self.catalog.ensure_knowledge_base(
-            tenant_id="tenant-a",
-            owner_id=1,
-            name="other",
-            knowledge_base_id="kb-other",
-        )
-        other_state = self.catalog.begin_legacy_adoption(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="other",
-            corpus_fingerprint=digest("corpus-b"),
-        )
-
-        for name, content in (
-            ("claimed.pdf", "content-b"),
-            ("deleted.pdf", "deleted-content"),
-        ):
-            with self.assertRaises(AppError) as raised:
-                self.catalog.adopt_legacy(
-                    tenant_id="tenant-a",
-                    knowledge_base_id=other.id,
-                    canonical_name=name,
-                    owner_id=1,
-                    legacy_identity=legacy_identity(name),
-                    corpus_fingerprint=digest("corpus-b"),
-                    adoption_fence=other_state.fence,
-                    source_object_key=name,
-                    vector_collection="documents",
-                    chunk_count=1,
-                    parent_chunk_count=0,
-                    content_sha256=digest(content),
-                )
-            self.assertEqual(ErrorCode.CONFLICT, raised.exception.code)
-
-        with self.Session() as db:
-            claims = (
-                db.query(DocumentVersion)
-                .filter(DocumentVersion.legacy_identity.is_not(None))
-                .all()
-            )
-            self.assertEqual(2, len(claims))
-
-    def test_retiring_same_name_in_another_kb_never_cleans_the_claimed_corpus(self):
-        state = self.catalog.begin_legacy_adoption(
-            tenant_id="tenant-a",
-            legacy_collection="documents",
-            knowledge_base_name="default",
-            corpus_fingerprint=digest("legacy-corpus"),
-        )
-        adopted = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("guide.pdf"),
-            corpus_fingerprint=digest("legacy-corpus"),
-            adoption_fence=state.fence,
-            source_object_key="guide.pdf",
-            vector_collection="documents",
-            chunk_count=1,
-            parent_chunk_count=0,
-            content_sha256=digest("legacy-content"),
-        )
-        other = self.catalog.ensure_knowledge_base(
-            tenant_id="tenant-a",
-            owner_id=1,
-            name="other",
-            knowledge_base_id="kb-other",
-        )
-        versioned = self.catalog.reserve_upload(
-            tenant_id="tenant-a",
-            knowledge_base_id=other.id,
-            canonical_name="guide.pdf",
-            owner_id=1,
-            content_sha256=digest("versioned-content"),
-            source_object_key="objects/versioned",
-            media_type="application/pdf",
-            size_bytes=10,
-            processing_profile=BuildProfile(embedding_model="embed-v1"),
-            vector_collection="documents_v2",
-        )
-        self.publish(versioned)
-
-        retired = self.catalog.retire(
-            tenant_id="tenant-a",
-            knowledge_base_id=other.id,
-            canonical_name="guide.pdf",
-            cleanup_grace=timedelta(0),
-        )
-        suppression = self.catalog.suppress_legacy_name(
-            tenant_id="tenant-a",
-            knowledge_base_id=other.id,
-            canonical_name="guide.pdf",
-            owner_id=1,
-            vector_collection="documents",
-        )
-
-        self.assertEqual(1, len(retired.cleanup_versions))
-        self.assertEqual((), suppression.cleanup_versions)
-        still_current = self.catalog.get_current(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
-        self.assertEqual(adopted.version.id, still_current.current_version.id)
-
-    def test_unadopted_legacy_tombstone_is_durable_and_blocks_future_adoption(self):
-        empty_index_id = self.catalog.current_index_fingerprint(tenant_id="tenant-a")
-        tombstone = self.catalog.suppress_legacy_name(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            vector_collection="documents",
-        )
-
-        self.assertEqual(1, len(tombstone.cleanup_versions))
-        version = tombstone.cleanup_versions[0]
-        self.assertEqual(StorageLayout.LEGACY_FILENAME, version.storage_layout)
-        self.assertEqual(DocumentVersionStatus.SUPERSEDED, version.status)
-        snapshot = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
-        self.assertEqual(("legacy.pdf",), snapshot.suppressed_legacy_names)
-        self.assertNotEqual(empty_index_id, snapshot.index_id)
-
-        blocked = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=4,
-            parent_chunk_count=2,
-            **self.legacy_adoption_args(),
-        )
-        self.assertFalse(blocked.adopted)
-        self.assertEqual("legacy_tombstoned", blocked.reason)
-
-        retry = self.catalog.retire(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-        )
-        self.assertTrue(retry.already_deleted)
-        self.assertEqual([version.id], [item.id for item in retry.cleanup_versions])
-
-        reupload = self.reserve("versioned-content", name="legacy.pdf")
-        self.assertNotEqual(version.id, reupload.version.id)
-        pending = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
-        self.assertEqual(("legacy.pdf",), pending.suppressed_legacy_names)
-        self.catalog.fail(
-            job_id=reupload.job.id,
-            publication_fence=reupload.publication_fence,
-            error_code="DOCUMENT_PARSE_FAILED",
-        )
-        cannot_resurrect = self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=4,
-            parent_chunk_count=2,
-            **self.legacy_adoption_args(),
-        )
-        self.assertFalse(cannot_resurrect.adopted)
-        self.assertEqual("legacy_tombstoned", cannot_resurrect.reason)
-        self.assertIsNone(
-            self.catalog.get_current(
-                tenant_id="tenant-a",
-                knowledge_base_id=self.knowledge_base.id,
-                canonical_name="legacy.pdf",
-            )
-        )
-
-    def test_retrieval_snapshot_keeps_legacy_name_suppressed_during_reupload(self):
-        empty_index_id = self.catalog.load_retrieval_snapshot(
-            tenant_id="tenant-a"
-        ).index_id
-        self.catalog.adopt_legacy(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            owner_id=1,
-            legacy_identity=legacy_identity("legacy.pdf"),
-            source_object_key="legacy.pdf",
-            vector_collection="documents",
-            chunk_count=4,
-            parent_chunk_count=2,
-            **self.legacy_adoption_args(),
-        )
-        adopted = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
-        self.assertEqual(("legacy.pdf",), adopted.suppressed_legacy_names)
-
-        self.catalog.retire(
-            tenant_id="tenant-a",
-            knowledge_base_id=self.knowledge_base.id,
-            canonical_name="legacy.pdf",
-            cleanup_grace=timedelta(0),
-        )
-        deleted = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
-        self.assertEqual(("legacy.pdf",), deleted.suppressed_legacy_names)
-        self.assertNotEqual(empty_index_id, deleted.index_id)
-
-        reupload = self.reserve("new-version", name="legacy.pdf")
-        pending = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
-        legacy_document = next(
-            document
-            for document in pending.documents
-            if document.canonical_name == "legacy.pdf"
-        )
-        self.assertEqual(reupload.version.id, legacy_document.pending_version.id)
-        self.assertEqual(("legacy.pdf",), pending.suppressed_legacy_names)
-
-        clean_pending = self.reserve("first-build", name="new.pdf")
-        snapshot = self.catalog.load_retrieval_snapshot(tenant_id="tenant-a")
-        self.assertNotIn("new.pdf", snapshot.suppressed_legacy_names)
-        self.assertIn(
-            clean_pending.version.id,
-            {
-                document.pending_version.id
-                for document in snapshot.documents
-                if document.pending_version
-            },
-        )
 
     def test_current_index_fingerprint_is_stable_and_manifest_sensitive(self):
         empty_a = self.catalog.current_index_fingerprint(tenant_id="tenant-a")

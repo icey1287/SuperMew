@@ -837,7 +837,7 @@ class EmbeddingRuntime:
 
 
 class EmbeddingService:
-    """Synchronous compatibility facade backed by ``ProviderLoopBridge``."""
+    """Synchronous embedding Interface backed by ``ProviderLoopBridge``."""
 
     def __init__(
         self,

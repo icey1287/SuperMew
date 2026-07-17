@@ -20,7 +20,6 @@ from backend.documents.catalog import (
 from backend.infra.auth import require_admin
 from backend.schemas import (
     DocumentDeleteJobResponse,
-    DocumentDeleteResponse,
     DocumentDeleteStartResponse,
     DocumentInfo,
     DocumentListResponse,
@@ -81,7 +80,6 @@ def _document_info(record: DocumentRecord) -> DocumentInfo:
         embedding_model=(version.embedding_model if version else None),
         index_version=(version.index_version if version else None),
         vector_collection=(version.vector_collection if version else None),
-        storage_layout=(version.storage_layout if version else None),
         error_code=(version.error_code if version else None),
     )
 
@@ -150,8 +148,8 @@ def _delete_job_view_sync(retirement_job_id: str) -> dict:
         status = "completed"
         message = "文档物理数据已完成清理"
     elif dead_letter:
-        status = "cleanup_pending"
-        message = "文档已不可检索，物理清理进入 dead-letter"
+        status = "cleanup_failed"
+        message = "文档已不可检索，但物理清理失败，需要管理员受控重试"
     else:
         status = "running"
         message = "文档已不可检索，持久化 worker 正在清理物理数据"
@@ -336,12 +334,11 @@ async def list_upload_jobs(_: User = Depends(require_admin)):
 )
 async def delete_document_async(
     filename: str,
-    user: User = Depends(require_admin),
+    _: User = Depends(require_admin),
 ):
     outcome = await asyncio.to_thread(
         delete_document_transactionally,
         filename,
-        owner_id=user.id,
     )
     if not outcome.retirement_job_id:
         raise AppError(
@@ -355,7 +352,7 @@ async def delete_document_async(
         filename=filename,
         message=(
             f"{filename} 已从检索目录撤销，物理清理已进入持久化队列"
-            if outcome.cleanup_pending
+            if outcome.cleanup_required
             else f"{filename} 已从检索目录撤销，无待清理数据"
         ),
     )
@@ -378,64 +375,3 @@ async def get_delete_job(job_id: str, _: User = Depends(require_admin)):
 async def list_delete_jobs(_: User = Depends(require_admin)):
     jobs = await asyncio.to_thread(_list_delete_job_views_sync)
     return [DocumentDeleteJobResponse(**job) for job in jobs]
-
-
-@router.post(
-    "/documents/upload",
-    response_model=DocumentUploadStartResponse,
-    status_code=202,
-    deprecated=True,
-)
-async def upload_document(
-    file: UploadFile = File(...),
-    user: User = Depends(require_admin),
-):
-    return await upload_document_async(file=file, user=user)
-
-
-@router.delete(
-    "/documents/{filename}",
-    response_model=DocumentDeleteResponse,
-    status_code=202,
-    deprecated=True,
-)
-async def delete_document(filename: str, user: User = Depends(require_admin)):
-    try:
-        outcome = await asyncio.to_thread(
-            delete_document_transactionally,
-            filename,
-            owner_id=user.id,
-        )
-        if not outcome.retirement_job_id:
-            raise AppError(
-                ErrorCode.STORAGE_UNAVAILABLE,
-                "删除任务身份未能持久化",
-                status_code=503,
-                retryable=True,
-            )
-        return DocumentDeleteResponse(
-            filename=filename,
-            job_id=outcome.retirement_job_id,
-            document_id=outcome.document_id,
-            chunks_deleted=outcome.chunks_deleted,
-            status=("cleanup_pending" if outcome.cleanup_pending else "completed"),
-            cleanup_pending=outcome.cleanup_pending,
-            error_code=outcome.cleanup_error_code,
-            message=(
-                "文档已不可检索，物理数据清理已进入持久化队列"
-                if outcome.cleanup_pending
-                else (
-                    f"文档 {filename} 已从目录撤销，并清理 "
-                    f"{outcome.chunks_deleted} 条向量数据"
-                )
-            ),
-        )
-    except AppError:
-        raise
-    except Exception as exc:
-        raise AppError(
-            ErrorCode.STORAGE_UNAVAILABLE,
-            "删除文档失败",
-            status_code=503,
-            retryable=True,
-        ) from exc

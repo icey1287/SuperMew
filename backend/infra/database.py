@@ -91,11 +91,10 @@ def assert_schema_current() -> None:
         raise RuntimeError(
             "数据库 schema 版本不匹配："
             f"current={current or 'none'} expected={expected}；"
-            "请先执行 `uv run alembic upgrade head`，旧库执行 "
-            "`uv run python -m backend.db.migrate adopt-legacy`"
+            "请先执行 `uv run alembic upgrade head`"
         )
 
 
 def init_db() -> None:
-    """兼容旧调用名；启动时只校验迁移版本，不再隐式 create_all。"""
+    """启动时校验数据库迁移版本。"""
     assert_schema_current()

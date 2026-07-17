@@ -82,7 +82,7 @@ class LiveRagEvalAdapter:
         from backend.env import load_env
 
         load_env()
-        from backend.chat.request_context import ChatRequestContext
+        from backend.runs.request_context import RunRequestContext
         from backend.providers.core import ProviderError
         from backend.providers.runtime import provider_runtime
         from backend.rag.pipeline import resume_rag_from_hitl, run_rag_graph
@@ -108,9 +108,9 @@ class LiveRagEvalAdapter:
         try:
             for case in dataset.cases:
                 started_at = self._clock()
-                ctx = ChatRequestContext.for_sync(
+                ctx = RunRequestContext.for_sync(
                     user_id=self.user_id,
-                    session_id=f"rag_eval_{case.id}",
+                    thread_id=f"rag_eval_{case.id}",
                 )
                 ctx.configure_provider_runtime(
                     deadline_at=started_at + self.timeout_seconds,
@@ -266,7 +266,7 @@ def rag_source_fingerprint(root: str | Path) -> str:
     root_path = Path(root)
     relative_paths = (
         "backend/core/settings.py",
-        "backend/chat/request_context.py",
+        "backend/runs/request_context.py",
         "backend/documents/catalog.py",
         "backend/documents/publication.py",
         "backend/documents/retrieval.py",
@@ -285,7 +285,7 @@ def rag_source_fingerprint(root: str | Path) -> str:
         "backend/rag/reranking.py",
         "backend/rag/runtime_context.py",
         "backend/rag/utils.py",
-        "backend/schemas/chat.py",
+        "backend/schemas/rag.py",
         "backend/security/milvus_filters.py",
         "pyproject.toml",
         "uv.lock",

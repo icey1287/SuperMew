@@ -41,27 +41,23 @@ class User(Base):
         DateTime, default=utcnow, nullable=False
     )
 
-    sessions = relationship(
-        "ChatSession", back_populates="user", cascade="all, delete-orphan"
+    threads = relationship(
+        "Thread", back_populates="user", cascade="all, delete-orphan"
     )
     refresh_tokens = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
 
 
-class ChatSession(Base):
-    """对外称 Thread；保留旧表名以无损迁移历史数据。"""
-
-    __tablename__ = "chat_sessions"
-    __table_args__ = (
-        UniqueConstraint("user_id", "session_id", name="uq_user_session"),
-    )
+class Thread(Base):
+    __tablename__ = "threads"
+    __table_args__ = (UniqueConstraint("user_id", "thread_id", name="uq_user_thread"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    session_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    thread_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     status: Mapped[str] = mapped_column(
         String(24), default="active", nullable=False, index=True
     )
@@ -76,12 +72,12 @@ class ChatSession(Base):
         DateTime, default=utcnow, nullable=False
     )
 
-    user = relationship("User", back_populates="sessions")
+    user = relationship("User", back_populates="threads")
     messages = relationship(
-        "ChatMessage",
-        back_populates="session",
+        "Message",
+        back_populates="thread",
         cascade="all, delete-orphan",
-        order_by="ChatMessage.sequence",
+        order_by="Message.sequence",
     )
     runs = relationship("Run", back_populates="thread", cascade="all, delete-orphan")
 
@@ -119,7 +115,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     thread_ref_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True
     )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -127,7 +123,7 @@ class Run(Base):
     tenant_id: Mapped[str] = mapped_column(
         String(64), default="default", nullable=False, index=True
     )
-    channel: Mapped[str] = mapped_column(String(32), default="chat", nullable=False)
+    channel: Mapped[str] = mapped_column(String(32), default="run", nullable=False)
     approved_tools_json: Mapped[list] = mapped_column(
         JSON, default=list, nullable=False
     )
@@ -173,8 +169,8 @@ class Run(Base):
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    thread = relationship("ChatSession", back_populates="runs")
-    messages = relationship("ChatMessage", back_populates="run")
+    thread = relationship("Thread", back_populates="runs")
+    messages = relationship("Message", back_populates="run")
     events = relationship(
         "RunEvent", back_populates="run", cascade="all, delete-orphan"
     )
@@ -183,22 +179,22 @@ class Run(Base):
     )
 
 
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
+class Message(Base):
+    __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint(
-            "session_ref_id", "sequence", name="uq_chat_message_thread_sequence"
+            "thread_ref_id", "sequence", name="uq_message_thread_sequence"
         ),
         UniqueConstraint(
-            "session_ref_id",
+            "thread_ref_id",
             "client_message_id",
-            name="uq_chat_message_client_id",
+            name="uq_message_client_id",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    session_ref_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    thread_ref_id: Mapped[int] = mapped_column(
+        ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True
     )
     run_id: Mapped[str | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True
@@ -221,7 +217,7 @@ class ChatMessage(Base):
     )
     rag_trace: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    session = relationship("ChatSession", back_populates="messages")
+    thread = relationship("Thread", back_populates="messages")
     run = relationship("Run", back_populates="messages")
 
 
@@ -263,7 +259,7 @@ class RunCheckpoint(Base):
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     thread_ref_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True
     )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -336,32 +332,6 @@ class KnowledgeBase(Base):
 
     documents = relationship(
         "Document", back_populates="knowledge_base", cascade="all, delete-orphan"
-    )
-
-
-class DocumentCatalogState(Base):
-    __tablename__ = "document_catalog_states"
-
-    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    legacy_collection: Mapped[str] = mapped_column(String(160), nullable=False)
-    legacy_knowledge_base_id: Mapped[str | None] = mapped_column(
-        ForeignKey("knowledge_bases.id", ondelete="RESTRICT"), nullable=True
-    )
-    legacy_knowledge_base_name: Mapped[str] = mapped_column(String(160), nullable=False)
-    legacy_adoption_fence: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
-    legacy_adoption_completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True
-    )
-    legacy_corpus_fingerprint: Mapped[str | None] = mapped_column(
-        CHAR(64), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
@@ -458,11 +428,6 @@ class DocumentVersion(Base):
         UniqueConstraint(
             "document_id", "version_number", name="uq_document_version_number"
         ),
-        UniqueConstraint(
-            "vector_collection",
-            "legacy_identity",
-            name="uq_legacy_source_identity",
-        ),
         Index("ix_document_versions_cleanup_after", "cleanup_after"),
         CheckConstraint(
             "status IN ('uploaded', 'parsing', 'indexing', 'staged', "
@@ -491,13 +456,9 @@ class DocumentVersion(Base):
         String(160), default="", nullable=False
     )
     index_version: Mapped[str] = mapped_column(String(64), default="v1", nullable=False)
-    storage_layout: Mapped[str] = mapped_column(
-        String(32), default="versioned", nullable=False
-    )
     vector_collection: Mapped[str] = mapped_column(
         String(160), default="", nullable=False
     )
-    legacy_identity: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), default="uploaded", nullable=False, index=True
     )

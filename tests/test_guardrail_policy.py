@@ -37,7 +37,7 @@ def _request(**overrides: object) -> ToolGuardrailRequest:
         "active_skill": "knowledge-base",
         "active_skill_registered": True,
         "active_skill_scope_allows": True,
-        "channel": "chat",
+        "channel": "run",
         "network_policy": "restricted",
         "destination_capability": None,
         "resource_scope": "knowledge-read",

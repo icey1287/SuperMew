@@ -51,7 +51,6 @@ class ErrorCode(StrEnum):
     RUN_EXECUTION_FAILED = "RUN_EXECUTION_FAILED"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
     THREAD_VERSION_CONFLICT = "THREAD_VERSION_CONFLICT"
-    ENDPOINT_RETIRED = "ENDPOINT_RETIRED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -118,8 +117,6 @@ def _status_for_code(code: ErrorCode | str) -> int:
         return 502
     if value in {ErrorCode.PERMISSION_DENIED.value, ErrorCode.POLICY_DENIED.value}:
         return 403
-    if value == ErrorCode.ENDPOINT_RETIRED.value:
-        return 410
     return 500
 
 
@@ -195,8 +192,6 @@ class AppError(Exception):
             retry_after=retry_after,
             details=safe_details or {},
         )
-        # Keep the caller's enum object for backwards compatibility. The
-        # serialized/public contract always uses the normalized string above.
         self.code = code
         self.message = self.public_error.message
         self.status_code = self.public_error.status_code
@@ -362,33 +357,6 @@ def public_error_from_exception(
         )
         return PublicError(code, detail, status_code=exc.status_code)
 
-    # Compatibility for legacy SDK exceptions. Only the status is inspected;
-    # exception text is never copied into the public contract.
-    message = str(exc)
-    status_match = re.search(
-        r"(?:Error code|status(?:_code)?)[=: ]+(\d{3})", message, re.I
-    )
-    if status_match:
-        upstream_status = int(status_match.group(1))
-        if upstream_status == 429:
-            return PublicError(
-                ErrorCode.MODEL_RATE_LIMITED,
-                "上游模型服务当前繁忙，请稍后重试",
-                status_code=429,
-                retryable=True,
-                category="provider",
-                stage="model",
-            )
-        if upstream_status in {401, 403}:
-            return PublicError(
-                ErrorCode.MODEL_UNAVAILABLE,
-                "模型服务配置不可用，请联系管理员",
-                status_code=503,
-                retryable=False,
-                category="provider",
-                stage="model",
-            )
-
     return fallback or PublicError(
         ErrorCode.INTERNAL_ERROR,
         "服务暂时不可用，请稍后重试",
@@ -407,8 +375,6 @@ def _http_error_code(status_code: int) -> ErrorCode:
         return ErrorCode.NOT_FOUND
     if status_code == 409:
         return ErrorCode.CONFLICT
-    if status_code == 410:
-        return ErrorCode.ENDPOINT_RETIRED
     if status_code == 429:
         return ErrorCode.RATE_LIMITED
     if 400 <= status_code < 500:

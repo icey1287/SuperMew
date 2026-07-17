@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from html import escape
 
-from backend.chat.request_context import ChatRequestContext
+from backend.runs.request_context import RunRequestContext
 from backend.guardrails import RunToolApprovalGrant, ToolGuardrail, ToolGuardrailResult
 from backend.skills import SkillActivationSession
 from backend.tools.registry import ToolDescriptor, ToolSession
@@ -35,14 +35,14 @@ class RuntimeBudget:
 
 @dataclass
 class AgentRuntimeContext:
-    request_context: ChatRequestContext
+    request_context: RunRequestContext
     user_id: str
     thread_id: str
     budget: RuntimeBudget
     user_db_id: int | None = None
     roles: frozenset[str] = field(default_factory=lambda: frozenset({"user"}))
     tenant_id: str = "default"
-    channel: str = "chat"
+    channel: str = "run"
     run_id: str | None = None
     request_id: str | None = None
     persistent_note: str = ""

@@ -100,12 +100,10 @@ def load_utils(env):
             self,
             collection_name="test_collection",
             filter_expr="chunk_level == 3",
-            storage_layout="legacy_filename",
             required=True,
         ):
             self.collection_name = collection_name
             self.filter_expr = filter_expr
-            self.storage_layout = storage_layout
             self.required = required
 
     class RetrievalSnapshot:

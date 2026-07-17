@@ -104,7 +104,7 @@ class GuardrailPolicy:
     """Immutable deterministic policy snapshot with canonical identity."""
 
     version: str = "1.1.0"
-    known_channels: frozenset[str] = frozenset({"api", "chat", "web", "worker"})
+    known_channels: frozenset[str] = frozenset({"api", "run", "web", "worker"})
     known_network_policies: frozenset[str] = frozenset(
         {"none", "restricted", "private-data"}
     )

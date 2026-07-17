@@ -12,15 +12,6 @@ from backend.infra.cache import cache
 from backend.infra.database import SessionLocal
 
 
-_ARTIFACT_DEFAULTS = {
-    "tenant_id": "default",
-    "knowledge_base_id": "",
-    "document_id": "",
-    "document_version_id": "",
-    "section_id": "",
-    "index_version": "v1",
-    "content_hash": "",
-}
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -59,6 +50,33 @@ def _acl_tags(value) -> list[str]:
         seen.add(tag)
         normalized.append(tag)
     return normalized
+
+
+def _artifact_identity(value: dict) -> dict[str, str]:
+    identity = {
+        field: _scope_value(field, value.get(field))
+        for field in (
+            "tenant_id",
+            "knowledge_base_id",
+            "document_id",
+            "document_version_id",
+            "section_id",
+            "index_version",
+        )
+    }
+    content_hash = _scope_value("content_hash", value.get("content_hash"))
+    if not _SHA256_RE.fullmatch(content_hash):
+        raise ValueError("content_hash must be a SHA-256 hex digest")
+    identity["content_hash"] = content_hash
+    return identity
+
+
+def _is_current_artifact(value: dict) -> bool:
+    try:
+        _artifact_identity(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 class ParentChunkStore:
@@ -130,6 +148,7 @@ class ParentChunkStore:
                 chunk_id = (doc.get("chunk_id") or "").strip()
                 if not chunk_id:
                     continue
+                identity = _artifact_identity(doc)
 
                 record = (
                     db.query(ParentChunk)
@@ -146,28 +165,14 @@ class ParentChunkStore:
                     "root_chunk_id": doc.get("root_chunk_id", ""),
                     "chunk_level": int(doc.get("chunk_level", 0) or 0),
                     "chunk_idx": int(doc.get("chunk_idx", 0) or 0),
-                    "tenant_id": doc.get("tenant_id", _ARTIFACT_DEFAULTS["tenant_id"]),
-                    "knowledge_base_id": doc.get(
-                        "knowledge_base_id",
-                        _ARTIFACT_DEFAULTS["knowledge_base_id"],
-                    ),
-                    "document_id": doc.get(
-                        "document_id", _ARTIFACT_DEFAULTS["document_id"]
-                    ),
-                    "document_version_id": doc.get(
-                        "document_version_id",
-                        _ARTIFACT_DEFAULTS["document_version_id"],
-                    ),
-                    "section_id": doc.get(
-                        "section_id", _ARTIFACT_DEFAULTS["section_id"]
-                    ),
-                    "index_version": doc.get(
-                        "index_version", _ARTIFACT_DEFAULTS["index_version"]
-                    ),
+                    "tenant_id": identity["tenant_id"],
+                    "knowledge_base_id": identity["knowledge_base_id"],
+                    "document_id": identity["document_id"],
+                    "document_version_id": identity["document_version_id"],
+                    "section_id": identity["section_id"],
+                    "index_version": identity["index_version"],
                     "acl_tags": _acl_tags(doc.get("acl_tags")),
-                    "content_hash": doc.get(
-                        "content_hash", _ARTIFACT_DEFAULTS["content_hash"]
-                    ),
+                    "content_hash": identity["content_hash"],
                     "updated_at": datetime.now(UTC).replace(tzinfo=None),
                 }
                 cache_payload = {"chunk_id": chunk_id, **payload}
@@ -205,9 +210,11 @@ class ParentChunkStore:
                 continue
             ordered_keys.append(key)
             cached = cache.get_json(self._cache_key(key))
-            if cached:
+            if cached and _is_current_artifact(cached):
                 ordered_results[key] = cached
             else:
+                if cached:
+                    cache.delete_strict(self._cache_key(key))
                 missing_ids.append(key)
 
         if missing_ids:
@@ -220,6 +227,8 @@ class ParentChunkStore:
                 )
                 for row in rows:
                     payload = self._to_dict(row)
+                    if not _is_current_artifact(payload):
+                        continue
                     ordered_results[row.chunk_id] = payload
                     cache.set_json(self._cache_key(row.chunk_id), payload)
             finally:
@@ -374,35 +383,6 @@ class ParentChunkStore:
             query.delete(synchronize_session=False)
             db.commit()
             return len(chunk_ids)
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-
-    def delete_legacy_by_filename(self, filename: str) -> int:
-        """Delete only pre-Catalog rows for one legacy filename."""
-
-        if not filename:
-            return 0
-
-        db = SessionLocal()
-        try:
-            query = db.query(ParentChunk).filter(
-                ParentChunk.filename == filename,
-                ParentChunk.knowledge_base_id == "",
-                ParentChunk.document_id == "",
-                ParentChunk.document_version_id == "",
-            )
-            rows = query.all()
-            chunk_ids = [row.chunk_id for row in rows]
-            deleted = len(chunk_ids)
-            if deleted > 0:
-                for chunk_id in chunk_ids:
-                    cache.delete_strict(self._cache_key(chunk_id))
-                query.delete(synchronize_session=False)
-                db.commit()
-            return deleted
         except Exception:
             db.rollback()
             raise

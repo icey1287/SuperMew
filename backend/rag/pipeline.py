@@ -11,8 +11,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, Send, interrupt
 from pydantic import BaseModel, Field
 
-from backend.chat.request_context import ChatRequestContext
-from backend.schemas.chat import HitlResumeState, normalize_rag_sub_trace
+from backend.core.errors import AppError, ErrorCode
+from backend.runs.request_context import RunRequestContext
+from backend.schemas.rag import HitlResumeState, normalize_rag_sub_trace
 from backend.rag.utils import (
     RETRIEVAL_TOP_K,
     retrieve_documents,
@@ -247,16 +248,6 @@ def _build_hitl_resume_state(
     ).model_dump(exclude_none=True)
 
 
-def _refined_question_for_hitl(resume_state: dict, user_answer: str) -> str:
-    question = resume_state.get("question") or ""
-    answer = user_answer.strip()
-    if not question:
-        return answer
-    if answer and answer in question:
-        return question
-    return f"{answer}：{question}" if answer else question
-
-
 def _emit(state: RAGState, icon: str, label: str, detail: str = "") -> None:
     ctx = get_rag_runtime_context(state.get("runtime_context_id"))
     if ctx is None:
@@ -345,7 +336,7 @@ def _invoke_structured_model(
 
 def _initial_state(
     question: str,
-    ctx: ChatRequestContext | None = None,
+    ctx: RunRequestContext | None = None,
     *,
     runtime_context_id: str | None = None,
     is_sub_agent: bool = False,
@@ -1232,42 +1223,6 @@ rag_graph = build_rag_graph()
 _ephemeral_checkpointers: dict[str, InMemorySaver] = {}
 
 
-def _state_from_resume(
-    resume_state: dict,
-    user_answer: str,
-    ctx: ChatRequestContext,
-) -> dict:
-    current_resume_state = HitlResumeState.model_validate(resume_state).model_dump()
-    refined_question = _refined_question_for_hitl(current_resume_state, user_answer)
-    rag_trace = {
-        "tool_used": True,
-        "tool_name": "search_knowledge_base",
-        "query": refined_question,
-        "hitl_resumed": True,
-        "hitl_answer": user_answer,
-        "hitl_resume_from_status": current_resume_state["retrieval_status"],
-        "hitl_resume_from_route": current_resume_state["route"],
-    }
-    if current_resume_state.get("complexity"):
-        rag_trace["complexity"] = current_resume_state["complexity"]
-    if current_resume_state.get("complexity_reason"):
-        rag_trace["complexity_reason"] = current_resume_state["complexity_reason"]
-    if current_resume_state.get("sub_questions"):
-        rag_trace["sub_questions"] = current_resume_state["sub_questions"]
-    state = _initial_state(refined_question, ctx)
-    state.update(
-        {
-            "query": refined_question,
-            "rewrite_count": current_resume_state["rewrite_count"],
-            "complexity": current_resume_state.get("complexity"),
-            "complexity_reason": current_resume_state.get("complexity_reason"),
-            "sub_questions": current_resume_state.get("sub_questions") or [],
-            "rag_trace": rag_trace,
-        }
-    )
-    return state
-
-
 def _retrieve_resume_query(state: dict) -> dict:
     _emit(state, "🔎", "使用 HITL 补充进行针对性检索", "跳过复杂度判断与子问题分解")
     query = state["question"]
@@ -1330,41 +1285,38 @@ def _retrieve_resume_query(state: dict) -> dict:
 def resume_rag_from_hitl(
     resume_state: dict,
     user_answer: str,
-    ctx: ChatRequestContext,
+    ctx: RunRequestContext,
 ) -> dict:
-    """Compatibility adapter; native checkpoints resume with Command(resume=...)."""
     checkpoint_thread_id = resume_state.get("checkpoint_thread_id")
-    if checkpoint_thread_id and checkpoint_thread_id in _ephemeral_checkpointers:
-        saver = _ephemeral_checkpointers[checkpoint_thread_id]
-        graph = build_rag_graph(checkpointer=saver)
-        config = {"configurable": {"thread_id": checkpoint_thread_id}}
+    if not checkpoint_thread_id or checkpoint_thread_id not in _ephemeral_checkpointers:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint 不存在或已失效",
+            status_code=409,
+            stage="hitl_resume",
+        )
+    saver = _ephemeral_checkpointers[checkpoint_thread_id]
+    graph = build_rag_graph(checkpointer=saver)
+    config = {"configurable": {"thread_id": checkpoint_thread_id}}
+    snapshot = graph.get_state(config)
+    runtime_context_id = snapshot.values.get("runtime_context_id")
+    with bind_rag_runtime_context(ctx, runtime_context_id):
+        result = graph.invoke(Command(resume=user_answer), config=config)
+    interrupts = list(result.pop("__interrupt__", []) or [])
+    if interrupts:
         snapshot = graph.get_state(config)
-        runtime_context_id = snapshot.values.get("runtime_context_id")
-        with bind_rag_runtime_context(ctx, runtime_context_id):
-            result = graph.invoke(Command(resume=user_answer), config=config)
-        interrupts = list(result.pop("__interrupt__", []) or [])
-        if interrupts:
-            snapshot = graph.get_state(config)
-            result["hitl_resume_state"] = _build_hitl_resume_state(
-                result,
-                checkpoint_thread_id=checkpoint_thread_id,
-                checkpoint_id=snapshot.config["configurable"].get("checkpoint_id"),
-                interrupt_id=interrupts[0].id,
-            )
-        else:
-            _ephemeral_checkpointers.pop(checkpoint_thread_id, None)
-        return result
-
-    state = _state_from_resume(resume_state, user_answer, ctx)
-    _emit(state, "▶️", "收到 HITL 补充，继续原 RAG 流程", user_answer)
-
-    state = _retrieve_resume_query(state)
-    if _is_hitl_result(state):
-        state["hitl_resume_state"] = _build_hitl_resume_state(state)
-    return state
+        result["hitl_resume_state"] = _build_hitl_resume_state(
+            result,
+            checkpoint_thread_id=checkpoint_thread_id,
+            checkpoint_id=snapshot.config["configurable"].get("checkpoint_id"),
+            interrupt_id=interrupts[0].id,
+        )
+    else:
+        _ephemeral_checkpointers.pop(checkpoint_thread_id, None)
+    return result
 
 
-def run_rag_graph(question: str, ctx: ChatRequestContext) -> dict:
+def run_rag_graph(question: str, ctx: RunRequestContext) -> dict:
     checkpoint_thread_id = f"rag_{uuid4().hex}"
     saver = InMemorySaver()
     graph = build_rag_graph(checkpointer=saver)
