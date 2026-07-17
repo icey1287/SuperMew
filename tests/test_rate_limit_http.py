@@ -275,15 +275,15 @@ class RateLimitHttpSkipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(cases), app.calls)
         self.assertEqual([], limiter.checks)
 
-    async def test_dynamic_and_legacy_paths_default_to_general_limiting(self):
+    async def test_unknown_dynamic_paths_default_to_general_limiting(self):
         app = BodyReadingApp()
         limiter = StubLimiter()
         middleware = RateLimitMiddleware(app, limiter=limiter)
 
         await _invoke(middleware, method="POST", path="/authentication/login")
         await _invoke(middleware, method="POST", path="/chatty")
-        await _invoke(middleware, method="GET", path="/sessions")
-        await _invoke(middleware, method="DELETE", path="/sessions/thread_1")
+        await _invoke(middleware, method="GET", path="/future-list")
+        await _invoke(middleware, method="DELETE", path="/future-list/item-1")
         await _invoke(middleware, method="GET", path="/future-api")
 
         self.assertEqual(5, len(limiter.checks))
@@ -291,8 +291,8 @@ class RateLimitHttpSkipTests(unittest.IsolatedAsyncioTestCase):
             [
                 "/authentication/login",
                 "/chatty",
-                "/sessions",
-                "/sessions/thread_1",
+                "/future-list",
+                "/future-list/item-1",
                 "/future-api",
             ],
             [check.path for check in limiter.checks],

@@ -90,16 +90,6 @@ def enforce_trusted_auth_origin(
     )
 
 
-def enforce_trusted_cookie_origin(
-    request: Request,
-    *,
-    settings: SecuritySettings,
-) -> None:
-    """Compatibility alias for callers using the original cookie-only name."""
-
-    enforce_trusted_auth_origin(request, settings=settings)
-
-
 def _is_auth_path(path: str) -> bool:
     return path == "/auth" or path.startswith(_AUTH_PATH_PREFIX)
 
@@ -412,5 +402,4 @@ __all__ = [
     "AuthBodyLimitMiddleware",
     "AuthRequestGuardMiddleware",
     "enforce_trusted_auth_origin",
-    "enforce_trusted_cookie_origin",
 ]

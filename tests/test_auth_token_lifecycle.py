@@ -28,16 +28,8 @@ from backend.auth.service import (
 from backend.core.errors import install_exception_handlers
 from backend.core.settings import SecuritySettings
 from backend.db.models import RefreshToken, User
-from backend.infra.auth import authenticate_user, get_password_hash, verify_password
+from backend.infra.auth import get_password_hash
 from backend.infra.database import Base
-
-
-LEGACY_PASSWORD_HASHES = (
-    "$2b$04$abcdefghijklmnopqrstuuHQRMHradWrjjbPcbpK37RVvfSYCXoLy",
-    "$bcrypt-sha256$2b,4$abcdefghijklmnopqrstuu$FQ2IbYX6zn7VyXVLeDueHXUwEtfuttq",
-    "$bcrypt-sha256$v=2,t=2b,r=4$abcdefghijklmnopqrstuu$"
-    "Py7aKyeEZmxD.5u4.QZnUu6X5r6LlMS",
-)
 
 
 def _security_settings(*, secure: bool = False) -> SecuritySettings:
@@ -603,72 +595,6 @@ def test_logout_all_revokes_only_the_authenticated_users_tokens(auth_harness):
         )
     assert alice_active == 0
     assert bob_active == 1
-
-
-@pytest.mark.parametrize("legacy_hash", LEGACY_PASSWORD_HASHES)
-def test_successful_legacy_login_upgrades_password_hash_atomically(
-    auth_harness,
-    legacy_hash,
-):
-    _seed_user(auth_harness, "legacy-user", legacy_hash)
-
-    response = auth_harness.client.post(
-        "/auth/login",
-        json={"username": "legacy-user", "password": "legacy-password"},
-    )
-
-    assert response.status_code == 200
-    with auth_harness.session_factory() as db:
-        user = db.query(User).filter(User.username == "legacy-user").one()
-        assert user.password_hash.startswith("pbkdf2_sha256$")
-        assert user.password_hash != legacy_hash
-        assert verify_password("legacy-password", user.password_hash)
-        assert (
-            db.query(RefreshToken).filter(RefreshToken.user_id == user.id).count() == 1
-        )
-
-
-def test_failed_refresh_issue_rolls_back_legacy_password_upgrade(auth_harness):
-    legacy_hash = LEGACY_PASSWORD_HASHES[0]
-    user_id = _seed_user(auth_harness, "legacy-user", legacy_hash)
-
-    with auth_harness.session_factory() as db:
-        user = authenticate_user(db, "legacy-user", "legacy-password")
-        assert user is not None
-        assert user.password_hash.startswith("pbkdf2_sha256$")
-
-        def fail_commit_after_flush():
-            db.flush()
-            raise RuntimeError("commit failed")
-
-        db.commit = fail_commit_after_flush
-        with pytest.raises(RuntimeError, match="commit failed"):
-            auth_harness.service.issue(db, user)
-
-    with auth_harness.session_factory() as db:
-        stored = db.query(User).filter(User.id == user_id).one()
-        assert stored.password_hash == legacy_hash
-        assert (
-            db.query(RefreshToken).filter(RefreshToken.user_id == user_id).count() == 0
-        )
-
-
-def test_wrong_legacy_password_does_not_migrate_or_issue_refresh(auth_harness):
-    legacy_hash = LEGACY_PASSWORD_HASHES[0]
-    user_id = _seed_user(auth_harness, "legacy-user", legacy_hash)
-
-    response = auth_harness.client.post(
-        "/auth/login",
-        json={"username": "legacy-user", "password": "wrong-password"},
-    )
-
-    assert response.status_code == 401
-    with auth_harness.session_factory() as db:
-        user = db.query(User).filter(User.id == user_id).one()
-        assert user.password_hash == legacy_hash
-        assert (
-            db.query(RefreshToken).filter(RefreshToken.user_id == user_id).count() == 0
-        )
 
 
 def test_pbkdf2_login_does_not_rewrite_existing_password_hash(auth_harness):

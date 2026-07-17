@@ -32,7 +32,7 @@ AUTH_LOGOUT_POLICY = RateLimitPolicy(
     window_seconds=60,
 )
 THREAD_RUN_POLICY = RateLimitPolicy(
-    id="thread-run-chat-retrieval",
+    id="thread-run",
     limit=30,
     window_seconds=60,
 )
@@ -101,24 +101,19 @@ DEFAULT_ROUTE_POLICY_RULES = (
     ),
     RoutePolicyRule(
         methods=frozenset({"POST"}),
-        path_pattern=re.compile(r"/chat(?:/stream)?/?"),
-        policy=THREAD_RUN_POLICY,
-    ),
-    RoutePolicyRule(
-        methods=frozenset({"POST"}),
         path_pattern=re.compile(r"/v1/runs/[^/]+/resume/?"),
         policy=HITL_RESUME_POLICY,
     ),
     RoutePolicyRule(
         methods=frozenset({"POST"}),
-        path_pattern=re.compile(r"/documents/upload(?:/async)?/?"),
+        path_pattern=re.compile(r"/documents/upload/async/?"),
         policy=DOCUMENT_UPLOAD_POLICY,
     ),
 )
 
 
 class RoutePolicyMatcher:
-    """Small Interface that hides route ordering and fallback knowledge."""
+    """Small Interface that hides route ordering and the default policy."""
 
     def __init__(
         self,

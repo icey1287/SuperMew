@@ -106,10 +106,7 @@ class RoutePolicyMatcherTests(unittest.TestCase):
             ("POST", "/auth/logout-all", AUTH_LOGOUT_POLICY),
             ("POST", "/v1/threads/thread_1/runs", THREAD_RUN_POLICY),
             ("POST", "/v1/threads/thread_1/runs/stream", THREAD_RUN_POLICY),
-            ("POST", "/chat", THREAD_RUN_POLICY),
-            ("POST", "/chat/stream", THREAD_RUN_POLICY),
             ("POST", "/v1/runs/run_1/resume", HITL_RESUME_POLICY),
-            ("POST", "/documents/upload", DOCUMENT_UPLOAD_POLICY),
             ("POST", "/documents/upload/async", DOCUMENT_UPLOAD_POLICY),
         )
 
@@ -132,6 +129,14 @@ class RoutePolicyMatcherTests(unittest.TestCase):
         self.assertIs(
             GENERAL_API_POLICY,
             matcher.match(method="GET", path="/auth/login"),
+        )
+        self.assertIs(
+            GENERAL_API_POLICY,
+            matcher.match(method="POST", path="/documents/upload"),
+        )
+        self.assertIs(
+            GENERAL_API_POLICY,
+            matcher.match(method="POST", path="/removed-route"),
         )
         self.assertIs(
             GENERAL_API_POLICY,

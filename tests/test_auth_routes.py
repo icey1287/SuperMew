@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import backend.api.routes.auth as auth
 import backend.infra.auth as infra_auth
 from backend.auth.access import create_access_token
-from backend.infra.auth import get_current_user, resolve_role, verify_password
+from backend.infra.auth import get_current_user, resolve_role
 from fastapi import HTTPException
 
 
@@ -39,20 +39,6 @@ class AuthRouteConcurrencyTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             get_current_user(f"{token}tampered", db)
         self.assertEqual(401, raised.exception.status_code)
-
-    def test_legacy_bcrypt_hashes_remain_verifiable_with_bcrypt_five(self):
-        fixtures = (
-            "$2b$04$abcdefghijklmnopqrstuuHQRMHradWrjjbPcbpK37RVvfSYCXoLy",
-            "$bcrypt-sha256$2b,4$abcdefghijklmnopqrstuu$"
-            "FQ2IbYX6zn7VyXVLeDueHXUwEtfuttq",
-            "$bcrypt-sha256$v=2,t=2b,r=4$abcdefghijklmnopqrstuu$"
-            "Py7aKyeEZmxD.5u4.QZnUu6X5r6LlMS",
-        )
-
-        for password_hash in fixtures:
-            with self.subTest(password_hash=password_hash[:24]):
-                self.assertTrue(verify_password("legacy-password", password_hash))
-                self.assertFalse(verify_password("wrong-password", password_hash))
 
     def test_admin_registration_is_disabled_without_a_matching_invite(self):
         with patch.object(infra_auth, "ADMIN_INVITE_CODE", ""):
