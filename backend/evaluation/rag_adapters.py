@@ -82,6 +82,7 @@ class LiveRagEvalAdapter:
         from backend.env import load_env
 
         load_env()
+        from backend.agent.models import model_registry
         from backend.runs.request_context import RunRequestContext
         from backend.providers.core import ProviderError
         from backend.providers.runtime import provider_runtime
@@ -111,6 +112,7 @@ class LiveRagEvalAdapter:
                 ctx = RunRequestContext.for_sync(
                     user_id=self.user_id,
                     thread_id=f"rag_eval_{case.id}",
+                    model_snapshot=model_registry.environment_snapshot(),
                 )
                 ctx.configure_provider_runtime(
                     deadline_at=started_at + self.timeout_seconds,
@@ -344,8 +346,9 @@ def live_rag_profile_snapshot(*, profile_id: str, index_id: str) -> dict[str, An
 
     settings = get_settings()
     milvus = MilvusSettings.from_env()
-    pipeline = importlib.import_module("backend.rag.pipeline")
     utils = importlib.import_module("backend.rag.utils")
+    from backend.agent.models import model_registry
+
     try:
         snapshot = utils.resolve_retrieval_snapshot()
     except Exception as exc:
@@ -361,12 +364,13 @@ def live_rag_profile_snapshot(*, profile_id: str, index_id: str) -> dict[str, An
         "profile_id": profile_id,
         "index_id": index_id,
         "models": {
-            "answer": settings.models.answer_model,
-            "fast": settings.models.fast_model,
-            "grade": settings.models.grade_model,
-            "provider_endpoint_sha256": _identity_hash(settings.models.base_url),
-            "timeout_seconds": settings.models.timeout_seconds,
-            "rag_timeout_seconds": pipeline.RAG_MODEL_TIMEOUT_SECONDS,
+            role.value: {
+                "model_name": spec.model_name,
+                "profile_version": spec.profile_version,
+                "provider_endpoint_sha256": _identity_hash(spec.base_url),
+                "timeout_seconds": spec.timeout_seconds,
+            }
+            for role, spec in model_registry.environment_snapshot().assignments.items()
         },
         "rag": settings.rag.model_dump(mode="json"),
         "embedding": {

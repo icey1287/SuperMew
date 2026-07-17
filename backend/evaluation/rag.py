@@ -234,6 +234,16 @@ class RagRetrievedChunk(StrictEvalModel):
         return self
 
 
+class RagJudgeMetrics(StrictEvalModel):
+    answer_correctness: float = Field(ge=0, le=1, allow_inf_nan=False)
+    groundedness: float = Field(ge=0, le=1, allow_inf_nan=False)
+    answer_relevance: float = Field(ge=0, le=1, allow_inf_nan=False)
+    completeness: float = Field(ge=0, le=1, allow_inf_nan=False)
+    context_relevance: float = Field(ge=0, le=1, allow_inf_nan=False)
+    unsupported_claim_rate: float = Field(ge=0, le=1, allow_inf_nan=False)
+    conflict_disclosure_rate: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
 class RagEvalObservation(StrictEvalModel):
     case_id: Identifier
     complexity: RagComplexity | None = None
@@ -245,6 +255,7 @@ class RagEvalObservation(StrictEvalModel):
     rewrite_performed: bool = False
     provider_error_code: ProviderCode | None = None
     duration_ms: float = Field(ge=0, allow_inf_nan=False)
+    judge: RagJudgeMetrics | None = None
     retrieved_chunks: tuple[RagRetrievedChunk, ...] = ()
     initial_retrieved_chunks: tuple[RagRetrievedChunk, ...] = ()
     rewrite_retrieved_chunks: tuple[RagRetrievedChunk, ...] = ()
@@ -395,6 +406,9 @@ class RagEvalReport(StrictEvalModel):
 _UNAVAILABLE_METRICS = {
     "answer_correctness": "stable answer-judge Interface is not available",
     "groundedness": "stable claim-to-evidence Interface is not available",
+    "answer_relevance": "stable answer-judge Interface is not available",
+    "completeness": "stable answer-judge Interface is not available",
+    "context_relevance": "stable answer-judge Interface is not available",
     "parent_expansion_precision": (
         "retrieved parent chunks do not yet expose stable child lineage"
     ),
@@ -403,6 +417,16 @@ _UNAVAILABLE_METRICS = {
     "unsupported_claim_rate": "structured answer claims are not available",
     "conflict_disclosure_rate": "structured conflict claims are not available",
 }
+
+_JUDGE_METRICS = (
+    "answer_correctness",
+    "groundedness",
+    "answer_relevance",
+    "completeness",
+    "context_relevance",
+    "unsupported_claim_rate",
+    "conflict_disclosure_rate",
+)
 
 
 def load_rag_eval_dataset(path: str | Path) -> RagEvalDataset:
@@ -488,6 +512,11 @@ def evaluate_rag(
         metadata=resolved_metadata,
     )
     passed = all(result.status is not GateStatus.FAILED for result in gate_results)
+    unavailable_metrics = dict(_UNAVAILABLE_METRICS)
+    for metric_name in _JUDGE_METRICS:
+        metric_result = metrics.get(metric_name)
+        if metric_result is not None and metric_result.eligible_cases:
+            unavailable_metrics.pop(metric_name, None)
     return RagEvalReport(
         dataset_name=dataset.name,
         dataset_fingerprint=fingerprint,
@@ -495,7 +524,7 @@ def evaluate_rag(
         observation_count=len(observation_values),
         metrics={key: metrics[key] for key in sorted(metrics)},
         slices=slices,
-        unavailable_metrics=dict(sorted(_UNAVAILABLE_METRICS.items())),
+        unavailable_metrics=dict(sorted(unavailable_metrics.items())),
         cases=case_results,
         gates=tuple(gate_results),
         passed=passed,
@@ -808,6 +837,26 @@ def _score_case(
         metrics[f"rewrite_improved_at_{largest_k}"] = None
 
     metrics["parent_expansion_precision"] = None
+
+    judge = observation.judge
+    judge_thresholds = {
+        "answer_correctness": (0.5, True),
+        "groundedness": (0.5, True),
+        "answer_relevance": (0.5, True),
+        "completeness": (0.5, True),
+        "context_relevance": (0.5, True),
+        "unsupported_claim_rate": (0.5, False),
+        "conflict_disclosure_rate": (0.5, True),
+    }
+    for metric_name, (threshold, higher_is_better) in judge_thresholds.items():
+        value = getattr(judge, metric_name) if judge is not None else None
+        metrics[metric_name] = _round(value) if value is not None else None
+        if value is None:
+            checks[f"judge_{metric_name}"] = None
+        elif higher_is_better:
+            checks[f"judge_{metric_name}"] = value >= threshold
+        else:
+            checks[f"judge_{metric_name}"] = value <= threshold
 
     metrics["duration_ms"] = _round(observation.duration_ms)
     metrics["provider_failed"] = float(observation.provider_error_code is not None)

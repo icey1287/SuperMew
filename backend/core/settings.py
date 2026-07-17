@@ -554,6 +554,37 @@ class WorkerSettings(_EnvSettings):
         ge=5,
         validation_alias="INDEX_WORKER_READINESS_TTL_SECONDS",
     )
+    evaluation_worker_id: str = Field(
+        default="",
+        validation_alias="EVALUATION_WORKER_ID",
+    )
+    evaluation_poll_seconds: float = Field(
+        default=1.0,
+        ge=0.05,
+        validation_alias="EVALUATION_WORKER_POLL_SECONDS",
+    )
+    evaluation_lease_seconds: int = Field(
+        default=180,
+        ge=30,
+        validation_alias="EVALUATION_WORKER_LEASE_SECONDS",
+    )
+    evaluation_heartbeat_seconds: int = Field(
+        default=15,
+        ge=1,
+        validation_alias="EVALUATION_WORKER_HEARTBEAT_SECONDS",
+    )
+    evaluation_case_timeout_seconds: float = Field(
+        default=120.0,
+        ge=5.0,
+        le=1800.0,
+        validation_alias="EVALUATION_CASE_TIMEOUT_SECONDS",
+    )
+    evaluation_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        validation_alias="EVALUATION_WORKER_MAX_ATTEMPTS",
+    )
 
 
 class ObservabilitySettings(_EnvSettings):
@@ -1163,6 +1194,14 @@ class AppSettings(BaseModel):
         if self.worker.indexing_readiness_ttl_seconds <= readiness_interval * 2:
             problems.append(
                 "INDEX_WORKER_READINESS_TTL_SECONDS 必须大于 worker 最大心跳间隔的两倍"
+            )
+        if (
+            self.worker.evaluation_heartbeat_seconds
+            >= self.worker.evaluation_lease_seconds
+        ):
+            problems.append(
+                "EVALUATION_WORKER_HEARTBEAT_SECONDS 必须小于 "
+                "EVALUATION_WORKER_LEASE_SECONDS"
             )
 
         origins = self.security.cors_origins

@@ -47,7 +47,7 @@ def build_service_commands(
     host: str,
     port: int,
     reload_enabled: bool,
-) -> tuple[ServiceCommand, ServiceCommand]:
+) -> tuple[ServiceCommand, ServiceCommand, ServiceCommand]:
     api_argv = [
         python_executable,
         "-m",
@@ -68,6 +68,14 @@ def build_service_commands(
                 python_executable,
                 "-m",
                 "backend.workers.indexing",
+            ),
+        ),
+        ServiceCommand(
+            name="rag-evaluation-worker",
+            argv=(
+                python_executable,
+                "-m",
+                "backend.workers.evaluation",
             ),
         ),
     )
@@ -179,7 +187,7 @@ def supervise_services(
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="supermew-start",
-        description="同时启动 SuperMew API 与持久化 indexing worker",
+        description="同时启动 SuperMew API、索引 worker 与 RAG 评估 worker",
     )
     parser.add_argument("--host", help="覆盖 API 监听地址")
     parser.add_argument("--port", type=int, help="覆盖 API 监听端口")
@@ -201,7 +209,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--shutdown-timeout-seconds",
         type=float,
         default=15.0,
-        help="等待 API 与 worker 优雅退出的最长秒数",
+        help="等待 API 与全部 worker 优雅退出的最长秒数",
     )
     return parser
 

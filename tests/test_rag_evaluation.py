@@ -18,6 +18,7 @@ from backend.evaluation import (
     RagGoldChunk,
     RagGoldDocument,
     RagHitlKind,
+    RagJudgeMetrics,
     RagMetricGate,
     RagRetrievedChunk,
     dataset_fingerprint,
@@ -159,6 +160,36 @@ def test_ranking_rewrite_route_outcome_hitl_and_latency_metrics_are_exact():
     assert report.slices["single_fact"].metrics["recall_at_3"].value == 1.0
     assert report.metadata == {"profile": "offline"}
     assert report.unavailable_metrics["citation_precision"]
+
+
+def test_evaluator_judge_metrics_are_aggregated_and_become_available():
+    dataset = _dataset(_answer_case())
+    observation = _answer_observation().model_copy(
+        update={
+            "judge": RagJudgeMetrics(
+                answer_correctness=0.9,
+                groundedness=0.8,
+                answer_relevance=0.95,
+                completeness=0.75,
+                context_relevance=0.85,
+                unsupported_claim_rate=0.1,
+                conflict_disclosure_rate=1.0,
+            )
+        }
+    )
+
+    report = evaluate_rag(
+        dataset,
+        [observation],
+        RagEvalGatePolicy(k_values=(3,)),
+    )
+
+    assert report.metrics["answer_correctness"].value == 0.9
+    assert report.metrics["unsupported_claim_rate"].value == 0.1
+    assert "answer_correctness" not in report.unavailable_metrics
+    assert "groundedness" not in report.unavailable_metrics
+    assert report.cases[0].checks["judge_groundedness"] is True
+    assert report.cases[0].passed is True
 
 
 def test_hitl_resolution_provider_failure_and_latency_percentiles():

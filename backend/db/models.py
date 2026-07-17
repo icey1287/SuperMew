@@ -407,6 +407,151 @@ class ModelAssignment(Base):
     updated_by = relationship("User", foreign_keys=[updated_by_user_id])
 
 
+class RagEvaluationDataset(Base):
+    __tablename__ = "rag_evaluation_datasets"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_rag_evaluation_dataset_fingerprint"),
+        Index("ix_rag_evaluation_datasets_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    case_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    jobs = relationship(
+        "RagEvaluationJob",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+    )
+
+
+class RagEvaluationJob(Base):
+    __tablename__ = "rag_evaluation_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'cancelling', 'cancelled', "
+            "'succeeded', 'failed')",
+            name="ck_rag_evaluation_jobs_status",
+        ),
+        CheckConstraint(
+            "completed_cases >= 0 AND total_cases >= 1 "
+            "AND completed_cases <= total_cases",
+            name="ck_rag_evaluation_jobs_progress",
+        ),
+        CheckConstraint(
+            "length(model_catalog_hash) = 64",
+            name="ck_rag_evaluation_jobs_model_hash_length",
+        ),
+        Index("ix_rag_evaluation_jobs_status_created", "status", "created_at"),
+        Index("ix_rag_evaluation_jobs_dataset_created", "dataset_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(
+        ForeignKey("rag_evaluation_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    baseline_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("rag_evaluation_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    completed_cases: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_cases: Mapped[int] = mapped_column(Integer, nullable=False)
+    gate_policy_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    model_catalog_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    model_snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    owner_worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fencing_token: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    report_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    dataset = relationship("RagEvaluationDataset", back_populates="jobs")
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    cases = relationship(
+        "RagEvaluationCaseRecord",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="RagEvaluationCaseRecord.position",
+    )
+
+
+class RagEvaluationCaseRecord(Base):
+    __tablename__ = "rag_evaluation_cases"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "case_id",
+            name="uq_rag_evaluation_case_job_case",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_rag_evaluation_cases_status",
+        ),
+        Index("ix_rag_evaluation_cases_job_position", "job_id", "position"),
+        Index("ix_rag_evaluation_cases_job_status", "job_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("rag_evaluation_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    case_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observation_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    judge_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metrics_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    checks_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    retrieved_identity_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    provider_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    job = relationship("RagEvaluationJob", back_populates="cases")
+
+
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
     __table_args__ = (

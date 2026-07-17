@@ -27,7 +27,7 @@ class _FakeProcess:
         return self.exit_code
 
 
-def test_build_service_commands_starts_api_and_indexing_worker() -> None:
+def test_build_service_commands_starts_api_and_persistent_workers() -> None:
     commands = launcher.build_service_commands(
         python_executable="/venv/bin/python",
         host="127.0.0.1",
@@ -56,6 +56,14 @@ def test_build_service_commands_starts_api_and_indexing_worker() -> None:
                 "/venv/bin/python",
                 "-m",
                 "backend.workers.indexing",
+            ),
+        ),
+        launcher.ServiceCommand(
+            name="rag-evaluation-worker",
+            argv=(
+                "/venv/bin/python",
+                "-m",
+                "backend.workers.evaluation",
             ),
         ),
     )
@@ -102,4 +110,4 @@ def test_repository_start_script_exposes_the_unified_launcher() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "同时启动 SuperMew API 与持久化 indexing worker" in completed.stdout
+    assert "同时启动 SuperMew API、索引 worker 与 RAG 评估 worker" in completed.stdout

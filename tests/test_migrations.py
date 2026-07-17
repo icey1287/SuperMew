@@ -33,6 +33,9 @@ class MigrationTests(unittest.TestCase):
                     "index_jobs",
                     "model_profiles",
                     "model_assignments",
+                    "rag_evaluation_datasets",
+                    "rag_evaluation_jobs",
+                    "rag_evaluation_cases",
                 }.issubset(tables)
             )
             self.assertTrue({"chat_sessions", "chat_messages"}.isdisjoint(tables))
@@ -45,6 +48,22 @@ class MigrationTests(unittest.TestCase):
                     "last_sequence",
                 }.issubset(
                     {column["name"] for column in inspector.get_columns("threads")}
+                )
+            )
+            self.assertTrue(
+                {
+                    "dataset_id",
+                    "status",
+                    "completed_cases",
+                    "total_cases",
+                    "model_catalog_hash",
+                    "model_snapshot_json",
+                    "report_json",
+                }.issubset(
+                    {
+                        column["name"]
+                        for column in inspector.get_columns("rag_evaluation_jobs")
+                    }
                 )
             )
             self.assertTrue(
