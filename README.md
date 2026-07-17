@@ -460,8 +460,7 @@ npm run build
   `JWT_REFRESH_EXPIRE_DAYS`、`AUTH_REFRESH_LEDGER_RETENTION_DAYS`、
   `AUTH_REFRESH_COOKIE_NAME`、`AUTH_REFRESH_COOKIE_SECURE` 与 `AUTH_REFRESH_COOKIE_SAMESITE`。
   生产必须启用 Secure；`SameSite=None` 必须同时启用 Secure。`ADMIN_INVITE_CODE` 留空即禁用
-  公开 admin 注册；启用时必须是至少 32 字符、非 placeholder、且不复用 JWT/Rate Limit Secret
-  的强随机值。
+  公开 admin 注册；启用时不得与 JWT/Rate Limit Secret 相同。
 - 入口限流：`RATE_LIMIT_ENABLED`、`RATE_LIMIT_BACKEND`、`RATE_LIMIT_HMAC_KEY` 与
   `RATE_LIMIT_KEY_PREFIX`。开发/测试可用 `memory`；生产强制 `redis`，HMAC key 至少 32 字符且
   不得与 `JWT_SECRET_KEY` 相同。

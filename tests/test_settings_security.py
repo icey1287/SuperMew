@@ -150,18 +150,12 @@ class SettingsSecurityTests(unittest.TestCase):
         settings.security.refresh_cookie_secure = True
         settings.validate_startup()
 
-    def test_admin_invite_is_disabled_when_empty_and_rejects_public_placeholders(self):
+    def test_admin_invite_is_disabled_when_empty_and_accepts_any_non_empty_value(self):
         settings = make_settings(secret="x" * 40)
         settings.security.admin_invite_code = SecretStr("")
         settings.validate_startup()
 
-        settings.security.admin_invite_code = SecretStr(
-            "replace-with-private-admin-invite-code"
-        )
-        with self.assertRaisesRegex(ValueError, "ADMIN_INVITE_CODE"):
-            settings.validate_startup()
-
-        settings.security.admin_invite_code = SecretStr("a" * 40)
+        settings.security.admin_invite_code = SecretStr("1")
         settings.validate_startup()
 
         settings.security.admin_invite_code = SecretStr("x" * 40)

@@ -54,12 +54,12 @@ class AuthRouteConcurrencyTests(unittest.TestCase):
                 self.assertTrue(verify_password("legacy-password", password_hash))
                 self.assertFalse(verify_password("wrong-password", password_hash))
 
-    def test_admin_registration_is_disabled_without_a_strong_matching_invite(self):
+    def test_admin_registration_is_disabled_without_a_matching_invite(self):
         with patch.object(infra_auth, "ADMIN_INVITE_CODE", ""):
             with self.assertRaises(HTTPException):
                 resolve_role("admin", "public-placeholder")
 
-        with patch.object(infra_auth, "ADMIN_INVITE_CODE", "a" * 40):
-            self.assertEqual("admin", resolve_role("admin", "a" * 40))
+        with patch.object(infra_auth, "ADMIN_INVITE_CODE", "1"):
+            self.assertEqual("admin", resolve_role("admin", "1"))
             with self.assertRaises(HTTPException):
-                resolve_role("admin", "b" * 40)
+                resolve_role("admin", "2")

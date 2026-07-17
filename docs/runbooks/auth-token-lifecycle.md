@@ -115,8 +115,8 @@ supermew-auth-cleanup
 
 - `AUTH_REFRESH_COOKIE_SECURE=true`；`SameSite=None` 只能与 Secure 同时使用。
 - `JWT_SECRET_KEY` 至少 32 字符且非 placeholder。
-- `ADMIN_INVITE_CODE` 留空表示禁用公开 admin 注册；启用时至少 32 字符、非 placeholder，并与
-  JWT/Rate Limit Secret 分离。邀请码使用 constant-time compare，但部署仍不得记录或回显它。
+- `ADMIN_INVITE_CODE` 留空表示禁用公开 admin 注册；启用时与 JWT/Rate Limit Secret 分离。
+  邀请码使用 constant-time compare，但部署仍不得记录或回显它。
 - `RATE_LIMIT_ENABLED=true`、`RATE_LIMIT_BACKEND=redis`，稳定的
   `RATE_LIMIT_HMAC_KEY` 至少 32 字符且与 JWT Secret 分离。
 - 反向代理只允许受控 hop 写 forwarded headers，并由可信 ProxyHeaders/forwarded allowlist 在

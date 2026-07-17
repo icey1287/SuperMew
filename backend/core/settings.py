@@ -1129,10 +1129,6 @@ class AppSettings(BaseModel):
         rate_limit_key = self.rate_limits.identity_hmac_key.get_secret_value().strip()
         admin_invite = self.security.admin_invite_code.get_secret_value().strip()
         if admin_invite:
-            if len(admin_invite) < 32 or _is_placeholder(admin_invite):
-                problems.append(
-                    "ADMIN_INVITE_CODE 留空表示禁用；启用时必须是至少 32 字符的随机 Secret"
-                )
             if admin_invite in {secret, rate_limit_key}:
                 problems.append(
                     "ADMIN_INVITE_CODE 不得与 JWT 或 Rate Limit Secret 相同"

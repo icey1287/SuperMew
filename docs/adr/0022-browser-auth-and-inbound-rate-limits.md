@@ -206,8 +206,8 @@ HttpOnly 不可放宽。Web Locks 以浏览器 Origin 为作用域，因此生�
 一个 canonical 前端 Origin；多个前端必须使用独立 Cookie/API host，或先引入服务端 refresh
 family 并发协议。
 
-`ADMIN_INVITE_CODE` 留空表示禁用公开 admin 注册；启用时必须是至少 32 字符、非公开 placeholder
-的强随机 Secret，不得与 JWT 或 Rate Limit Secret 相同。邀请码比较使用 constant-time
+`ADMIN_INVITE_CODE` 留空表示禁用公开 admin 注册；启用时不得与 JWT 或 Rate Limit Secret 相同。
+邀请码比较使用 constant-time
 `hmac.compare_digest`，不能把示例值或部署 Secret 写入仓库。
 
 仓库门禁覆盖 access token 不持久化、Cookie 属性、refresh rotation、replay 后全量撤销、统一

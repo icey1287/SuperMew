@@ -207,8 +207,8 @@ auth 始终可信；跨 origin 只有在 `CORS_ALLOW_CREDENTIALS=true` 且命中
 空 allowlist 表示 same-origin-only，禁止 `*`。Vite 本地默认端口是 3000；生产 same-origin-only
 可留空，跨 origin 前端必须替换为真实 HTTPS origin。
 
-`ADMIN_INVITE_CODE` 留空即禁用公开 admin 注册；启用时必须至少 32 字符、非 placeholder，并与
-JWT/Rate Limit Secret 分离。所有 HTTP 响应都校验 `Referrer-Policy: no-referrer`、
+`ADMIN_INVITE_CODE` 留空即禁用公开 admin 注册；启用时必须与 JWT/Rate Limit Secret 分离。
+所有 HTTP 响应都校验 `Referrer-Policy: no-referrer`、
 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` 与受限 `Permissions-Policy`；
 Content-Security-Policy 只校验正式前端 HTML，FastAPI `/docs`、`/redoc` 与 JSON 响应不得附加
 CSP，以免把 API 文档兼容性和前端策略耦合。
