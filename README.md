@@ -451,7 +451,7 @@ npm run build
 - 密集与稀疏：Dense 由本地 embedding 生成；Sparse 由 Milvus 中文 analyzer 与 BM25 Function 自动生成和维护
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
-- 文档 build capability：`DEFAULT_TENANT_ID`、`DEFAULT_KNOWLEDGE_BASE_NAME`、`DOCUMENT_PARSER_VERSION`、`DOCUMENT_CHUNKER_VERSION`、`DOCUMENT_INDEX_VERSION`、`DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS`。API 与 indexing worker 必须一致；readiness 会按 build fingerprint 拒绝仅有旧 profile worker 的部署。
+- 文档 build capability：`DEFAULT_TENANT_ID`、`DEFAULT_KNOWLEDGE_BASE_NAME`、`DOCUMENT_PARSER_VERSION`、`DOCUMENT_CHUNKER_VERSION`、`DOCUMENT_INDEX_VERSION`、`DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS`。其中 cleanup grace 只保护版本替换后的旧版本；用户主动删除会在 scope 撤销后立即进入物理清理。API 与 indexing worker 必须一致；readiness 会按 build fingerprint 拒绝仅有旧 profile worker 的部署。
 - 持久化与通知：`DATABASE_URL`、`REDIS_URL`。PostgreSQL 保存事实，Redis 只用于低延迟 Event transport 和父分块缓存；DSN 中的用户名和密码包含 `@:/#%` 等保留字符时必须先 percent-encode，不能直接拼接原始 Secret。
 - 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`、
   `JWT_REFRESH_EXPIRE_DAYS`、`AUTH_REFRESH_LEDGER_RETENTION_DAYS`、

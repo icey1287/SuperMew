@@ -2912,6 +2912,7 @@ class DocumentCatalog:
                 )
                 if document.deleted_at is not None:
                     now = _database_now(db)
+                    cleanup_after = _cleanup_at(now, cleanup_grace)
                     cleanup_rows = (
                         db.query(DocumentVersion)
                         .filter(
@@ -2927,6 +2928,37 @@ class DocumentCatalog:
                         .order_by(DocumentVersion.version_number.asc())
                         .all()
                     )
+                    for cleanup_version in cleanup_rows:
+                        cleanup_job = (
+                            db.query(DocumentCleanupJob)
+                            .filter(
+                                DocumentCleanupJob.document_version_id
+                                == cleanup_version.id
+                            )
+                            .with_for_update()
+                            .first()
+                        )
+                        if cleanup_job is None:
+                            self._ensure_cleanup_job(
+                                db,
+                                cleanup_version,
+                                next_retry_at=cleanup_after,
+                            )
+                        elif cleanup_job.status == CleanupJobStatus.PENDING and (
+                            cleanup_job.next_retry_at is None
+                            or cleanup_after < cleanup_job.next_retry_at
+                        ):
+                            cleanup_job.next_retry_at = cleanup_after
+                            cleanup_job.updated_at = now
+                        if (
+                            cleanup_job is None
+                            or cleanup_job.status == CleanupJobStatus.PENDING
+                        ) and (
+                            cleanup_version.cleanup_after is None
+                            or cleanup_after < cleanup_version.cleanup_after
+                        ):
+                            cleanup_version.cleanup_after = cleanup_after
+                            cleanup_version.updated_at = now
                     operation_id = self._upsert_retirement_job(
                         db,
                         retirement_job_id=retirement_job_id,

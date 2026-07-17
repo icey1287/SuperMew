@@ -26,7 +26,7 @@ PR-15 已将上传拆成 durable reservation 与两阶段发布，但调用 `Doc
 11. retry backoff 只由 worker 计算相对 delay，绝对 `next_retry_at` 由 Catalog 使用数据库时钟写入；worker 本机时钟不参与 lease、retry 或 readiness 判定。没有 typed `public_error` 的 orchestration/数据库异常默认视为可重试存储故障，只有显式确定性错误才能直接 FAILED/dead-letter。
 12. `INDEX_WORKER_ID` 只是可读前缀，实际 identity 强制追加 host、PID 和随机后缀。独立入口在导入 Milvus、Redis、Publication 等运行时 Module 前加载项目 `.env`；相对 `UPLOAD_DIR` 统一锚定项目根目录，防止 API 与 worker 因 CWD 不同产生 split-brain。
 13. cleanup dead-letter 只能通过 worker CLI 的受控 requeue Interface 恢复；该 Interface 再次核验 exact version 仍非 current/pending、尚未 cleaned，并记录 operator requeue。readiness 的 `oldest_ready_at` 只统计已经越过 cleanup grace、retry delay 且当前可 claim 的 scope。
-14. 删除沿用 Publication cleanup grace。新查询在 scope revoke 后立即不可见，删除提交前已取得旧 scope 的并发查询在 grace 内仍可完成；worker 不得立即物理删除。
+14. 用户显式删除不沿用 Publication cleanup grace：新查询在 scope revoke 后立即不可见，cleanup job 同时变为可领取。版本发布替换产生的旧 current 仍使用 grace，供 publish 前已取得旧 scope 的并发查询完成。
 15. worker capability 由 DocumentVersion `build_fingerprint` 表示。非 STAGED claim 只分配给 fingerprint 匹配的 worker，Publication 仍在解析前复核记录字段 hash 与本地 capability；STAGED 因只执行 publish 可由新 profile worker恢复，但仍必须通过 stored profile 完整性校验。heartbeat 携带 fingerprint，API readiness 只接受与当前 submit profile 匹配的近期 worker。
 16. 生产 job ledger 固定使用 PostgreSQL；`FOR UPDATE SKIP LOCKED` 是多 worker claim 正确性的一部分，SQLite 只作为单元测试 Adapter，生产配置会拒绝其它数据库 scheme。
 
@@ -44,7 +44,7 @@ PR-15 已将上传拆成 durable reservation 与两阶段发布，但调用 `Doc
 - retirement snapshot 引用的每个 version 都必须存在且只存在一个 cleanup ledger；缺失时对外状态必须失败，不能完成。
 - `next_retry_at` 必须从数据库时钟加相对 delay 生成；worker wall clock 漂移不得缩短或延长 backoff。
 - SIGTERM 后 worker 在每次 claim 前检查 drain gate，不得在第一个空队列检查后继续领取另一类新任务。
-- cleanup grace 内的 pending 任务不得被 claim，也不得出现在 `oldest_ready_at`。
+- 版本替换 cleanup grace 内的 pending 任务不得被 claim，也不得出现在 `oldest_ready_at`；用户显式删除以数据库当前时间作为 cleanup due time。
 - 非 STAGED job 不能被 build fingerprint 不匹配的 worker claim；STAGED 可以跨 profile publish-only 恢复，但 stored profile 自身 hash 必须一致。
 - 只有 heartbeat capability 与当前 API submit profile 匹配的 indexing worker 才能满足 readiness。
 

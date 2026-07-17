@@ -87,7 +87,7 @@ worker heartbeat 会携带当前 Document build fingerprint。API readiness 只�
 - `queue_counts`：index 与 cleanup 各状态数量。
 - `oldest_ready_at`：当前可领取 backlog 的最早创建时间。
 
-删除会先原子撤销新查询的 Catalog scope，再等待 `DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS` 后允许物理清理，从而保护删除提交前已经取得旧 Retrieval Scope 的并发查询。`oldest_ready_at` 不包含尚在 grace 或 retry wait 内的任务。
+用户显式删除会先原子撤销新查询的 Catalog scope，并立即允许 worker 领取物理清理任务。`DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS` 只用于版本发布替换后的旧版本，保护 publish 前已经取得旧 Retrieval Scope 的并发查询；`oldest_ready_at` 不包含这类尚在 grace 或 retry wait 内的任务。
 
 上传任务可通过 `/documents/upload/jobs/{job_id}` 查看 attempts、max_attempts、next_retry_at 和 execution_fence。FAILED/DEAD_LETTER 的索引候选不可复活；修复根因后重新上传会创建新的 DocumentVersion。cleanup DEAD_LETTER 表示检索 scope 已撤销但物理数据仍保留，必须先修复对应 Milvus、ParentChunk 或对象存储故障，再用以下受控命令恢复；不要直接修改数据库，也不要把版本改回 current/pending。
 

@@ -606,9 +606,7 @@ def test_submit_removes_new_object_when_catalog_reuses_current(tmp_path):
     assert not path.exists()
 
 
-def test_retire_uses_publication_cleanup_grace_for_versioned_and_legacy_scopes(
-    tmp_path,
-):
+def test_explicit_retire_requests_immediate_versioned_and_legacy_cleanup(tmp_path):
     versioned = SimpleNamespace(id="version-v1")
     legacy = SimpleNamespace(id="version-legacy")
     document = SimpleNamespace(
@@ -640,7 +638,7 @@ def test_retire_uses_publication_cleanup_grace_for_versioned_and_legacy_scopes(
     outcome = publication.retire("guide.pdf", owner_id=7)
 
     assert outcome.cleanup_pending is True
-    assert catalog.retire_calls[0]["cleanup_grace"] == timedelta(hours=1)
+    assert catalog.retire_calls[0]["cleanup_grace"] == timedelta(0)
     assert catalog.retire_calls[0]["retirement_job_id"] == outcome.retirement_job_id
 
 

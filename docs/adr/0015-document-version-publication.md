@@ -35,7 +35,7 @@ reserve candidate/version + durable IndexJob
 
 相同 `content_sha256 + build_fingerprint` 的提交只在仍由 `current_version_id` 或 `pending_version_id` 持有的活跃版本上幂等复用。`failed/superseded` 是不可逆终态，其 `DocumentVersion.id` 永不重新变成候选；终态后同内容重传会获得新的 version number、version ID 与 IndexJob。数据库只对 `uploaded/parsing/indexing/staged/ready` 建立 partial unique identity，避免旧 cleanup snapshot 与新发布 scope 发生别名。`build_fingerprint` 至少覆盖 parser、chunker、Embedding 和 index layout 版本；内容相同但构建身份改变时创建新版本。
 
-旧 current 不立即物理删除。它获得 `index_cleanup_after` grace，供已经取得旧 scope 的查询完成；清理由持久 worker 重试并记录 `index_cleaned_at` 或稳定 `cleanup_error_code`。只有 Milvus、ParentChunk cache/DB 与版本对象文件全部清理成功后，才能记录 cleanup complete；失败状态无法持久确认时必须保留候选与 source object。
+版本替换产生的旧 current 不立即物理删除。它获得 `index_cleanup_after` grace，供已经取得旧 scope 的查询完成；清理由持久 worker 重试并记录 `index_cleaned_at` 或稳定 `cleanup_error_code`。用户显式删除 Document 时，scope 撤销与 cleanup ledger 仍在同一事务中提交，但物理清理立即可领取，不再应用版本替换 grace；这意味着删除前已取得旧 scope 的查询可能观察到物理数据同步消失。只有 Milvus、ParentChunk cache/DB 与版本对象文件全部清理成功后，才能记录 cleanup complete；失败状态无法持久确认时必须保留候选与 source object。
 
 ## Legacy 迁移
 
@@ -68,7 +68,7 @@ readiness 不得根据一次 `has_collection == false` 自动持久化 fresh mar
 - legacy parent expansion 必须再次核对 parent 与 child 的 filename/tenant/knowledge-base/document/version/index scope；scope 不一致或正文为空时保留 child，不得跨文档合并。
 - tenant adoption fence、collection、目标 KnowledgeBase 与 corpus fingerprint 必须在每个 source claim 和最终 completion 事务中重新校验。
 - failed/superseded 版本身份不可复活；stale cleanup 只能删除创建它时的版本 scope。
-- 旧 current 在 cleanup grace 内可供已经开始的查询读取；新查询在 publish commit 后立即只读新 current。
+- 版本替换的旧 current 在 cleanup grace 内可供已经开始的查询读取；新查询在 publish commit 后立即只读新 current。用户显式删除不保留该 grace。
 - dispatcher 只负责选择何时调用 `DocumentPublication.run()`。PR-16 用 lease worker Adapter 替换 inline/BackgroundTask Adapter，不改变 publication Interface 与状态机。
 
 ## 结果

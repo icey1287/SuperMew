@@ -10,6 +10,7 @@ from backend.core.errors import AppError, ErrorCode
 from backend.db.models import (
     Base,
     Document,
+    DocumentCleanupJob,
     DocumentVersion,
     IndexJob,
     IndexManifest,
@@ -18,6 +19,7 @@ from backend.db.models import (
 )
 from backend.documents.catalog import (
     BuildProfile,
+    CleanupJobStatus,
     DocumentCatalog,
     DocumentVersionStatus,
     IndexJobStatus,
@@ -513,6 +515,70 @@ class DocumentCatalogTests(unittest.TestCase):
             canonical_name="guide.pdf",
         )
         self.assertTrue(repeated.already_deleted)
+
+    def test_repeated_retire_can_expedite_an_existing_cleanup_grace(self):
+        current = self.reserve("version-one")
+        self.publish(current)
+
+        delayed = self.catalog.retire(
+            tenant_id="tenant-a",
+            knowledge_base_id=self.knowledge_base.id,
+            canonical_name="guide.pdf",
+            cleanup_grace=timedelta(hours=1),
+        )
+        delayed_due = delayed.cleanup_versions[0].cleanup_after
+
+        expedited = self.catalog.retire(
+            tenant_id="tenant-a",
+            knowledge_base_id=self.knowledge_base.id,
+            canonical_name="guide.pdf",
+            cleanup_grace=timedelta(0),
+        )
+        expedited_due = expedited.cleanup_versions[0].cleanup_after
+
+        self.assertLess(expedited_due, delayed_due)
+        claimed = self.catalog.claim_cleanup_job(
+            worker_id="cleanup-worker",
+            lease_seconds=30,
+            now=expedited_due + timedelta(seconds=1),
+        )
+        self.assertIsNotNone(claimed)
+        self.assertEqual(current.version.id, claimed.version.id)
+
+    def test_repeated_retire_preserves_cleanup_retry_backoff(self):
+        current = self.reserve("version-one")
+        self.publish(current)
+        retired = self.catalog.retire(
+            tenant_id="tenant-a",
+            knowledge_base_id=self.knowledge_base.id,
+            canonical_name="guide.pdf",
+            cleanup_grace=timedelta(0),
+        )
+        retry_at = retired.cleanup_versions[0].cleanup_after + timedelta(minutes=5)
+        with self.Session.begin() as db:
+            cleanup_job = (
+                db.query(DocumentCleanupJob)
+                .filter(DocumentCleanupJob.document_version_id == current.version.id)
+                .one()
+            )
+            cleanup_job.status = CleanupJobStatus.RETRY_WAIT
+            cleanup_job.next_retry_at = retry_at
+
+        self.catalog.retire(
+            tenant_id="tenant-a",
+            knowledge_base_id=self.knowledge_base.id,
+            canonical_name="guide.pdf",
+            cleanup_grace=timedelta(0),
+        )
+
+        with self.Session() as db:
+            cleanup_job = (
+                db.query(DocumentCleanupJob)
+                .filter(DocumentCleanupJob.document_version_id == current.version.id)
+                .one()
+            )
+            self.assertEqual(CleanupJobStatus.RETRY_WAIT, cleanup_job.status)
+            self.assertEqual(retry_at, cleanup_job.next_retry_at)
 
     def test_retired_cleanup_snapshot_cannot_alias_same_content_reupload(self):
         first = self.reserve("version-one")

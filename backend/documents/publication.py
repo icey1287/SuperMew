@@ -1142,7 +1142,7 @@ class DocumentPublication:
                 canonical_name=canonical_name,
                 owner_id=tombstone_owner_id,
                 vector_collection=self.writer.milvus_manager.collection_name,
-                cleanup_grace=self.config.cleanup_grace,
+                cleanup_grace=timedelta(0),
                 retirement_job_id=retirement_job_id,
             )
         except AppError:
