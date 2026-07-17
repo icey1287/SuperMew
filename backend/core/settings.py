@@ -47,6 +47,10 @@ class ModelSettings(_EnvSettings):
     answer_model: str = Field(default="", validation_alias="MODEL")
     fast_model: str = Field(default="", validation_alias="FAST_MODEL")
     grade_model: str = Field(default="", validation_alias="GRADE_MODEL")
+    evaluation_model: str = Field(
+        default="",
+        validation_alias="EVALUATION_MODEL",
+    )
     timeout_seconds: float = Field(
         default=30.0,
         gt=0,
@@ -1222,8 +1226,6 @@ class AppSettings(BaseModel):
                 problems.append("生产环境禁止使用 postgres/postgres 默认数据库凭据")
             if not self.models.api_key.get_secret_value().strip():
                 problems.append("生产环境必须配置 ARK_API_KEY")
-            if not self.models.answer_model.strip():
-                problems.append("生产环境必须配置 MODEL")
             if not self.embedding.warmup_on_start:
                 problems.append("生产环境必须启用 EMBEDDING_WARMUP_ON_START")
 

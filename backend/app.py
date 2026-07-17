@@ -30,6 +30,7 @@ from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
 from backend.events.outbox import default_publisher
 from backend.infra.database import init_db
+from backend.model_control import model_control_service
 from backend.providers.runtime import provider_runtime
 from backend.rate_limits.http import RateLimitMiddleware
 from backend.rate_limits.runtime import build_rate_limiter
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
         try:
             settings.validate_startup()
             await asyncio.to_thread(init_db)
+            await asyncio.to_thread(model_control_service.ensure_environment_defaults)
             await provider_runtime.start()
             provider_started = True
             if bool(

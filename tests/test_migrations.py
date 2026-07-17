@@ -30,6 +30,8 @@ class MigrationTests(unittest.TestCase):
                     "documents",
                     "document_versions",
                     "index_jobs",
+                    "model_profiles",
+                    "model_assignments",
                 }.issubset(tables)
             )
             self.assertTrue({"chat_sessions", "chat_messages"}.isdisjoint(tables))
@@ -103,6 +105,25 @@ class MigrationTests(unittest.TestCase):
                     "channel",
                     "approved_tools_json",
                 }.issubset({column["name"] for column in inspector.get_columns("runs")})
+            )
+            self.assertTrue(
+                {
+                    "display_name",
+                    "provider",
+                    "model_name",
+                    "base_url",
+                    "timeout_seconds",
+                    "supports_stream",
+                    "supports_structured_output",
+                    "enabled",
+                    "source",
+                    "version",
+                }.issubset(
+                    {
+                        column["name"]
+                        for column in inspector.get_columns("model_profiles")
+                    }
+                )
             )
             self.assertIn(
                 "ix_refresh_tokens_expires_at",

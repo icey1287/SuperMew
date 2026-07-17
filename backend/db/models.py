@@ -47,6 +47,11 @@ class User(Base):
     refresh_tokens = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
+    model_profiles = relationship(
+        "ModelProfile",
+        back_populates="created_by",
+        foreign_keys="ModelProfile.created_by_user_id",
+    )
 
 
 class Thread(Base):
@@ -305,6 +310,78 @@ class RefreshToken(Base):
     )
 
     user = relationship("User", back_populates="refresh_tokens")
+
+
+class ModelProfile(Base):
+    __tablename__ = "model_profiles"
+    __table_args__ = (
+        UniqueConstraint("display_name", name="uq_model_profile_display_name"),
+        CheckConstraint("version >= 1", name="ck_model_profile_version_positive"),
+        CheckConstraint(
+            "timeout_seconds > 0 AND timeout_seconds <= 600",
+            name="ck_model_profile_timeout_range",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(32), default="openai", nullable=False, index=True
+    )
+    model_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    timeout_seconds: Mapped[Decimal] = mapped_column(
+        Numeric(10, 3), default=Decimal("30"), nullable=False
+    )
+    supports_stream: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    supports_structured_output: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(24), default="user", nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    created_by = relationship(
+        "User",
+        back_populates="model_profiles",
+        foreign_keys=[created_by_user_id],
+    )
+    assignments = relationship("ModelAssignment", back_populates="profile")
+
+
+class ModelAssignment(Base):
+    __tablename__ = "model_assignments"
+
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("model_profiles.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    profile = relationship("ModelProfile", back_populates="assignments")
+    updated_by = relationship("User", foreign_keys=[updated_by_user_id])
 
 
 class KnowledgeBase(Base):
