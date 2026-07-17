@@ -13,6 +13,7 @@ from backend.agent.middleware import build_default_middleware
 from backend.agent.models import ModelRegistry, ModelRole, model_registry
 from backend.agent.runtime import AgentRuntime
 from backend.runs.request_context import RunRequestContext
+from backend.model_control import ModelCatalogSnapshot
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AppSettings, SkillSettings, get_settings
 from backend.guardrails import (
@@ -289,6 +290,7 @@ class AgentRuntimeFactory:
         routed_skill: str | None = None,
         on_skill_activate: Callable[[ActivatedSkill], None] | None = None,
         trace_queue: asyncio.Queue | None = None,
+        model_snapshot: ModelCatalogSnapshot | None = None,
     ) -> AgentRuntime:
         budget = self.budget()
         remaining = (
@@ -297,6 +299,11 @@ class AgentRuntimeFactory:
             else max(deadline_seconds, 0.0)
         )
         effective_run_id = run_id or f"run_{uuid4().hex}"
+        effective_model_snapshot = (
+            model_snapshot or request_context.model_catalog_snapshot()
+        )
+        if effective_model_snapshot is not None:
+            request_context.configure_model_snapshot(effective_model_snapshot)
         app_settings = getattr(self.settings, "app", None)
         effective_tenant_id = tenant_id or getattr(
             app_settings,
@@ -414,8 +421,13 @@ class AgentRuntimeFactory:
         except SkillRegistryError as exc:
             self._raise_skill_access_error(exc)
 
+        answer_model = (
+            self.models.get(ModelRole.ANSWER, snapshot=effective_model_snapshot)
+            if effective_model_snapshot is not None
+            else self.models.get(ModelRole.ANSWER)
+        )
         agent = self.agent_builder(
-            model=self.models.get(ModelRole.ANSWER),
+            model=answer_model,
             tools=list(tool_session.tools),
             system_prompt=SYSTEM_PROMPT,
             middleware=build_default_middleware(budget),

@@ -10,6 +10,7 @@ from backend.agent.models import ModelRegistry, ModelRole, model_registry
 from backend.agent.runtime import extract_message_content
 from backend.core.errors import public_error_from_exception
 from backend.core.settings import AppSettings, get_settings
+from backend.model_control import ModelCatalogSnapshot
 from backend.providers import (
     ProviderCallContext,
     ProviderExecutor,
@@ -51,6 +52,7 @@ class PersistentMemoryManager:
         ai_response: str,
         *,
         history_messages: list | None = None,
+        model_snapshot: ModelCatalogSnapshot | None = None,
     ) -> str:
         try:
             history_text = ""
@@ -74,7 +76,17 @@ class PersistentMemoryManager:
                 f"▼ 最新一轮对话：\n用户：{user_text}\nAI：{ai_response}\n\n"
                 "请直接输出更新后的纯文本笔记："
             )
-            model = self.models.get(ModelRole.FAST)
+            model = (
+                self.models.get(ModelRole.FAST, snapshot=model_snapshot)
+                if model_snapshot is not None
+                else self.models.get(ModelRole.FAST)
+            )
+            timeout_seconds = self.settings.models.timeout_seconds
+            if model_snapshot is not None:
+                timeout_seconds = self.models.describe(
+                    ModelRole.FAST,
+                    snapshot=model_snapshot,
+                ).timeout_seconds
             provider = str(
                 getattr(model, "model_name", None)
                 or getattr(model, "model", None)
@@ -85,7 +97,7 @@ class PersistentMemoryManager:
                 context=ProviderCallContext(
                     provider=provider,
                     operation=ProviderOperation.MODEL,
-                    deadline=time.monotonic() + self.settings.models.timeout_seconds,
+                    deadline=time.monotonic() + timeout_seconds,
                 ),
                 policy=self.policy,
             )
@@ -105,6 +117,7 @@ class PersistentMemoryManager:
         ai_response: str,
         *,
         history_messages: list | None = None,
+        model_snapshot: ModelCatalogSnapshot | None = None,
     ) -> str:
         return await asyncio.to_thread(
             self.update_sync,
@@ -112,6 +125,7 @@ class PersistentMemoryManager:
             user_text,
             ai_response,
             history_messages=history_messages,
+            model_snapshot=model_snapshot,
         )
 
 

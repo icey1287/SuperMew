@@ -28,12 +28,10 @@ from backend.providers import (
 )
 from backend.providers.runtime import provider_runtime
 from backend.rag.reranking import RerankStage
-from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
+from backend.agent.models import ModelRole, model_registry
+from backend.model_control import ModelCatalogSnapshot
 
-ARK_API_KEY = os.getenv("ARK_API_KEY")
-FAST_MODEL = os.getenv("FAST_MODEL")
-BASE_URL = os.getenv("BASE_URL")
 try:
     RERANK_TIMEOUT_SECONDS = max(float(os.getenv("RERANK_TIMEOUT_SECONDS", "5")), 0.1)
 except ValueError:
@@ -120,9 +118,6 @@ _embedding_scope = EmbeddingScope(
     ),
 )
 
-_rewrite_model = None
-
-
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 EMBEDDING_PROVIDER_ID = EMBEDDING_PROVIDER.rsplit("/", 1)[-1] or "embedding-model"
 try:
@@ -137,12 +132,6 @@ except ValueError:
     VECTOR_TIMEOUT_SECONDS = 10.0
 _VECTOR_POLICY = ProviderPolicy(max_attempts=2)
 _MODEL_POLICY = ProviderPolicy(max_attempts=2)
-try:
-    REWRITE_TIMEOUT_SECONDS = max(
-        float(os.getenv("RAG_MODEL_TIMEOUT_SECONDS", "15")), 0.1
-    )
-except ValueError:
-    REWRITE_TIMEOUT_SECONDS = 15.0
 
 
 def resolve_retrieval_snapshot(
@@ -496,22 +485,8 @@ REWRITE_PROMPT = (
 )
 
 
-def _get_rewrite_model():
-    global _rewrite_model
-    if not ARK_API_KEY or not FAST_MODEL:
-        return None
-    if _rewrite_model is None:
-        _rewrite_model = init_chat_model(
-            model=FAST_MODEL,
-            model_provider="openai",
-            api_key=ARK_API_KEY,
-            base_url=BASE_URL,
-            temperature=0,
-            stream_usage=True,
-            max_retries=0,
-            timeout=REWRITE_TIMEOUT_SECONDS,
-        )
-    return _rewrite_model
+def _get_rewrite_model(model_snapshot: ModelCatalogSnapshot | None = None):
+    return model_registry.get(ModelRole.FAST, snapshot=model_snapshot)
 
 
 def rewrite_query_once(
@@ -519,19 +494,34 @@ def rewrite_query_once(
     *,
     deadline: float | None = None,
     cancellation: Callable[[], bool] | None = None,
+    model_snapshot: ModelCatalogSnapshot | None = None,
 ) -> dict:
-    model = _get_rewrite_model()
+    model = _get_rewrite_model(model_snapshot)
     if not model:
-        raise RuntimeError("FAST_MODEL is required for query rewriting")
+        raise RuntimeError("Fast model is required for query rewriting")
+    if model_snapshot is not None:
+        model_spec = model_registry.describe(ModelRole.FAST, snapshot=model_snapshot)
+        provider_name = model_spec.name
+        timeout_seconds = model_spec.timeout_seconds
+    else:
+        provider_name = str(
+            getattr(model, "model_name", None)
+            or getattr(model, "model", None)
+            or "fast-model"
+        )
+        try:
+            timeout_seconds = max(float(model.request_timeout), 0.1)
+        except (AttributeError, TypeError, ValueError):
+            timeout_seconds = 15.0
 
     result = _provider_executor.call(
         lambda: model.with_structured_output(RewritePlan).invoke(
             [{"role": "user", "content": REWRITE_PROMPT.format(query=query)}]
         ),
         context=ProviderCallContext(
-            provider=FAST_MODEL or "fast-model",
+            provider=provider_name,
             operation=ProviderOperation.MODEL,
-            deadline=_bounded_deadline(deadline, REWRITE_TIMEOUT_SECONDS),
+            deadline=_bounded_deadline(deadline, timeout_seconds),
             cancellation=cancellation,
         ),
         policy=_MODEL_POLICY,

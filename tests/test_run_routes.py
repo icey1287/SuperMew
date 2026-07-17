@@ -29,6 +29,7 @@ def _run_record(
         assistant_message_id=11,
         supersedes_run_id=None,
         model_name="test-model",
+        model_catalog_hash="a" * 64,
         on_disconnect="continue",
         owner_worker_id=None,
         lease_expires_at=None,
@@ -272,7 +273,12 @@ def test_canonical_run_route_does_not_implicitly_create_thread() -> None:
     with session_factory.begin() as db:
         db.add(User(username="alice", password_hash="hash", role="user"))
     app, _ = _app()
-    real_service = RunService(RunRepository(session_factory))
+    from tests.support import static_model_control
+
+    real_service = RunService(
+        RunRepository(session_factory),
+        model_control=static_model_control,
+    )
     spawn_once = AsyncMock()
     try:
         with (

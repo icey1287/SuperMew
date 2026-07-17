@@ -11,7 +11,7 @@ class _Models:
     def __init__(self, model):
         self.model = model
 
-    def get(self, role):
+    def get(self, role, *, snapshot=None):
         return self.model
 
 

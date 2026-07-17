@@ -60,6 +60,7 @@ class RunResponse(RunSchema):
     assistant_message_id: int
     supersedes_run_id: str | None = None
     model_name: str
+    model_catalog_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     on_disconnect: str
     owner_worker_id: str | None = None
     lease_expires_at: str | None = None

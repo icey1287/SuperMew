@@ -10,7 +10,7 @@ from backend.core.errors import (
     public_error_from_exception,
     serialize_public_error,
 )
-from backend.core.settings import get_settings
+from backend.model_control import ModelControlService, ModelRole, model_control_service
 from backend.runs.repository import RunRecord, RunRepository, RunReservation, repository
 from backend.runs.state import MultitaskStrategy, RunStatus
 
@@ -22,9 +22,11 @@ class RunService:
         self,
         run_repository: RunRepository = repository,
         *,
+        model_control: ModelControlService = model_control_service,
         _allow_implicit_threads: bool = False,
     ) -> None:
         self.repository = run_repository
+        self.model_control = model_control
         self._allow_implicit_threads = _allow_implicit_threads
 
     def create_run(
@@ -42,14 +44,18 @@ class RunService:
         approved_tools: frozenset[str] = frozenset(),
     ) -> RunReservation:
         compact_message = message.strip()
-        settings = get_settings()
+        model_snapshot = self.model_control.runtime_snapshot(
+            required_roles=frozenset({ModelRole.ANSWER})
+        )
+        answer_model = model_snapshot.require(ModelRole.ANSWER)
         return self.repository.reserve(
             username=username,
             thread_id=thread_id,
             message=compact_message,
             idempotency_key=idempotency_key,
             expected_thread_version=expected_thread_version,
-            model_name=settings.models.answer_model,
+            model_name=answer_model.model_name,
+            model_snapshot=model_snapshot,
             on_disconnect=on_disconnect,
             multitask_strategy=multitask_strategy,
             title=(" ".join(compact_message.split())[:16] or "新会话"),

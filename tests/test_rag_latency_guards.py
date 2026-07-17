@@ -4,7 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -161,32 +161,6 @@ def load_utils(env):
 
 
 class RagLatencyGuardTests(unittest.TestCase):
-    def test_rewrite_model_disables_sdk_retries_and_sets_native_timeout(self):
-        utils, _ = load_utils(
-            {
-                "ARK_API_KEY": "test-key",
-                "FAST_MODEL": "fast-model",
-                "BASE_URL": "https://example.test/v1",
-                "RAG_MODEL_TIMEOUT_SECONDS": "7.5",
-                "AUTO_MERGE_ENABLED": "false",
-            }
-        )
-        initialized = Mock(return_value=object())
-        utils.init_chat_model = initialized
-        utils._rewrite_model = None
-
-        self.assertIsNotNone(utils._get_rewrite_model())
-        initialized.assert_called_once_with(
-            model="fast-model",
-            model_provider="openai",
-            api_key="test-key",
-            base_url="https://example.test/v1",
-            temperature=0,
-            stream_usage=True,
-            max_retries=0,
-            timeout=7.5,
-        )
-
     def test_placeholder_rerank_settings_are_treated_as_disabled(self):
         utils, _ = load_utils(
             {
@@ -293,7 +267,7 @@ class RagLatencyGuardTests(unittest.TestCase):
         for payload, expected_method, expected_marker in cases:
             with self.subTest(method=expected_method):
                 model = Model(payload)
-                utils._get_rewrite_model = lambda: model
+                utils._get_rewrite_model = lambda *_: model
 
                 result = utils.rewrite_query_once("具体问题")
 

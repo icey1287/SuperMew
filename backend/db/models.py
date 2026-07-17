@@ -28,6 +28,19 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+EMPTY_MODEL_CATALOG_HASH = (
+    "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+)
+
+
+def empty_model_snapshot() -> dict:
+    return {
+        "schema_version": 1,
+        "catalog_hash": EMPTY_MODEL_CATALOG_HASH,
+        "assignments": {},
+    }
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -116,6 +129,10 @@ class Run(Base):
             "AND skill_activation_source IS NOT NULL)",
             name="ck_runs_skill_snapshot_complete",
         ),
+        CheckConstraint(
+            "length(model_catalog_hash) = 64",
+            name="ck_runs_model_catalog_hash_length",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -138,6 +155,12 @@ class Run(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    model_catalog_hash: Mapped[str] = mapped_column(
+        CHAR(64), default=EMPTY_MODEL_CATALOG_HASH, nullable=False
+    )
+    model_snapshot_json: Mapped[dict] = mapped_column(
+        JSON, default=empty_model_snapshot, nullable=False
+    )
     on_disconnect: Mapped[str] = mapped_column(
         String(16), default="continue", nullable=False
     )

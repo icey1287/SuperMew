@@ -212,6 +212,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db", side_effect=init_db),
+            patch.object(
+                app_module,
+                "model_control_service",
+                SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
                 app_module,
@@ -331,6 +336,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db"),
+            patch.object(
+                app_module,
+                "model_control_service",
+                SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
                 app_module,
@@ -400,6 +410,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db"),
+            patch.object(
+                app_module,
+                "model_control_service",
+                SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
                 app_module,
@@ -449,6 +464,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db"),
+            patch.object(
+                app_module,
+                "model_control_service",
+                SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
                 app_module,
@@ -521,6 +541,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db"),
+            patch.object(
+                app_module,
+                "model_control_service",
+                SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
                 app_module,
@@ -619,6 +644,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db"),
+            patch.object(
+                app_module,
+                "model_control_service",
+                SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(app_module, "run_agent_executor", Executor()),
             patch.object(app_module, "default_publisher", Publisher()),

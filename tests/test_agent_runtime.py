@@ -42,6 +42,10 @@ from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AgentSettings, ModelSettings, RunSettings
 from backend.guardrails import DEFAULT_GUARDRAIL_POLICY, ToolGuardrail
+from backend.model_control import (
+    ModelRuntimeSpec,
+    build_model_catalog_snapshot,
+)
 from backend.providers import (
     ProviderCode,
     ProviderError,
@@ -190,8 +194,50 @@ class ModelRegistryTests(unittest.TestCase):
             max_retries=0,
             timeout=12.5,
         )
-        with self.assertRaisesRegex(RuntimeError, "grader"):
+        with self.assertRaises(AppError) as raised:
             registry.get(ModelRole.GRADER)
+        self.assertEqual(ErrorCode.MODEL_UNAVAILABLE, raised.exception.code)
+
+    def test_explicit_model_snapshots_get_independent_cached_clients(self):
+        initializer = Mock(side_effect=lambda **kwargs: object())
+        settings = SimpleNamespace(
+            models=ModelSettings(
+                _env_file=None,
+                ARK_API_KEY="test-key",
+                MODEL="environment-answer",
+            )
+        )
+        registry = ModelRegistry(settings=settings, initializer=initializer)
+
+        def snapshot(profile_id: str, model_name: str):
+            return build_model_catalog_snapshot(
+                {
+                    ModelRole.ANSWER: ModelRuntimeSpec(
+                        profile_id=profile_id,
+                        profile_version=1,
+                        display_name=model_name,
+                        model_name=model_name,
+                        timeout_seconds=17,
+                        supports_stream=True,
+                        supports_structured_output=True,
+                    )
+                }
+            )
+
+        first_snapshot = snapshot("model_" + "1" * 32, "answer-v1")
+        second_snapshot = snapshot("model_" + "2" * 32, "answer-v2")
+
+        first = registry.get(ModelRole.ANSWER, snapshot=first_snapshot)
+        repeated = registry.get(ModelRole.ANSWER, snapshot=first_snapshot)
+        second = registry.get(ModelRole.ANSWER, snapshot=second_snapshot)
+
+        self.assertIs(first, repeated)
+        self.assertIsNot(first, second)
+        self.assertEqual(2, initializer.call_count)
+        self.assertEqual(
+            ["answer-v1", "answer-v2"],
+            [call.kwargs["model"] for call in initializer.call_args_list],
+        )
 
     def test_real_openai_adapter_has_no_hidden_retry_and_has_native_timeout(self):
         settings = SimpleNamespace(

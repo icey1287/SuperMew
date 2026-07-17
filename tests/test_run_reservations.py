@@ -120,9 +120,14 @@ class RunReservationTests(unittest.TestCase):
             channel="worker",
             approved_tools=frozenset({"sandbox_execute"}),
         )
+        other_model_catalog = hash_run_request(
+            "hello",
+            model_catalog_hash="f" * 64,
+        )
 
         self.assertNotEqual(base, approved)
         self.assertNotEqual(approved, other_channel)
+        self.assertNotEqual(base, other_model_catalog)
 
 
 if __name__ == "__main__":

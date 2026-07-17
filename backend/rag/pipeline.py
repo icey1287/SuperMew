@@ -1,17 +1,17 @@
 from typing import Annotated, Literal, TypedDict, List, Optional
 from collections.abc import Callable
 import operator
-import os
 import re
 import time
 from uuid import uuid4
-from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, Send, interrupt
 from pydantic import BaseModel, Field
 
 from backend.core.errors import AppError, ErrorCode
+from backend.agent.models import ModelRole, model_registry
+from backend.model_control import ModelCatalogSnapshot
 from backend.runs.request_context import RunRequestContext
 from backend.schemas.rag import HitlResumeState, normalize_rag_sub_trace
 from backend.rag.utils import (
@@ -35,58 +35,55 @@ from backend.providers import (
     ProviderPolicy,
 )
 
-API_KEY = os.getenv("ARK_API_KEY")
-BASE_URL = os.getenv("BASE_URL")
-FAST_MODEL = os.getenv("FAST_MODEL")
-GRADE_MODEL = os.getenv("GRADE_MODEL")
-
-_grader_model = None
-_complexity_model = None
 _provider_executor = ProviderExecutor()
 _model_policy = ProviderPolicy(max_attempts=2)
-try:
-    RAG_MODEL_TIMEOUT_SECONDS = max(
-        float(os.getenv("RAG_MODEL_TIMEOUT_SECONDS", "15")), 0.1
+
+
+def _state_model_snapshot(state: dict | None) -> ModelCatalogSnapshot | None:
+    if not state:
+        return None
+    value = state.get("model_snapshot")
+    if not value:
+        return None
+    if isinstance(value, ModelCatalogSnapshot):
+        return value
+    return ModelCatalogSnapshot.model_validate(value)
+
+
+def _get_grader_model(state: dict | None = None):
+    return model_registry.get(
+        ModelRole.GRADER,
+        snapshot=_state_model_snapshot(state),
     )
-except ValueError:
-    RAG_MODEL_TIMEOUT_SECONDS = 15.0
 
 
-def _get_grader_model():
-    global _grader_model
-    if not API_KEY or not GRADE_MODEL:
-        return None
-    if _grader_model is None:
-        _grader_model = init_chat_model(
-            model=GRADE_MODEL,
-            model_provider="openai",
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            temperature=0,
-            stream_usage=True,
-            max_retries=0,
-            timeout=RAG_MODEL_TIMEOUT_SECONDS,
-        )
-    return _grader_model
+def _get_complexity_model(state: dict | None = None):
+    """Fast Model 用于问题复杂度分类和子问题分解。"""
+    return model_registry.get(
+        ModelRole.FAST,
+        snapshot=_state_model_snapshot(state),
+    )
 
 
-def _get_complexity_model():
-    """FAST_MODEL 用于问题复杂度分类和子问题分解。"""
-    global _complexity_model
-    if not API_KEY or not FAST_MODEL:
-        return None
-    if _complexity_model is None:
-        _complexity_model = init_chat_model(
-            model=FAST_MODEL,
-            model_provider="openai",
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            temperature=0,
-            stream_usage=True,
-            max_retries=0,
-            timeout=RAG_MODEL_TIMEOUT_SECONDS,
-        )
-    return _complexity_model
+def _model_call_settings(
+    state: dict,
+    role: ModelRole,
+    model,
+) -> tuple[str, float]:
+    snapshot = _state_model_snapshot(state)
+    if snapshot is not None:
+        spec = model_registry.describe(role, snapshot=snapshot)
+        return spec.name, spec.timeout_seconds
+    provider = str(
+        getattr(model, "model_name", None)
+        or getattr(model, "model", None)
+        or f"{role.value}-model"
+    )
+    timeout = getattr(model, "request_timeout", None)
+    try:
+        return provider, max(float(timeout), 0.1)
+    except (TypeError, ValueError):
+        return provider, 15.0
 
 
 EVIDENCE_GRADE_PROMPT = (
@@ -176,6 +173,7 @@ class RAGState(TypedDict):
     sub_questions: Optional[List[str]]
     is_sub_agent: bool
     sub_results: Annotated[List[dict], operator.add]
+    model_snapshot: dict
     runtime_context_id: str
     rag_step_group: Optional[str]
     rag_step_group_label: Optional[str]
@@ -319,12 +317,13 @@ def _invoke_structured_model(
     schema,
     messages: list[dict],
     provider: str,
+    timeout_seconds: float,
 ):
     run_deadline, cancellation = _provider_runtime(state)
     context = ProviderCallContext(
         provider=provider,
         operation=ProviderOperation.MODEL,
-        deadline=_provider_deadline(run_deadline, RAG_MODEL_TIMEOUT_SECONDS),
+        deadline=_provider_deadline(run_deadline, timeout_seconds),
         cancellation=cancellation,
     )
     return _provider_executor.call(
@@ -339,12 +338,17 @@ def _initial_state(
     ctx: RunRequestContext | None = None,
     *,
     runtime_context_id: str | None = None,
+    model_snapshot: ModelCatalogSnapshot | dict | None = None,
     is_sub_agent: bool = False,
     rag_step_group: Optional[str] = None,
     rag_step_group_label: Optional[str] = None,
 ) -> dict:
     if runtime_context_id is None and ctx is not None:
         runtime_context_id = register_rag_runtime_context(ctx)
+    if model_snapshot is None and ctx is not None:
+        model_snapshot = ctx.model_snapshot_payload()
+    if isinstance(model_snapshot, ModelCatalogSnapshot):
+        model_snapshot = model_snapshot.model_dump(mode="json")
     return {
         "original_question": question,
         "question": question,
@@ -374,6 +378,7 @@ def _initial_state(
         "sub_questions": None,
         "is_sub_agent": is_sub_agent,
         "sub_results": [],
+        "model_snapshot": dict(model_snapshot or {}),
         "runtime_context_id": runtime_context_id or "",
         "rag_step_group": rag_step_group,
         "rag_step_group_label": rag_step_group_label,
@@ -556,9 +561,14 @@ def grade_documents_node(state: RAGState) -> RAGState:
     if not docs:
         grade = _grade_for_no_docs()
     else:
-        grader = _get_grader_model()
+        grader = _get_grader_model(state)
         if not grader:
-            raise RuntimeError("GRADE_MODEL is required for evidence grading")
+            raise RuntimeError("Grader model is required for evidence grading")
+        grader_provider, grader_timeout = _model_call_settings(
+            state,
+            ModelRole.GRADER,
+            grader,
+        )
         question = state["question"]
         context = state.get("context", "")
         prompt = EVIDENCE_GRADE_PROMPT.format(question=question, context=context)
@@ -567,7 +577,8 @@ def grade_documents_node(state: RAGState) -> RAGState:
             model=grader,
             schema=EvidenceGrade,
             messages=[{"role": "user", "content": prompt}],
-            provider=GRADE_MODEL or "grade-model",
+            provider=grader_provider,
+            timeout_seconds=grader_timeout,
         )
 
     route = _resolve_route(grade, state)
@@ -640,6 +651,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
         question,
         deadline=deadline,
         cancellation=cancellation,
+        model_snapshot=_state_model_snapshot(state),
     )
     rewrite_method = (rewrite.get("rewrite_method") or "").strip()
     step_back_question = (rewrite.get("step_back_question") or "").strip()
@@ -843,9 +855,14 @@ def classify_complexity(state: RAGState) -> RAGState:
         _emit(state, "⚡", "快速判断为简单问题 → 走标准 RAG 流程")
         return {"complexity": "simple", "complexity_reason": fast_path_reason}
 
-    model = _get_complexity_model()
+    model = _get_complexity_model(state)
     if not model:
-        raise RuntimeError("FAST_MODEL is required for complexity planning")
+        raise RuntimeError("Fast model is required for complexity planning")
+    fast_provider, fast_timeout = _model_call_settings(
+        state,
+        ModelRole.FAST,
+        model,
+    )
 
     prompt = COMPLEXITY_PROMPT.format(question=question)
     result = _invoke_structured_model(
@@ -853,7 +870,8 @@ def classify_complexity(state: RAGState) -> RAGState:
         model=model,
         schema=ComplexityResult,
         messages=[{"role": "user", "content": prompt}],
-        provider=FAST_MODEL or "fast-model",
+        provider=fast_provider,
+        timeout_seconds=fast_timeout,
     )
     complexity = (result.complexity or "simple").strip().lower()
     reason = (result.reason or "").strip()
@@ -905,6 +923,7 @@ def _fanout_sub_questions(state: RAGState):
             _initial_state(
                 sq,
                 runtime_context_id=state.get("runtime_context_id"),
+                model_snapshot=state.get("model_snapshot"),
                 is_sub_agent=True,
                 rag_step_group=f"子问题 {i}",
                 rag_step_group_label=sq,
@@ -1326,6 +1345,7 @@ def run_rag_graph(question: str, ctx: RunRequestContext) -> dict:
             _initial_state(
                 question,
                 runtime_context_id=runtime_context_id,
+                model_snapshot=ctx.model_catalog_snapshot(),
             ),
             config=config,
         )

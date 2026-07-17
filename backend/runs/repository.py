@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query, Session
+from pydantic import ValidationError
 
 from backend.core.errors import (
     AppError,
@@ -32,6 +33,10 @@ from backend.db.models import (
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
+from backend.model_control import (
+    EMPTY_MODEL_CATALOG_SNAPSHOT,
+    ModelCatalogSnapshot,
+)
 from backend.runs.state import (
     ACTIVE_RUN_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -58,6 +63,7 @@ class RunRecord:
     assistant_message_id: int
     supersedes_run_id: str | None
     model_name: str
+    model_catalog_hash: str
     on_disconnect: str
     owner_worker_id: str | None
     lease_expires_at: str | None
@@ -102,21 +108,24 @@ class RunExecutionSnapshot:
     user_text: str
     history: tuple[ExecutionMessage, ...]
     persistent_note: str
+    model_snapshot: ModelCatalogSnapshot
 
 
 def hash_run_request(
     message: str,
     *,
     model_name: str = "",
+    model_catalog_hash: str = EMPTY_MODEL_CATALOG_SNAPSHOT.catalog_hash,
     tenant_id: str = "default",
     channel: str = "run",
     approved_tools: frozenset[str] = frozenset(),
-    schema_version: int = 1,
+    schema_version: int = 2,
 ) -> str:
     payload = json.dumps(
         {
             "message": message,
             "model_name": model_name,
+            "model_catalog_hash": model_catalog_hash,
             "tenant_id": tenant_id,
             "channel": channel,
             "approved_tools": sorted(approved_tools),
@@ -161,6 +170,7 @@ class RunRepository:
             assistant_message_id=int(run.assistant_message_id or 0),
             supersedes_run_id=run.supersedes_run_id,
             model_name=run.model_name,
+            model_catalog_hash=run.model_catalog_hash,
             on_disconnect=run.on_disconnect,
             owner_worker_id=run.owner_worker_id,
             lease_expires_at=(
@@ -343,6 +353,7 @@ class RunRepository:
         request_hash: str | None = None,
         expected_thread_version: int | None = None,
         model_name: str = "",
+        model_snapshot: ModelCatalogSnapshot | None = None,
         on_disconnect: str | None = None,
         multitask_strategy: MultitaskStrategy | str | None = None,
         title: str | None = None,
@@ -364,9 +375,11 @@ class RunRepository:
             maximum=32,
         )
         normalized_approved_tools = self._approved_tools(approved_tools)
+        resolved_model_snapshot = model_snapshot or EMPTY_MODEL_CATALOG_SNAPSHOT
         calculated_hash = request_hash or hash_run_request(
             message,
             model_name=model_name,
+            model_catalog_hash=resolved_model_snapshot.catalog_hash,
             tenant_id=normalized_tenant,
             channel=normalized_channel,
             approved_tools=normalized_approved_tools,
@@ -443,6 +456,8 @@ class RunRepository:
                     idempotency_key=key,
                     request_hash=calculated_hash,
                     model_name=model_name,
+                    model_catalog_hash=resolved_model_snapshot.catalog_hash,
+                    model_snapshot_json=resolved_model_snapshot.model_dump(mode="json"),
                     on_disconnect=on_disconnect or settings.disconnect_policy,
                     multitask_strategy=strategy.value,
                     fencing_token=1,
@@ -677,6 +692,26 @@ class RunRepository:
                 .order_by(Message.sequence.asc())
                 .all()
             )
+            try:
+                model_snapshot = ModelCatalogSnapshot.model_validate(
+                    run.model_snapshot_json
+                )
+            except ValidationError as exc:
+                raise AppError(
+                    ErrorCode.RUN_STATE_CONFLICT,
+                    "Run 的模型快照无效",
+                    status_code=409,
+                    category="model",
+                    stage="snapshot",
+                ) from exc
+            if model_snapshot.catalog_hash != run.model_catalog_hash:
+                raise AppError(
+                    ErrorCode.RUN_STATE_CONFLICT,
+                    "Run 的模型目录哈希不匹配",
+                    status_code=409,
+                    category="model",
+                    stage="snapshot",
+                )
             return RunExecutionSnapshot(
                 run=self._record(run, thread.thread_id),
                 user_db_id=user.id,
@@ -694,6 +729,7 @@ class RunRepository:
                 persistent_note=str(
                     (thread.metadata_json or {}).get("persistent_note") or ""
                 ),
+                model_snapshot=model_snapshot,
             )
         finally:
             db.close()

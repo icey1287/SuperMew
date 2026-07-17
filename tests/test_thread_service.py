@@ -13,6 +13,7 @@ from backend.core.errors import AppError, ErrorCode
 from backend.db.models import Base, Thread, Run, User
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
+from tests.support import static_model_control
 from backend.runs.state import RunStatus
 from backend.threads.contracts import THREAD_ID_PATTERN
 from backend.threads.service import ThreadService
@@ -137,7 +138,7 @@ def test_thread_list_aggregates_active_run_without_n_plus_one(
     engine, _, _, threads, run_repository = thread_environment
     threads.create_thread(username="alice", thread_id="thread_active")
     threads.create_thread(username="alice", thread_id="thread_idle")
-    RunService(run_repository).create_run(
+    RunService(run_repository, model_control=static_model_control).create_run(
         username="alice",
         thread_id="thread_active",
         message="question",
@@ -233,7 +234,7 @@ def test_run_requires_owned_thread_and_versions_only_appended_messages(
     thread_environment,
 ) -> None:
     _, session_factory, _, threads, run_repository = thread_environment
-    runs = RunService(run_repository)
+    runs = RunService(run_repository, model_control=static_model_control)
 
     with pytest.raises(AppError) as missing:
         runs.create_run(

@@ -27,6 +27,7 @@ from backend.runs.cancellation import CancellationRegistry, RunExecutionManager
 from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
+from tests.support import static_model_control
 from backend.runs.state import MultitaskStrategy
 from backend.skills import ActivatedSkill, SkillPin
 from backend.guardrails import RunToolApprovalGrant
@@ -277,7 +278,11 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         with self.Session.begin() as db:
             db.add(User(username="alice", password_hash="hash", role="user"))
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository, _allow_implicit_threads=True)
+        self.service = RunService(
+            self.repository,
+            model_control=static_model_control,
+            _allow_implicit_threads=True,
+        )
         self.journal = RunEventJournal(self.Session)
         self.events = PersistentEventBus(self.journal, transport=None)
         self.registry = CancellationRegistry(transport=None)
@@ -367,6 +372,10 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("run", self.runtime_factory.create_kwargs[0]["channel"])
         self.assertIsNone(self.runtime_factory.create_kwargs[0]["approval_grant"])
+        self.assertEqual(
+            reservation.run.model_catalog_hash,
+            self.runtime_factory.create_kwargs[0]["model_snapshot"].catalog_hash,
+        )
 
         replay = self.service.create_run(
             username="alice",

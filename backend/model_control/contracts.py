@@ -139,8 +139,12 @@ def build_model_catalog_snapshot(
     )
 
 
+EMPTY_MODEL_CATALOG_SNAPSHOT = build_model_catalog_snapshot({})
+
+
 __all__ = [
     "MODEL_ROLE_REQUIREMENTS",
+    "EMPTY_MODEL_CATALOG_SNAPSHOT",
     "ModelCatalogSnapshot",
     "ModelProfileRecord",
     "ModelRole",

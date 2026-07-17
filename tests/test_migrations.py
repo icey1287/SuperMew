@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -104,6 +105,8 @@ class MigrationTests(unittest.TestCase):
                     "tenant_id",
                     "channel",
                     "approved_tools_json",
+                    "model_catalog_hash",
+                    "model_snapshot_json",
                 }.issubset({column["name"] for column in inspector.get_columns("runs")})
             )
             self.assertTrue(
@@ -221,9 +224,25 @@ class MigrationTests(unittest.TestCase):
                 channel = connection.execute(
                     text("SELECT channel FROM runs WHERE id = 'run-1'")
                 ).scalar_one()
+                model_snapshot = connection.execute(
+                    text(
+                        "SELECT model_catalog_hash, model_snapshot_json "
+                        "FROM runs WHERE id = 'run-1'"
+                    )
+                ).one()
             self.assertEqual("thread-1", thread)
             self.assertEqual((1, "hello"), tuple(message))
             self.assertEqual("run", channel)
+            self.assertEqual(64, len(model_snapshot.model_catalog_hash))
+            snapshot_payload = json.loads(model_snapshot.model_snapshot_json)
+            self.assertEqual(
+                model_snapshot.model_catalog_hash,
+                snapshot_payload["catalog_hash"],
+            )
+            self.assertEqual(
+                "answer",
+                next(iter(snapshot_payload["assignments"])),
+            )
             engine.dispose()
 
             with self.assertRaises(RuntimeError):

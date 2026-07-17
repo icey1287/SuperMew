@@ -20,6 +20,7 @@ from backend.events.redis_transport import RedisEventTransport
 from backend.events.sse import format_sse_event
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
+from tests.support import static_model_control
 
 
 class FakeTransport:
@@ -66,7 +67,11 @@ class EventBusTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository, _allow_implicit_threads=True)
+        self.service = RunService(
+            self.repository,
+            model_control=static_model_control,
+            _allow_implicit_threads=True,
+        )
         self.journal = RunEventJournal(self.Session)
 
     def tearDown(self):

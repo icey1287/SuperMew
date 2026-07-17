@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Optional
 
+from backend.model_control import ModelCatalogSnapshot
 from backend.guardrails import (
     DestinationCapability,
     DestinationCapabilityBinding,
@@ -52,6 +53,7 @@ class RunRequestContext:
     _knowledge_tool_slots_used: int = 0
     _provider_deadline_at: Optional[float] = None
     _provider_cancellation_probe: Optional[Callable[[], bool]] = None
+    _model_snapshot: ModelCatalogSnapshot | None = field(default=None, repr=False)
     _web_fetch_authorizations: dict[str, _WebFetchAuthorization] = field(
         default_factory=dict,
         repr=False,
@@ -74,12 +76,14 @@ class RunRequestContext:
         user_id: str,
         thread_id: str,
         output_queue: asyncio.Queue,
+        model_snapshot: ModelCatalogSnapshot | None = None,
     ) -> RunRequestContext:
         return cls(
             user_id=user_id,
             thread_id=thread_id,
             output_queue=output_queue,
             loop=asyncio.get_running_loop(),
+            _model_snapshot=model_snapshot,
         )
 
     @classmethod
@@ -88,8 +92,30 @@ class RunRequestContext:
         *,
         user_id: str,
         thread_id: str,
+        model_snapshot: ModelCatalogSnapshot | None = None,
     ) -> RunRequestContext:
-        return cls(user_id=user_id, thread_id=thread_id)
+        return cls(
+            user_id=user_id,
+            thread_id=thread_id,
+            _model_snapshot=model_snapshot,
+        )
+
+    def configure_model_snapshot(self, snapshot: ModelCatalogSnapshot) -> None:
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("request context is closed")
+            current = self._model_snapshot
+            if current is not None and current.catalog_hash != snapshot.catalog_hash:
+                raise ValueError("RunRequestContext model snapshot cannot be rebound")
+            self._model_snapshot = snapshot
+
+    def model_catalog_snapshot(self) -> ModelCatalogSnapshot | None:
+        with self._lock:
+            return self._model_snapshot
+
+    def model_snapshot_payload(self) -> dict | None:
+        snapshot = self.model_catalog_snapshot()
+        return snapshot.model_dump(mode="json") if snapshot is not None else None
 
     def emit_rag_step(
         self,

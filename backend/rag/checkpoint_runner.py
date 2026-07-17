@@ -513,6 +513,7 @@ class CheckpointedRagRunner:
                     _initial_state(
                         question,
                         runtime_context_id=runtime_context_id,
+                        model_snapshot=context.model_catalog_snapshot(),
                     ),
                     config=config,
                 )

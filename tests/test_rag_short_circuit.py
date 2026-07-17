@@ -145,68 +145,6 @@ class RagShortCircuitTests(unittest.TestCase):
     def _ctx(self):
         return RunRequestContext.for_sync(user_id="u", thread_id="s")
 
-    def test_grader_uses_only_grade_model(self):
-        pipeline = load_pipeline(
-            retrieve_documents=lambda query, top_k=5: {"docs": [], "meta": _meta(0)}
-        )
-        initialized = Mock()
-        grader = object()
-        initialized.return_value = grader
-        pipeline.API_KEY = "test-key"
-        pipeline.BASE_URL = "https://example.test/v1"
-        pipeline.FAST_MODEL = "fast-model"
-        pipeline.GRADE_MODEL = "grade-model"
-        pipeline._grader_model = None
-        pipeline.init_chat_model = initialized
-
-        self.assertIs(grader, pipeline._get_grader_model())
-        initialized.assert_called_once_with(
-            model="grade-model",
-            model_provider="openai",
-            api_key="test-key",
-            base_url="https://example.test/v1",
-            temperature=0,
-            stream_usage=True,
-            max_retries=0,
-            timeout=15.0,
-        )
-
-    def test_complexity_model_disables_sdk_retries_and_sets_native_timeout(self):
-        pipeline = load_pipeline(
-            retrieve_documents=lambda query, top_k=5: {"docs": [], "meta": _meta(0)}
-        )
-        initialized = Mock(return_value=object())
-        pipeline.API_KEY = "test-key"
-        pipeline.BASE_URL = "https://example.test/v1"
-        pipeline.FAST_MODEL = "fast-model"
-        pipeline._complexity_model = None
-        pipeline.init_chat_model = initialized
-
-        self.assertIsNotNone(pipeline._get_complexity_model())
-        initialized.assert_called_once_with(
-            model="fast-model",
-            model_provider="openai",
-            api_key="test-key",
-            base_url="https://example.test/v1",
-            temperature=0,
-            stream_usage=True,
-            max_retries=0,
-            timeout=15.0,
-        )
-
-    def test_grader_does_not_use_other_models_when_grade_model_is_missing(self):
-        pipeline = load_pipeline(
-            retrieve_documents=lambda query, top_k=5: {"docs": [], "meta": _meta(0)}
-        )
-        pipeline.API_KEY = "test-key"
-        pipeline.FAST_MODEL = "fast-model"
-        pipeline.GRADE_MODEL = None
-        pipeline._grader_model = None
-        pipeline.init_chat_model = Mock()
-
-        self.assertIsNone(pipeline._get_grader_model())
-        pipeline.init_chat_model.assert_not_called()
-
     def test_simple_no_retrieval_short_circuits_without_rewrite(self):
         calls = {"retrieve": 0, "step_back": 0}
 
@@ -226,10 +164,10 @@ class RagShortCircuitTests(unittest.TestCase):
         pipeline = load_pipeline(
             retrieve_documents=retrieve, rewrite_query_once=step_back
         )
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
-        pipeline._get_grader_model = lambda: FakeStructuredModel(
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {}
         )
 
@@ -269,7 +207,7 @@ class RagShortCircuitTests(unittest.TestCase):
             )
         )
         pipeline._get_complexity_model = complexity_model
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -304,12 +242,12 @@ class RagShortCircuitTests(unittest.TestCase):
         pipeline = load_pipeline(retrieve_documents=retrieve)
         complexity_model_calls = {"count": 0}
 
-        def get_complexity_model():
+        def get_complexity_model(*_):
             complexity_model_calls["count"] += 1
             return FakeStructuredModel(complexity)
 
         pipeline._get_complexity_model = get_complexity_model
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -345,8 +283,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(plan)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(plan)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -379,10 +317,10 @@ class RagShortCircuitTests(unittest.TestCase):
                 calls.__setitem__("step_back", calls["step_back"] + 1) or {}
             ),
         )
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -428,10 +366,10 @@ class RagShortCircuitTests(unittest.TestCase):
         pipeline = load_pipeline(
             retrieve_documents=retrieve, rewrite_query_once=step_back
         )
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -483,10 +421,10 @@ class RagShortCircuitTests(unittest.TestCase):
         pipeline = load_pipeline(
             retrieve_documents=retrieve, rewrite_query_once=rewrite
         )
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -540,10 +478,10 @@ class RagShortCircuitTests(unittest.TestCase):
                         calls.__setitem__("step_back", calls["step_back"] + 1) or {}
                     ),
                 )
-                pipeline._get_complexity_model = lambda: FakeStructuredModel(
+                pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
                     lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
                 )
-                pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+                pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
                 ctx = self._ctx()
                 try:
@@ -576,10 +514,10 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
         )
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -644,8 +582,8 @@ class RagShortCircuitTests(unittest.TestCase):
                 calls.__setitem__("step_back", calls["step_back"] + 1) or {}
             ),
         )
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -685,8 +623,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -717,8 +655,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {}
         )
 
@@ -760,8 +698,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:
@@ -794,8 +732,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {}
         )
 
@@ -829,8 +767,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
             lambda schema, prompt: {}
         )
 
@@ -869,8 +807,8 @@ class RagShortCircuitTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
 
         ctx = self._ctx()
         try:

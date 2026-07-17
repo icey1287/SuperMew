@@ -20,6 +20,7 @@ from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
 from backend.runs.state import RunStatus
+from tests.support import static_model_control
 from test_rag_short_circuit import FakeStructuredModel, _doc, _meta, load_pipeline
 
 
@@ -63,8 +64,8 @@ class NativeCheckpointGraphTests(unittest.TestCase):
             }
 
         pipeline = load_pipeline(retrieve_documents=retrieve)
-        pipeline._get_complexity_model = lambda: FakeStructuredModel(complexity)
-        pipeline._get_grader_model = lambda: FakeStructuredModel(grade)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(complexity)
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
         return pipeline, calls
 
     def test_rag_state_is_json_serializable_and_contains_no_request_object(self):
@@ -189,6 +190,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         self.run_repository = RunRepository(self.Session)
         self.run_service = RunService(
             self.run_repository,
+            model_control=static_model_control,
             _allow_implicit_threads=True,
         )
         self.checkpoints = HitlCheckpointRepository(self.Session)

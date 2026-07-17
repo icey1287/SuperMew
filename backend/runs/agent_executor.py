@@ -448,6 +448,7 @@ class RunAgentExecutor:
             user_id=snapshot.username,
             thread_id=snapshot.run.thread_id,
             output_queue=output_queue,
+            model_snapshot=snapshot.model_snapshot,
         )
         remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
         context.configure_provider_runtime(
@@ -554,6 +555,7 @@ class RunAgentExecutor:
             user_id=snapshot.username,
             thread_id=snapshot.run.thread_id,
             output_queue=output_queue,
+            model_snapshot=snapshot.model_snapshot,
         )
         remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
         request_context.configure_provider_runtime(
@@ -619,6 +621,7 @@ class RunAgentExecutor:
             pinned_skill_source=snapshot.run.skill_activation_source,
             on_skill_activate=pin_skill,
             trace_queue=trace_queue,
+            model_snapshot=snapshot.model_snapshot,
         )
         result: AgentRuntimeResult | None = None
         pump_stop = asyncio.Event()

@@ -10,6 +10,7 @@ from backend.db.models import Base, Message, Run, RunEvent, ToolAudit, User, utc
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
+from tests.support import TEST_MODEL_SNAPSHOT, static_model_control
 
 
 class RunServiceTests(unittest.TestCase):
@@ -29,7 +30,11 @@ class RunServiceTests(unittest.TestCase):
                 ]
             )
         self.repository = RunRepository(self.Session)
-        self.service = RunService(self.repository, _allow_implicit_threads=True)
+        self.service = RunService(
+            self.repository,
+            model_control=static_model_control,
+            _allow_implicit_threads=True,
+        )
 
     def tearDown(self):
         self.engine.dispose()
@@ -64,6 +69,14 @@ class RunServiceTests(unittest.TestCase):
                 db.query(Message).filter(Message.id == run.assistant_message_id).one()
             )
             self.assertEqual("succeeded", run.status)
+            self.assertEqual(
+                TEST_MODEL_SNAPSHOT.catalog_hash,
+                run.model_catalog_hash,
+            )
+            self.assertEqual(
+                TEST_MODEL_SNAPSHOT.model_dump(mode="json"),
+                run.model_snapshot_json,
+            )
             self.assertEqual("answer", message.content)
             self.assertEqual("completed", message.status)
 
