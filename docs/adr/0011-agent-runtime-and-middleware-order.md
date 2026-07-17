@@ -5,9 +5,9 @@
 
 ## 背景
 
-旧 Chat Module 同时承担 HTTP 生命周期、Agent 构造、动态上下文、工具策略、预算、记忆、HITL、流式输出和消息持久化。调用者必须了解大量隐含顺序，导致 Runtime Interface 与 Implementation 同样复杂，缺少 Locality。
+Agent 构造、动态上下文、工具策略、预算、记忆、HITL、流式输出和消息持久化具有严格顺序。若这些知识散落在 HTTP handler 与调用者中，Runtime Interface 会与 Implementation 同样复杂，缺少 Locality。
 
-Run、Event、Checkpoint 已经成为持久化事实来源后，需要一个深 Module 隐藏 Agent 执行细节。旧 `/chat` 与 `/chat/stream` 若继续驱动 `backend.chat.service`，会绕过 Run Journal、Checkpoint、ToolAudit、Guardrail 与 Sandbox，形成第二条未审计的公开执行 Seam。
+Run、Event、Checkpoint 是持久化事实来源，需要一个深 Module 隐藏 Agent 执行细节，并保证所有公开执行都经过 Run Journal、Checkpoint、ToolAudit、Guardrail 与 Sandbox。
 
 ## 决策
 
@@ -16,14 +16,12 @@ Run、Event、Checkpoint 已经成为持久化事实来源后，需要一个深 
 1. `AgentRuntimeFactory.create()` 是 Agent 构造 Interface。它负责模型选择、工具装配、稳定基础提示词、预算和固定中间件链。
 2. `RunAgentExecutor.spawn_once()` 是持久化 Run 执行 Interface。它负责领取 Run、加载执行快照、续租、驱动 Runtime、追加 Event、响应取消并原子终结消息与 Run。
 
-公开 Chat Interface 只保留持久化 Run/Event 路径：
+公开执行 Interface 固定为持久化 Run/Event 路径：
 
 - `POST /v1/threads/{thread_id}/runs` 创建或幂等复用 Run；
 - `GET /v1/runs/{run_id}/stream` 通过 Event v1 与 `Last-Event-ID` 重放；
 - `POST /v1/runs/{run_id}/resume` 恢复同一 checkpoint；
 - `POST /v1/runs/{run_id}/cancel` 请求取消同一 Run。
-
-旧 `POST /chat` 与 `POST /chat/stream` 是退役 tombstone Adapter：认证后统一返回 HTTP `410 Gone` 与 typed `ENDPOINT_RETIRED`，不得导入或执行 legacy Chat Implementation。`backend.chat.service` 暂时只作为内部历史单元测试的兼容实现，不再是公开 Interface。
 
 固定中间件顺序如下：
 
@@ -60,12 +58,10 @@ Run、Event、Checkpoint 已经成为持久化事实来源后，需要一个深 
 - Runtime 执行受进程级并发上限约束；配置的 worker 前缀必须附加 host、pid 和 boot UUID，不能作为跨实例身份本身。
 - Skill 激活在进入 graph 前或 control tool round 中完成；动态上下文、上下文预算与 ToolPolicy 必须读取同一个 Run-local Registry snapshot。
 - Runtime Context 的工具权限必须是显式集合；缺失策略时 fail-closed，不得以 `None` 表示全部放行。
-- 旧 Chat Module 不得重新成为新 Run 路径的执行入口。
-- 所有公开工具执行必须从 durable Run 进入同一 Guardrail、ToolAudit 与 Sandbox Seam；不得通过 compatibility route、内部函数重导出或 SSE Adapter 绕行。
-- 退役 Chat route 必须对任意 legacy body 返回同一个 JSON typed error，不能先解析旧请求或产生模型、工具、消息写入副作用。
+- 所有公开工具执行必须从 durable Run 进入同一 Guardrail、ToolAudit 与 Sandbox Seam；不得通过旁路 route、内部函数重导出或 SSE Adapter 绕行。
 
 ## 结果
 
-调用者只需跨越一个小的执行 Interface，即可获得模型选择、上下文、工具策略、预算、追踪、取消、事件和原子终结的 Leverage。相关变更集中在 Runtime 与 Executor 两个 Module，提高 Locality，并为后续 Provider、Tool Registry、Skill、Guardrail 和 Worker adapter 保留稳定 seam。退役 route 只承担迁移提示，删除了公开 legacy 执行旁路，确保 ToolAudit 与策略判断不会因入口不同而失效。
+调用者只需跨越一个小的执行 Interface，即可获得模型选择、上下文、工具策略、预算、追踪、取消、事件和原子终结的 Leverage。相关变更集中在 Runtime 与 Executor 两个 Module，提高 Locality，并为 Provider、Tool Registry、Skill、Guardrail 和 Worker Adapter 保留稳定 seam。
 
 代价是中间件顺序成为兼容性约束；新增中间件不能仅在列表中随意插入，必须验证它对上下文、工具执行和终态语义的影响。Skill/Tool Registry 的详细不变量见 ADR-0017。

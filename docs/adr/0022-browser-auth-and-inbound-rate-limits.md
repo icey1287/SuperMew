@@ -10,7 +10,7 @@
 当前设备退出、全部设备撤销或旧凭据重放。把长生命周期 JWT 交给每个前端调用点，也会让刷新、
 401 重试和 SSE 身份恢复散落在 Store、Axios 与 Run/Event Adapter 中。
 
-入口流量同样需要独立治理。登录与注册在同步 SQLAlchemy handler 中执行 PBKDF2 或兼容 bcrypt
+入口流量同样需要独立治理。登录与注册在同步 SQLAlchemy handler 中执行 PBKDF2
 校验，Run、HITL、检索和上传又具有显著不同的成本。若每条 route 自行计数、拼 Redis key 和选择
 身份，原始 IP、用户名、Bearer 或 Cookie 容易泄漏到存储与日志；多实例计数、Redis 故障语义和
 响应头也会形成重复的浅 Implementation。
@@ -88,8 +88,7 @@ token mutation 与 PBKDF2 之前。
 避免 access token、Cookie lifecycle 响应或认证错误被浏览器/中间缓存保存。HttpOnly 降低脚本
 读取 credential 的能力，但不能阻止已执行脚本发起同源操作，因此仍需 CSP、输出编码和依赖治理。
 
-新密码使用 PBKDF2-SHA256。兼容的历史 bcrypt/bcrypt-sha256 hash 只在登录校验时读取；成功后
-立即按当前 PBKDF2 参数 rehash，避免让旧格式无限期成为主路径。
+密码哈希固定使用 PBKDF2-SHA256。运行时只接受这一种格式，不提供其它密码哈希 Adapter 或登录时自动迁移路径。
 
 Refresh ledger 不能在 refresh 热路径中 opportunistic delete。每条记录必须在自然 `expires_at`
 之前完整保留；自然过期后再继续保留 `AUTH_REFRESH_LEDGER_RETENTION_DAYS`（默认 30 天），仅作为
@@ -123,8 +122,8 @@ client IP bucket，因此 refresh rotation 同样不会重置配额。无效/过
 中间件不读取请求 body。
 
 除健康检查、OpenAPI/Docs、正式前端静态资源与 CORS preflight 外，所有动态 HTTP path 默认进入
-general policy；`/sessions` deprecated Adapter 与未来新增 path 不能因不在硬编码前缀中
-fail-open。已知高成本 route 再由 matcher 选择更严格的专用 policy。
+general policy；未知或未来新增 path 不能因不在硬编码前缀中 fail-open。已知高成本 route 再由
+matcher 选择更严格的专用 policy。
 
 HTTP Adapter 不直接信任客户端提供的 `X-Forwarded-For`。若 API 位于 Nginx、Ingress 或云负载
 均衡器之后，部署层必须只允许受控代理写入 forwarded headers，并由配置了可信 proxy allowlist
@@ -138,7 +137,7 @@ HTTP Adapter 不直接信任客户端提供的 `X-Forwarded-For`。若 API 位�
 username，login 实际最多 5 次/60 秒，register 实际最多 2 次/小时。这里刻意不使用
 username-only 全局 bucket，避免攻击者仅凭已知用户名耗尽他人的全局配额；因此该策略不宣称
 阻止多来源分布式账号攻击。密码和 request body 不进入 identity 或日志。任一层拒绝或 Redis
-故障都会在 PBKDF2/bcrypt 前结束请求。
+故障都会在 PBKDF2 前结束请求。
 
 默认 fixed-window policy 为：
 
@@ -149,14 +148,14 @@ register host                       5 / 3600s
 register host+username (cost=2)     5 / 3600s，实际 2 次
 refresh / current logout host     120 / 60s
 logout-all access subject         120 / 60s
-Thread Run / chat                  30 / 60s
+Thread Run creation                30 / 60s
 HITL resume                        30 / 60s
 Document upload                    10 / 3600s
 general API                       120 / 60s
 ```
 
-Thread Run policy 覆盖 canonical Run 创建与退役 chat retrieval 路径；HITL resume、Document
-upload 和其余动态请求分别使用专用或 general policy。refresh 与当前设备 logout 使用 120/min
+Thread Run policy 覆盖 canonical Run 创建；HITL resume、Document upload 和其余动态请求分别
+使用专用或 general policy。refresh 与当前设备 logout 使用 120/min
 host 粗限额，避免大型 NAT 把正常轮换变成可用性事故；logout-all 有已验证 Access Token，因此
 使用稳定 subject bucket。原始 token 永远不作为 quota identity。
 拒绝响应返回 typed `RATE_LIMITED`、429、`Retry-After` 与标准 RateLimit headers；响应不回显
@@ -216,7 +215,7 @@ User→RefreshToken 锁序、expired-before-revoked 判定、ledger forensic ret
 Web Locks 跨标签串行、等待锁后的 generation/tombstone 重检、refresh 主体一致、旧 401 不跨账号
 重试、logout 等待在途 refresh、unsafe auth POST metadata 在 Rate Limit 前拒绝、streamed 16 KiB
 cap 在计费后但 route 前拒绝、JSON/no-store 边界、token 轮换不重置稳定 subject/host bucket、
-deprecated/未来动态 path 默认限流、二级 username 限流早于
+未知/未来动态 path 默认限流、二级 username 限流早于
 密码 handler、typed 429/503、全局 `X-Frame-Options: DENY` 和 CSP/docs 分流。
 `storage-compatibility` job 还必须连接真实认证 Redis，验证同 identity 达限、不同 identity 隔离、
 window reset、跨 Adapter 共享计数、key 不含原始 identity/token，以及 Redis 不可用时

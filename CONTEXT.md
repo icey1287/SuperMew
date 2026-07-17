@@ -132,9 +132,7 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 
 ## Flagged ambiguities
 
-- **Session**：旧代码与旧路由曾用 session 表示对话。领域统一称 **Thread**；正式历史 Interface 是 `/v1/threads`，`/sessions` 仅保留为标记 deprecated 的兼容别名。
 - **Task**：只用于面向用户描述工作，不用于持久化模型。Agent 执行称 **Run**，文档后台工作称 **Index Job**。
-- **Chat**：只描述产品交互体验。公开执行 Interface 是 Run/Event；`backend.chat.service` 是退役的内部兼容 Implementation。
 - **Bearer**：描述受保护 HTTP Interface 的 access credential 传输协议，不表示浏览器可把
   Access Token 持久化；正式前端只从内存认证状态读取它。
 - **Same-site**：不是认证来源信任边界。Auth 使用严格 same-origin；跨 origin 即使 same-site，
@@ -142,7 +140,7 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 
 ## Example dialogue
 
-> 开发：用户刷新页面后，应该重新发送 Chat Request 吗？
+> 开发：用户刷新页面后，应该重新创建 Run 吗？
 >
 > 领域专家：不应该。先加载 Thread 的 Message，再按 run_id 重放 Event；如果 Run 是 waiting_input，就展示同一 Checkpoint 的 HITL，如果仍在 running，就从最后 sequence 继续订阅。
 >

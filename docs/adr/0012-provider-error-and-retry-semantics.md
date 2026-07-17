@@ -31,12 +31,12 @@ RAG Module 采用下列语义：
 5. Rerank 是可降级阶段。失败时保留召回排序，记录稳定 `rerank_error_code`、attempts 与 fallback 标志；不得记录 endpoint、响应正文或原始异常。
 6. 复杂问题允许部分子查询成功。成功证据与 Provider 故障并存时返回部分结果和 `coverage_gap_codes`；健康空结果与 Provider 故障并存且没有证据时返回 `INSUFFICIENT_EVIDENCE`，不能声称 `NO_KNOWLEDGE`；只有所有子查询均因 Provider 失败时才重抛 typed error。
    只要已有证据但任一规划子问题未被覆盖（包括健康空结果），整体也必须是 partial，并记录 `coverage_gap_questions`。
-7. HTTP、Run、terminal Event 和前端 reducer 共用同一 `PublicError` 形状，并保留旧 `error_code` 兼容字段。
-8. request-owned Tool Adapter 必须继承 Run deadline 与 cancellation probe。旧全局 Tool 只能作为 compatibility adapter 返回安全文本；Runtime 路径的 Provider 故障必须抛出 typed error，使 `tool.failed` 与 Run terminal 保持一致。
-9. legacy SSE error 事件由同一序列化 Interface 生成：嵌套 `error` 是权威字段，顶层 code/message/retryable 与安全 content 仅用于旧客户端兼容。已经发布的 partial answer 必须保留，并追加稳定 code 的安全终态说明。
-10. `RetrievalOutcome` Module 统一 legacy Chat、持久 Run resume 与 Tool renderer 对 `NO_KNOWLEDGE` / `INSUFFICIENT_EVIDENCE` 的解释。具体 coverage metadata 只能作为 untrusted data 进入 Human/Tool message，不能提升为 SystemMessage。
+7. HTTP、Run、terminal Event 和前端 reducer 共用同一 `PublicError` 形状；`error` 是唯一权威错误投影。
+8. request-owned Tool Adapter 必须继承 Run deadline 与 cancellation probe。Runtime 路径的 Provider 故障必须抛出 typed error，使 `tool.failed` 与 Run terminal 保持一致。
+9. 已经发布的 partial answer 必须保留，并追加稳定 code 的安全终态说明。
+10. `RetrievalOutcome` Module 统一持久 Run resume 与 Tool renderer 对 `NO_KNOWLEDGE` / `INSUFFICIENT_EVIDENCE` 的解释。具体 coverage metadata 只能作为 untrusted data 进入 Human/Tool message，不能提升为 SystemMessage。
 11. Milvus 与 Rerank Adapter 在返回“健康空结果”前必须验证外层、hits、entity、index 与 score 形状；malformed response 必须成为 typed Provider failure。通用参数错误不能伪装成 hybrid capability 不兼容。
-12. FAST memory model 也跨越 Provider seam；其降级只保留旧笔记，并且日志只记录稳定 code。
+12. FAST memory model 也跨越 Provider seam；其降级只保留当前已持久化笔记，并且日志只记录稳定 code。
 
 ## 不变量
 

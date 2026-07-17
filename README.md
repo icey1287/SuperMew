@@ -211,7 +211,7 @@ RATE_LIMIT_KEY_PREFIX=supermew
 开发/测试可使用单进程 memory Adapter；生产 Redis 不可用时入口限流 fail-closed 返回 typed
 503。登录和注册在密码校验前同时执行直接 client IP 与 `IP + NFKC/casefold username` 两层
 限流；复合 bucket 每次消耗两个 quota unit，以降低单一来源集中尝试同一用户名的额度，同时
-避免 username-only 全局 bucket 带来的账户 DoS。Thread Run、chat retrieval、HITL resume、
+避免 username-only 全局 bucket 带来的账户 DoS。Thread Run、知识检索、HITL resume、
 上传与 general API 使用独立 policy。
 
 Rate Limit 只读取 ASGI `scope.client`，不会信任任意 `X-Forwarded-For`。反向代理部署必须先由
@@ -221,8 +221,8 @@ Rate Limit 只读取 ASGI `scope.client`，不会信任任意 `X-Forwarded-For`�
 有效 Bearer 会先验证并解析为稳定 username subject，再进入 HMAC bucket；access token 轮换不会
 刷新配额。opaque refresh 与当前设备 logout 使用 120/min client host 粗限额，logout-all 使用
 稳定 subject；原始 access/refresh token 不会成为 quota identity。除
-health/docs/正式静态资源/preflight 外，动态路径默认使用 general policy，因此 deprecated
-`/sessions` 和未来新增 route 不会默认 fail-open。
+health/docs/正式静态资源/preflight 外，未知和未来新增的动态路径默认使用 general policy，
+不会默认 fail-open。
 
 所有 `/auth` unsafe POST 先在 Rate Limit 前校验来源、login/register JSON media type、
 Content-Length 语法与声明的 16 KiB 上限。same-origin 始终可信；跨 origin 仅在
@@ -305,7 +305,7 @@ npm run build
 - Access Token、可撤销 Refresh Token 与数据库角色共同保护用户隔离；`admin` 管理 Document，`user` 只能读取和删除自己的 Thread。
 - PostgreSQL 持久化 Thread/Message、Run/Event/Checkpoint 和 Document/Document Version/Index Job；Message 采用 append-only sequence，Thread version 只随 Message append 递增，assistant 终态落定不会制造下一轮伪冲突。
 - Redis 不保存 Thread Message 或 Thread 列表快照；它只提供 Event 通知和版本绑定的父分块缓存，事实读取始终回到 PostgreSQL。
-- 新注册用户使用 PBKDF2-SHA256；登录成功时会把兼容的历史 bcrypt/bcrypt-sha256 hash 升级为当前 PBKDF2 格式。
+- 密码哈希固定使用 PBKDF2-SHA256；运行时不提供其它哈希格式或登录时迁移路径。
 
 ## 目录与架构
 
@@ -313,18 +313,15 @@ npm run build
   - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
   - `api/`：HTTP 层
     - [router.py](backend/api/router.py)：路由聚合。
-    - `routes/`：`auth`、`threads`、`runs`、`documents` 分文件；`sessions` 仅保留 deprecated 兼容 Adapter，`chat` 仅保留返回 `410 Gone` 的退役入口。
+    - `routes/`：`auth`、`threads`、`runs`、`documents` 分文件。
     - [resources.py](backend/api/resources.py)：Milvus / 上传目录等共享资源。
-  - `threads/`：权威 Thread 生命周期、ID 约束、最近 Message 分页、Run 状态投影与兼容 Adapter 共享的 application Module。
+  - `threads/`：权威 Thread 生命周期、ID 约束、最近 Message 分页与 Run 状态投影。
   - `runs/`：持久化 Run 创建、幂等与 Thread 并发、owner lease/fencing、取消、HITL resume 和执行调度。
   - `events/`：Event v1 contract、PostgreSQL Journal/outbox、Redis 通知与可恢复 SSE Adapter。
   - `auth/`：Access/Refresh Token 签发、opaque token hash、rotation、replay detection 与撤销生命周期。
   - `rate_limits/`：入口 policy、identity HMAC、fixed-window limiter，以及 memory/Redis Adapter。
   - `security/`：正式前端 CSP 与全局浏览器安全响应头。
   - `agent/`：`AgentRuntimeFactory`、固定中间件链、Run-local Runtime Context，以及调用预算和 Tool 循环检测。
-  - `chat/`：Thread Message 的持久化与历史投影；不再作为公开执行 Interface，`service.py` 仅供内部兼容测试。
-    - [request_context.py](backend/chat/request_context.py)：Run-local RAG step、RAG trace 与工具预算上下文。
-    - [storage.py](backend/chat/storage.py)：append-only Message 与 Thread 历史读取。
   - `guardrails/`：Tool 调用前的确定性 policy、Run-bound approval 与 destination capability。
   - `sandbox/`：隔离执行契约、进程级 Runtime，以及 disabled/Docker Adapter。
   - `rag/`：检索增强
@@ -348,7 +345,7 @@ npm run build
   - **前端工程架构与状态流**：
     - **Pinia 状态存储**：
       - `auth/session.ts` 与 `stores/auth.ts`：只在内存中维护 Access Token；页面启动使用标签页内 single-flight 与 Web Locks 跨标签 refresh，重检 generation/tombstone/主体后才允许 401 单次重试，退出时撤销 HttpOnly Cookie 对应的 Refresh Token。
-      - `stores/sessions.ts`：通过 `/v1/threads` 负责 Thread 创建、列表、权威删除与切换；文件名只保留旧 UI store 术语。
+      - `stores/threads.ts`：通过 `/v1/threads` 负责 Thread 创建、列表、权威删除与切换。
       - `stores/runs.ts`：管理 durable Run、Event cursor、重放、HITL resume 与真实取消。
       - `stores/chat.ts`：把 Run Event 投影到对应 Thread 的 assistant Message 与 RAG 步骤。
       - `stores/documents.ts`：展示知识库 Document，并轮询构建与清理 Index Job 的持久进度。
@@ -378,7 +375,6 @@ npm run build
 5. 客户端通过 `GET /v1/runs/{run_id}/stream` 订阅 SSE；断线后携带 `Last-Event-ID` 重连，或先调用 `/events?after={sequence}` 补放缺失 Event。
 6. `message.completed` 是最终正文与 `rag_trace` 的权威来源；assistant Message 与 Run 终态提交后才发布 `run.completed`、`run.failed` 或 `run.cancelled`。
 7. `hitl.required` 把 Run 置为 `waiting_input`，客户端调用 `/resume` 恢复同一 Checkpoint；Stop 调用 `/cancel` 并继续监听权威 terminal Event。
-8. 旧 `POST /chat` 与 `POST /chat/stream` 已退役，统一返回 typed `410 ENDPOINT_RETIRED`，不会再执行 Agent 或 Tool。
 
 ### 2) RAG 全链路（重点）
 
@@ -417,7 +413,7 @@ npm run build
 3. `document_loader.py` 生成带稳定 Document Version 身份的三级分块；L1/L2 写入 ParentChunk staging，L3 写入隔离的 Milvus candidate scope。
 4. worker 对 ParentChunk、Milvus 与 exact manifest 做完整身份核验，再用 PostgreSQL CAS 原子切换 `current_version_id`。
 5. 同名旧版本在发布完成前始终可检索；新版本失败不会影响旧版本。
-6. superseded/failed/delete Document Version 进入持久 cleanup queue，由同一 worker 以独立 lease 和数据库时钟退避策略执行 exact-version 物理清理；删除的 scope revoke、legacy tombstone 和 cleanup snapshot 在一个 PostgreSQL 事务内提交。
+6. superseded/failed/delete Document Version 进入持久 cleanup queue，由同一 worker 以独立 lease 和数据库时钟退避策略执行 exact-version 物理清理；删除的 scope revoke、cleanup ledger 和 retirement snapshot 在一个 PostgreSQL 事务内提交。
 7. worker crash 后 RUNNING Index Job 可幂等重建；STAGED Index Job 只恢复 publish，不重复解析和向量化。
 
 ### 4) Milvus 2.5+ 原生 BM25 处理
@@ -451,7 +447,7 @@ npm run build
 - 密集与稀疏：Dense 由本地 embedding 生成；Sparse 由 Milvus 中文 analyzer 与 BM25 Function 自动生成和维护
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
-- 文档 build capability：`DEFAULT_TENANT_ID`、`DEFAULT_KNOWLEDGE_BASE_NAME`、`DOCUMENT_PARSER_VERSION`、`DOCUMENT_CHUNKER_VERSION`、`DOCUMENT_INDEX_VERSION`、`DOCUMENT_INDEX_CLEANUP_GRACE_SECONDS`。其中 cleanup grace 只保护版本替换后的旧版本；用户主动删除会在 scope 撤销后立即进入物理清理。API 与 indexing worker 必须一致；readiness 会按 build fingerprint 拒绝仅有旧 profile worker 的部署。
+- 文档 build capability：`DEFAULT_TENANT_ID`、`DEFAULT_KNOWLEDGE_BASE_NAME`、`DOCUMENT_PARSER_VERSION`、`DOCUMENT_CHUNKER_VERSION`、`DOCUMENT_INDEX_VERSION`。API 与 indexing worker 必须一致；readiness 会按 build fingerprint 拒绝 capability 不匹配的部署。发布替换后的 previous current 固定保留 1 小时，用户主动删除、失败、取消与候选覆盖立即进入物理清理；该时长不是配置项。
 - 持久化与通知：`DATABASE_URL`、`REDIS_URL`。PostgreSQL 保存事实，Redis 只用于低延迟 Event transport 和父分块缓存；DSN 中的用户名和密码包含 `@:/#%` 等保留字符时必须先 percent-encode，不能直接拼接原始 Secret。
 - 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`、
   `JWT_REFRESH_EXPIRE_DAYS`、`AUTH_REFRESH_LEDGER_RETENTION_DAYS`、
@@ -489,9 +485,6 @@ npm run build
   - `GET /v1/runs/{run_id}/stream`：订阅 Event v1 SSE；重连时发送 `Last-Event-ID: <sequence>`。
   - `POST /v1/runs/{run_id}/resume`：携带一次性 `hitl_token` 与幂等键恢复同一 Checkpoint。
   - `POST /v1/runs/{run_id}/cancel`：请求取消真实后端 Run；客户端应等待 `run.cancelled` 或其他权威 terminal Event。
-  - `POST /chat`、`POST /chat/stream`：已退役，认证后返回 JSON `410 ENDPOINT_RETIRED`，不会执行 legacy Chat Implementation。
-- Deprecated Thread 兼容路径
-  - `GET /sessions`、`GET /sessions/{session_id}`、`DELETE /sessions/{session_id}`：仅供旧客户端迁移，OpenAPI 已标记 deprecated；正式前端不再调用。
 - 文档（管理员权限）
   - `GET /documents`：列出已入库文档及 chunk 数。
   - `POST /documents/upload/async`：保存上传并提交持久化 Index Job。
@@ -500,7 +493,6 @@ npm run build
   - `DELETE /documents/delete/async/{filename}`：立即撤销检索 scope，并提交持久化清理 Index Job。
   - `GET /documents/delete/jobs`：列出最近的清理 Index Job，供刷新后恢复。
   - `GET /documents/delete/jobs/{job_id}`：查询清理 Index Job 的物理清理进度或 dead-letter。
-  - 兼容路径 `POST /documents/upload` 与 `DELETE /documents/{filename}` 已改为 `202 Accepted` 并返回 durable `job_id`：前者只提交 Index Job，后者只原子撤销检索 scope；二者都不再表示物理索引/清理已同步完成。旧客户端升级前必须改为轮询对应的 Index Job 接口。
 
 ## 持久化 Run/Event 与可恢复流 — 技术细节
 
@@ -585,11 +577,7 @@ Last-Event-ID: 42
 - Stop 调用 `POST /v1/runs/{run_id}/cancel`。响应表示“取消请求已接受或 Run 已终止”，客户端继续监听直到收到权威 terminal Event。
 - 关闭页面、切换账号或断开 SSE 默认只关闭观察连接；`on_disconnect=continue` 的 Run 会在后端继续。网络断开不能冒充用户取消。
 
-### 6. 公开 legacy Chat 入口退役
-
-`POST /chat` 与 `POST /chat/stream` 不再是 compatibility execution Adapter。二者认证后对任意 legacy body 返回 JSON `410 ENDPOINT_RETIRED`，并给出 create/stream/resume/cancel 迁移路径；它们不会创建模型调用、ToolAudit、Message 或后台 Run。所有公开 Tool 执行因此只跨越 durable Run 的 Guardrail 与 Sandbox Seam。
-
-### 7. 混合检索（Hybrid Search）深度实现
+### 6. 混合检索（Hybrid Search）深度实现
 
 项目使用 Milvus 2.5+ 服务端原生分析器维护 BM25 稀疏特征，客户端只负责构造 Dense/Sparse 检索请求与解释结果：
 
@@ -602,55 +590,10 @@ Last-Event-ID: 42
     - **RRFRanker (Reciprocal Rank Fusion)**: 采用 `k=60` 的倒数排名融合算法，将两路召回结果无参数化地合并，避免了加权求和中调节 `alpha` 参数的困难。
 - **失败语义**：仅 `HybridRetrievalUnsupported` 一类能力不兼容错误允许对应 target 复用同一 query embedding 走 Dense fallback，并在 RAG Trace 记录 `HYBRID_RETRIEVAL_DEGRADED`；连接、超时、服务不可用、参数或响应结构错误不会触发该 fallback。
 
-## 更新日志
+## 架构文档
 
-### 2026-06-12 全面迁移至 Milvus 2.5+ 原生 BM25 与可靠删除
-
-- **服务端原生 BM25**：使用 Milvus 2.5+ 内置中文分词器与 BM25 Pipeline Function，稀疏特征和统计由向量库自动维护。
-- **Schema 自动升级**：优化 `ensure_collection` 逻辑，支持自动检测旧版 Schema 并进行 drop 与无缝重建升级。
-- **删除协调**：当时收敛了 Milvus、PostgreSQL 与父分块缓存的删除一致性；当前实现已进一步演进为 scope revoke + 持久 cleanup job，不再把物理清理描述成同步完成。
-- **企业级文本净化**：升级文本清洗逻辑，通过 Unicode NFC 标准规范化和 PUA/C0/C1 等非打印/零宽/孤立代理项的彻底过滤，解决 PostgreSQL 与 Milvus 的字符集兼容性报错。
-
-### 2026-06-12 前端单文件 CDN 重构为 Vite + Vue 3 + TS 工程化组件架构
-- **现代化架构重构**：将以前臃肿的多合一 HTML/CDN 页面重构为标准的 **Vite + Vue 3 (SFC) + TypeScript + Pinia + Axios + Sass** 现代化工程项目，全部组件和状态高度解耦。
-- **状态及路由管理**：利用 Pinia 建立 `auth`、`sessions`、`chat`、`documents` 等 Store；当前另由 `runs` Store 管理 Run/Event 生命周期。
-- **高阶交互界面**：增加流式上传进度详情卡片、上传成功后卡片自动折叠、References 参考文献精美折叠展示、Thinking 气泡流畅过度等。
-
-### 2026-06-03 自适应复杂问题分解、并行 Sub-Agent 与精排门控
-- **低延迟复杂度规划**：明显的单事实问题由本地规则直接进入检索；其余问题由 FAST_MODEL 一次完成复杂度判断，并在 complex 时同时给出 2-4 个子问题。
-- **并行子 Agent 检索**：利用 LangGraph 的 `Send` API 并行调用 `rag_sub_agent`，每个子问题只执行 retrieve 与 grade，避免不可达的嵌套图和二次改写。
-- **子步骤完美分组**：前端界面重新适配并行子流程，在 RAG Step 的 SSE 数据中为子问题建立独立分组标签展示，避免交错重复建组与视觉混淆。
-- **精排与明确路由**：`RERANK_MIN_SCORE` 过滤噪音；空检索直接结束，有相关信号但证据不足时才执行唯一一次 Step-back / HyDE 单选重写。
-
-### 2026-06-02 通用 RAG 能力强化与后端生命周期重构
-- **通用 RAG 功能增强**：提供 Thread 派生摘要（Context Manager Notes）、首问本地截断标题，以及多源参考文献的可视化折叠展示卡片。
-- **gRPC 连接生命周期优化**：Milvus 客户端访问由全局连接池改为短生命周期连接（`session()` contextmanager），降低长期挂起后 gRPC channel 失效的风险。
-- **后端分层重组与包依赖解耦**：彻底重构 backend 代码目录包结构，剔除 re-export 导出机制，解决因交叉导入产生的循环依赖，并统一环境加载规范。
-
-### 2026-06-01 召回-合并-精排（Rerank）流水线重构
-- **模块化 Pipeline**：重构 RAG 底层实现，将 RAG 流程收拢为高可控的“召回 -> 自动合并 -> 语义重排”流水线，收口统一的参数配置与多级 RAG Trace 追踪。
-- **去重合并高分保留**：修复了在执行 L3 -> L2/L1 叶子向上合并时，在循环内聚合 Rank 分数的算法，防止去重过程中丢失高置信度召回分。
-
-### 2026-03-21 后端服务建设升级（认证 + 数据库 + 缓存）
-- 新增认证与权限模块：注册、登录、JWT、管理员权限控制。
-- Thread 历史从本地 JSON 迁移到 PostgreSQL，按用户隔离 Message。
-- 父级分块存储从本地 JSON 迁移到 PostgreSQL。
-- Redis 当前只缓存版本绑定的父分块并承担 Event 通知；Thread 列表与 Message 不使用整段 Redis 快照。
-- API 升级为 Token 驱动，移除前端直接传 `user_id` 的历史模式。
-- 文档管理接口收敛到管理员角色，避免普通用户误操作知识库。
-- 密码哈希方案升级为 PBKDF2-SHA256，兼容历史 bcrypt 校验。
-
-### 2026-03-13 三级分块与 Auto-merging 升级
-- 新增三级滑动窗口分块（L1/L2/L3），并为分块写入层级元数据。
-- 存储策略调整为 Leaf-only：仅 L3 叶子块写入 Milvus，L1/L2 写入本地 DocStore。
-- Auto-merging 改为从 DocStore 拉取父块，减少向量冗余存储。
-- 思考链路新增三级检索与自动合并步骤事件。
-- `rag_trace` 新增 `leaf_retrieve_level` 与 `auto_merge_*` 字段，且 Thread 历史读取同样保留这些字段。
-
-### 2026-02-19 RAG 实时思考链路修复
-- **问题**：Agent 在执行同步工具（如 `search_knowledge_base`）时，由于运行在线程池中，无法正确获取主线程的 asyncio 事件循环，导致 `emit_rag_step` 事件丢失，前端"思考中"气泡一直静止。
-- **修复**：
-  1. **Backend (`service.py`)**：为每个请求创建 `ChatRequestContext`，在其中捕获主线程 `loop` 与本请求 `output_queue`。
-  2. **Backend (`backend/tools/knowledge.py` + `backend/rag/pipeline.py`)**：使用 per-request tool factory 与显式 `ctx` 参数跨线程调度 RAG step，避免请求间串号。
-  3. **Frontend (`stores/chat.ts`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
-- **效果**：用户提问后，思考气泡内实时跳动显示检索步骤（如"🔍 正在检索知识库..." -> "📊 正在评估文档相关性..."），不再只有静态的"正在思考中..."。
+- 领域语言：[CONTEXT.md](CONTEXT.md)
+- 关键决策：[docs/adr/](docs/adr/)
+- 单一正式实现不变量：[ADR-0023](docs/adr/0023-single-canonical-implementation.md)
+- 持久化索引 Worker 运维：[docs/runbooks/persistent-indexing-worker.md](docs/runbooks/persistent-indexing-worker.md)
+- 仓库质量门禁：[docs/runbooks/repository-quality-gates.md](docs/runbooks/repository-quality-gates.md)

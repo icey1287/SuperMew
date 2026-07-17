@@ -5,23 +5,19 @@
 
 ## 背景
 
-Run/Event 已成为公开执行 Interface，但 Thread 的创建仍位于 Run route，正式前端继续生成
-`session_<timestamp>` 并依赖 Run 预留隐式建 Thread；列表、历史与删除则分散在 canonical
-route、`/sessions` 兼容 route 和前端 store 中。Message 历史从最老页开始全量串行读取，
-Thread status 又被前端 Run 状态覆盖。调用者需要理解多套浅 Interface，且允许创建包含 `/`
-的 Thread ID 后又无法通过 HTTP path 寻址。
+Run/Event 已成为公开执行 Interface，Thread 还需要独立拥有创建、列表、历史分页、状态投影和
+删除规则。若 Run 预留隐式创建 Thread，或由前端自行选择路径身份，调用者就必须理解多套浅
+Interface；Message 全量串行读取和用 Run 状态覆盖 Thread 状态也会混淆两个生命周期。
 
 ## 决策
 
 建立 `backend.threads` application Module，集中拥有 Thread 创建、列表、最近 Message 分页和
-删除规则。`/v1/threads` 是唯一正式 HTTP Adapter；`/sessions` 只保留 OpenAPI 标记
-deprecated 的 legacy shape，并与 canonical Adapter 共同依赖该 Module。Run Module 默认拒绝
-不存在的 Thread，不再把路径参数隐式升级为持久资源。
+删除规则。`/v1/threads` 是唯一 HTTP Adapter。Run Module 默认拒绝不存在的 Thread，不再把
+路径参数隐式升级为持久资源。
 
 正式创建 Interface 只接受可选标题，并由服务端生成 `thread_<uuid>`。所有 Thread path、Run
 schema 与 Event contract 共享
-`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$`；显式 ID 只允许内部兼容
-Interface 使用，不能由正式前端选择。
+`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$`；Thread ID 由服务端生成，前端不能选择。
 
 canonical Message 使用 required `id`、`run_id`（可为 null）、`sequence`、`status`、
 `role=user|assistant|system`、`content`、aware UTC `timestamp` 与 `rag_trace`。未携带 `before`
@@ -45,7 +41,6 @@ not-found 语义。
 
 调用者跨越一个 Thread Interface 即获得安全身份、所有权、最近页历史、UTC 契约、Run 投影、
 append version 和删除保护的 Leverage。Thread 生命周期知识集中在一个 Module，提高 Locality；
-Run、canonical HTTP 与 legacy Adapter 不再各自实现创建或历史规则。
+Run 与 HTTP Adapter 不再各自实现创建或历史规则。
 
-代价是旧客户端必须从 `/sessions` 和客户端自选 ID 迁移，并在创建 Run 前显式创建 Thread。
-兼容 Adapter 暂时保留 `human|ai` 与 `after` cursor 形状，但正式前端和新代码不得重新依赖它。
+代价是调用者必须在创建 Run 前显式创建 Thread，并使用 canonical Message 与 cursor 契约。

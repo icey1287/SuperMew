@@ -75,15 +75,14 @@ AUTH_POSTGRES_TEST_URL=<专用 PostgreSQL DSN> \
   uv run --no-sync pytest -q tests/test_auth_postgres_integration.py
 ```
 
-SQLite 测试覆盖迁移中的数据转换、完整 upgrade/downgrade 链和兼容行为。发布门禁还会启动
-PostgreSQL 15，并在空生产数据库上执行 `upgrade head`、回退最新 revision、再次
-`upgrade head`。本地复现时应连接专用临时数据库，不能指向共享或生产数据库：
+SQLite 测试覆盖迁移中的数据转换与升级链。Document Version identity 收敛迁移不可逆，发布门禁
+必须验证 `upgrade head` 成功，并验证 downgrade 明确 fail-closed。PostgreSQL smoke 应连接专用
+临时数据库，不能指向共享或生产数据库：
 
 ```bash
 # 先通过本地 Secret 管理器为当前进程注入专用临时库的 DATABASE_URL。
 uv run --no-sync alembic upgrade head
-uv run --no-sync alembic downgrade -1
-uv run --no-sync alembic upgrade head
+uv run --no-sync python -c "from backend.infra.database import assert_schema_current; assert_schema_current()"
 ```
 
 RAG 基线必须能从受控 observations 原样重建：
@@ -151,18 +150,18 @@ uv run --no-sync pip-audit \
   无/伪 Content-Length 超过 16 KiB，仍早于 route/PBKDF2/token mutation。随后 login/register
   必须完成直接 client IP 与
   `IP + NFKC/trim/casefold username` 两次 Rate Limit check；复合 bucket 每次消耗两个 quota
-  unit，任一拒绝或存储异常都不得执行 PBKDF2/bcrypt。
+  unit，任一拒绝或存储异常都不得执行 PBKDF2。
 - Rate Limit 只使用 ASGI `scope.client`。Nginx、Ingress 或 LB 前置时，发布检查必须确认只有可信
   代理可写 forwarded headers，且 ProxyHeaders allowlist 已在 Rate Limit Middleware 之前修正
   client；禁止在 Module 内直接解析任意 `X-Forwarded-For`。
 - 有效 Bearer 只解析为稳定 access subject，raw access/refresh token 不作为 quota identity；
   refresh/当前设备 logout 使用 host 粗限额 120/min，logout-all 使用 subject。除明确静态/健康/
-  Docs/preflight skip 外，deprecated 与未来动态 path 必须默认进入 general policy。
+  Docs/preflight skip 外，未知与未来动态 path 必须默认进入 general policy。
 - mypy 先覆盖 Run/Event、Guardrail/Sandbox、Schema、工具契约与安全策略等关键
   Interface；新增或修改这些 Module 时不得用全局 ignore 绕过。
 - pytest 覆盖率以 `backend` 与 `scripts` 的 statement coverage 计算，初始下限为 80%；
   当前不采集 branch coverage；待建立可复现报告并补齐关键低覆盖 Adapter 后再设门禁。
-- 契约生成、Registry、离线 RAG 基线和 SQLite 迁移兼容测试不依赖真实模型、Redis、
+- 契约生成、Registry、离线 RAG 基线和 SQLite 迁移测试不依赖真实模型、Redis、
   Milvus 或 MinIO。生产 Alembic smoke 明确依赖 CI 的 PostgreSQL 15 Adapter，避免只在
   SQLite 方言上验证发布迁移。
 - `storage-compatibility` job 先将六个必填变量逐项 unset 和置空，证明生产 Compose
