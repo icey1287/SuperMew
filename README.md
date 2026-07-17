@@ -272,13 +272,14 @@ npm run build
 
 - **混合检索与精排**：稠密向量 + Milvus 原生 BM25 稀疏向量，经 RRF 融合、Auto-merging 和 Jina Rerank 后生成 Evidence。
 - **严格的检索降级语义**：只有 Milvus Adapter 明确报告稀疏/Hybrid 能力不兼容时，受影响的检索 target 才降级为 Dense；连接、超时、服务不可用或畸形响应会作为 typed Provider failure 结束，不会被伪装成降级成功。
-- **低延迟复杂度规划与并行 Sub-Agent 流程**：明显的单事实问题由本地规则直接进入检索；其余问题由 FAST_MODEL 一次完成复杂度判断和 2-4 个子问题规划。复杂问题通过 LangGraph `Send` 并行执行各子问题的“检索 → 证据评判”，最终在 Synthesis 节点去重合成。
-- **纠错型 RAG（Corrective RAG）与单选查询重写**：检索后由独立的 GRADE_MODEL 结构化判断证据相关性、可回答性与歧义。证据不足时，FAST_MODEL 在一次结构化调用中选择 Step-back 或 HyDE，只执行选中的一次重写检索和一次复评。
+- **低延迟复杂度规划与并行 Sub-Agent 流程**：明显的单事实问题由本地规则直接进入检索；其余问题由 Model Snapshot 中的 Fast 角色一次完成复杂度判断和 2-4 个子问题规划。复杂问题通过 LangGraph `Send` 并行执行各子问题的“检索 → 证据评判”，最终在 Synthesis 节点去重合成。
+- **纠错型 RAG（Corrective RAG）与单选查询重写**：检索后由 Model Snapshot 中的 Grader 角色结构化判断证据相关性、可回答性与歧义。证据不足时，Fast 角色在一次结构化调用中选择 Step-back 或 HyDE，只执行选中的一次重写检索和一次复评。
 - **可恢复 Run/Event 流**：Event 先写入 PostgreSQL Journal，再通过 SSE 投影；前端按 sequence 去重，使用 `Last-Event-ID` 重连和 `/events` 补放，`message.completed` 与 terminal Event 保持权威。
 - **同一 Run 的 HITL 与取消**：Checkpoint、Run、Thread 和 assistant Message 身份在暂停/恢复期间保持不变；取消请求不会用关闭 SSE 冒充后端终止。
 - **Document Version 两阶段发布**：Index Job 在隔离 candidate scope 构建并核验 manifest，随后用 PostgreSQL CAS 原子发布；构建失败不影响当前已发布版本。
 - **Agent 循环与预算保护**：固定中间件链限制模型调用、Tool 调用、递归、deadline 和重复 Tool fingerprint；相同调用超限或 A/B 交替循环返回 `TOOL_LOOP_BLOCKED`。
-- **RAG 评测契约**：已实现离线纯评分 Interface、Live/Prediction Adapter、版本化 schema、baseline 比较和 CI 门禁。仓库内 20 条受控数据只标记为 `contract_smoke`，用于证明契约与基线可复现，不代表生产质量。
+- **持久化模型控制面**：管理员在模型中心维护无 Secret Model Profile，并为 Answer、Fast、Grader、Evaluator 分配兼容模型；每个 Run 创建时冻结完整 Model Snapshot，后续 Assignment 变化不会影响执行中或等待 HITL 的 Run。
+- **RAG 自动评估**：除离线纯评分 Interface、Live/Prediction Adapter、版本化 schema、baseline 与 CI 门禁外，系统提供独立持久化 Evaluation Worker、Dataset/Job/Case Interface 和 LangSmith 风格工作台。Job 自动执行 RAG、生成回答并评估 correctness、groundedness、relevance、completeness、unsupported claim 与 conflict disclosure。
 - **浏览器认证生命周期**：Access Token 仅驻留内存；opaque Refresh Token 仅由 HttpOnly `Path=/auth` Cookie 承载并逐次轮换；仍在自然有效期内的 revoked token replay 会撤销同一用户全部活跃 refresh credential。
 - **入口保护与浏览器响应头**：Rate Limit Module 用 HMAC identity 隐藏原始凭据，生产 Redis 多实例共享计数且故障 fail-closed；登录/注册在 PBKDF2 前执行 IP 与 IP+username 二级限流。CSP 只保护正式前端 HTML，其他安全响应头全局应用。
 - **只读 SQL Assistant**：默认关闭；启用后只向 `admin` 披露 allowlist 内 PostgreSQL catalog 与有界只读查询，并执行 AST、权限、RLS、成本、超时、结果脱敏和审计门禁。
@@ -298,6 +299,11 @@ npm run build
 - **SQL Assistant**：选择 SQL Assistant 后用自然语言描述指标、维度、筛选条件和时间范围。该模式仅对满足配置与角色要求的账号开放，只能读取 allowlist 内 PostgreSQL catalog 并执行有界只读查询；它不提供 DDL、DML 或任何写入能力。
 - **Sandbox**：选择 Sandbox 后先选 Python 或 Shell，再输入要执行的源码。该模式固定无网络、无宿主挂载、无持久 workspace；发送前会展示 Tool、网络和资源范围确认。确认只会为即将创建的单个 Run 签发 names-only Approval Grant，并绑定当前用户、Tenant、Thread 与 Run，Run 结束后失效，也不会为后续 Run 自动续权。
 
+管理员侧栏还提供两个全页控制面：
+
+- **模型中心**：创建、编辑、停用和删除无 Secret Model Profile，查看 Stream/Structured Output 能力，并选择 Answer、Fast、Grader、Evaluator Assignment。`MODEL`、`FAST_MODEL`、`GRADE_MODEL` 与 `EVALUATION_MODEL` 只用于首次数据库种子；之后无需修改环境变量或重启进程。API Key 仍必须由服务端 `ARK_API_KEY` 提供，前端只显示“已配置/未配置”。
+- **RAG 评估**：导入版本化 Dataset JSON、选择可比较 baseline、检查四角色模型后启动持久 Evaluation Job。页面自动恢复进度并展示历史趋势、核心指标、质量 Gate、Case 问题/答案/Judge reason 与 Evidence identity；Evidence 正文、endpoint、Secret 和私有推理不会进入响应。
+
 审批确认发生在 Run 创建之前。当前没有“Run 已开始后弹窗审批、暂停等待、再恢复执行”的状态机；未随创建请求预授权的 approval-only Tool 会被拒绝，而不会在运行中临时扩权。
 
 ### Artifact 展示与下载边界
@@ -314,7 +320,7 @@ npm run build
 
 1. 先按文档结构粗拆分，再用递归字符分块兜底和语义分块细化；补齐代码块、表格、图片等专用解析。
 2. 为 BM25 `k1`/`b`、RRF 权重和 Rerank 候选比例建立可复现的 profile 对比。
-3. 把人工标注集扩展到至少 200 条，在固定 Document Version/Index Manifest 上运行 Live Adapter，并逐步启用 groundedness、引用和冲突披露指标。
+3. 把人工标注集扩展到至少 200 条，在固定 Document Version/Index Manifest 上校准现有 Evaluator 指标，并在稳定引用 Interface 完成后启用 citation precision/recall。
 4. 评估多文档一次拼接与串行 Refine，并在来源冲突时显式披露。
 5. 增加多模态 embedding 与 Evidence Interface。
 
@@ -405,7 +411,7 @@ npm run build
 
 1. **复杂度规划**：`classify_complexity`
   - 明显的短单事实问题由本地规则直接判为 simple，不调用模型。
-  - 其余问题由 FAST_MODEL 一次完成 simple/complex 判断；complex 结果同时给出 2-4 个子问题，不再追加拆题调用。
+  - 其余问题由 Model Snapshot 中的 Fast 角色一次完成 simple/complex 判断；complex 结果同时给出 2-4 个子问题，不再追加拆题调用。
 2. **检索执行**
   - simple：进入 `retrieve_initial`，执行一次标准检索。
   - complex：通过 LangGraph `Send` 并行执行各子问题的“检索 → 证据评判”，随后由 `synthesis` 去重合成。
@@ -415,10 +421,10 @@ npm run build
   - 在完整候选上对叶子块执行 Auto-merging（L3→L2→L1），父块从 DocStore 读取。
   - 对合并后的片段走 Jina Rerank 精排并截断 `top_k`（流水线：`recall_merge_rerank`）。
 3. **证据评判与路由**：`grade_documents`
-  - GRADE_MODEL 一次输出相关性、可回答性、歧义、置信度和 `route`。
+  - Model Snapshot 中的 Grader 角色一次输出相关性、可回答性、歧义、置信度和 `route`。
   - 路由仅进入回答、一次重写、HITL 澄清/范围选择或无知识结束；评判失败会显式报错，不切换到其他实现。
 4. **Step-back / HyDE 单选重写**：`rewrite_question`
-  - FAST_MODEL 在一次结构化调用中选择一种方式并生成对应内容。
+  - Model Snapshot 中的 Fast 角色在一次结构化调用中选择一种方式并生成对应内容。
   - Step-back：生成更抽象的退步问题，与原问题组成 `rewritten_query`。
   - HyDE：生成仅用于检索的假设性答案文档，与原问题组成 `rewritten_query`；该文档不作为回答证据。
 5. **二次召回**：`retrieve_rewritten`
@@ -467,7 +473,7 @@ npm run build
 
 需在仓库根目录或运行环境配置：
 
-- 模型相关：`ARK_API_KEY`、`MODEL`、`FAST_MODEL`、`GRADE_MODEL`、`BASE_URL`。`FAST_MODEL` 负责复杂度规划及 Step-back / HyDE 单选重写；`GRADE_MODEL` 专门负责证据评判。两者都是显式必需配置，不会相互替代或回退到 `MODEL`。
+- 模型相关：`ARK_API_KEY` 是唯一必须保留在环境中的模型 Secret。`MODEL`、`FAST_MODEL`、`GRADE_MODEL`、`EVALUATION_MODEL` 与 `BASE_URL` 只为尚未初始化的数据库角色提供首次种子；之后由模型中心的 Model Profile 与 Assignment 决定新 Run 和 Evaluation Job 使用的模型。
 - 稠密向量：`EMBEDDING_MODEL`、不可变 commit `EMBEDDING_MODEL_REVISION`、`EMBEDDING_DEVICE`、`DENSE_EMBEDDING_DIM`（需与 Milvus 集合 `dense_embedding` 维度一致）
 - 密集与稀疏：Dense 由本地 embedding 生成；Sparse 由 Milvus 中文 analyzer 与 BM25 Function 自动生成和维护
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`

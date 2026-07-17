@@ -58,6 +58,28 @@ _Avoid_: Context text、raw chunk
 Run 对检索路线、候选、评分、降级、Evidence 与耗时的可审计投影；它不包含模型私有推理。
 _Avoid_: Chain of thought、debug dump
 
+### Models and evaluation
+
+**Model Profile**:
+一个持久化、无 Secret 的 OpenAI-compatible 模型配置；包含模型标识、Base URL、超时与能力声明，API Key 不属于该身份。
+_Avoid_: Model env、API Key 配置、模型单例
+
+**Model Assignment**:
+控制面中从 Answer、Fast、Grader 或 Evaluator 角色到一个已启用 Model Profile 的当前映射；修改只影响后续创建的 Run 与 RAG Evaluation Job。
+_Avoid_: 当前 Run 模型、全局 MODEL 值
+
+**Model Snapshot**:
+Run 或 RAG Evaluation Job 创建时冻结的完整无 Secret 模型目录；它保存角色、Model Profile 版本与 catalog hash，并在恢复、重试和 HITL 期间保持不变。
+_Avoid_: 动态模型查找、环境变量快照、Secret snapshot
+
+**RAG Evaluation Dataset**:
+带 schema version、唯一 Case identity、人工期望与内容 fingerprint 的评估事实集合。
+_Avoid_: Prompt list、临时问题文件
+
+**RAG Evaluation Job**:
+绑定 RAG Evaluation Dataset fingerprint、GatePolicy、可选 baseline 与 Model Snapshot 的持久化自动评估工作项；独立 worker 逐 Case 执行 RAG、生成回答、结构化评分并发布 Report。
+_Avoid_: Run、前端任务、LangSmith session
+
 ### Identity and ingress
 
 **Access Token**:
@@ -117,6 +139,8 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
   Message 的正文或终态不会推进 Thread append version。
 - 一个 **Run** 产生多个 **Event**，最多有一个当前 **Checkpoint**，并投影到一个 assistant Message。
 - 一个 **Document** 有多个 **Document Version**，但任一时刻最多发布一个当前版本。
+- 一个 **Model Assignment** 恰好把一个模型角色映射到零或一个 **Model Profile**；新 Run 创建时把所有当前 Assignment 冻结成同一个 **Model Snapshot**。
+- 一个 **RAG Evaluation Job** 只消费一个 **RAG Evaluation Dataset** fingerprint，并冻结自己的 baseline、GatePolicy 与 Model Snapshot；每个 Case 有独立持久状态。
 - 一个 **Skill** 允许零到多个 **Tool**；每次 Tool 调用都必须先产生 **Guardrail Decision**。
 - **Sandbox Execution** 是 Tool 的一种隔离实现，不替代 Guardrail Decision。
 - **Evidence** 来自已发布 Document Version 或受控 Web Research，并由 RAG Trace 记录其公开身份。
@@ -133,6 +157,8 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 ## Flagged ambiguities
 
 - **Task**：只用于面向用户描述工作，不用于持久化模型。Agent 执行称 **Run**，文档后台工作称 **Index Job**。
+- **Evaluation Job**：不是 Run。Run 产生面向用户的 Thread Message；RAG Evaluation Job 产生 Case Observation 与脱敏 Report。
+- **Model**：运行时谈具体角色时使用 Model Profile、Model Assignment 或 Model Snapshot；不要用 `MODEL`、`FAST_MODEL` 等环境变量名代替领域身份。
 - **Bearer**：描述受保护 HTTP Interface 的 access credential 传输协议，不表示浏览器可把
   Access Token 持久化；正式前端只从内存认证状态读取它。
 - **Same-site**：不是认证来源信任边界。Auth 使用严格 same-origin；跨 origin 即使 same-site，
@@ -166,3 +192,7 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 >
 > 领域专家：不可以。只有可信 ProxyHeaders/forwarded allowlist 可以先修正 `scope.client`；
 > Module 直接信任任意转发头会允许客户端伪造 quota identity。
+>
+> 开发：管理员把 Evaluator Assignment 切到新 Model Profile 后，正在执行的评估要跟着切吗？
+>
+> 领域专家：不可以。当前 RAG Evaluation Job 继续使用创建时冻结的 Model Snapshot；新 Assignment 只进入之后创建的 Job 与 Run。
