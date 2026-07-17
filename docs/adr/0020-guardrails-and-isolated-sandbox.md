@@ -86,11 +86,11 @@ Event 和 ToolAudit 都不得泄漏身份或审批材料。Factory 在构造 Run
 `ToolPolicyMiddleware` 在每次 handler 前再调用 `grant.allows(...)`，因此仅在 Registry 建图时
 通过一次检查不足以执行 Tool。
 
-当前没有互动审批 UX、审批 endpoint 或可恢复 approval interrupt。唯一支持的流程是 trusted
-admin 在创建 durable Run 时通过 `approved_tools` 预先授权，且名称只能指向 Registry 中明确
-`requires_approval=true` 的 descriptor，最多 32 个。tenant、channel 与 approval names 进入
-Run request hash 并持久化；worker reclaim、进程重启或 lease 转移时从执行快照重建绑定后的
-grant。
+当前前端控制面提供创建 Run 前的明确确认 UX，但没有运行中审批 endpoint 或可恢复 approval
+interrupt。唯一支持的授权流程仍是 trusted admin 在创建 durable Run 时通过 `approved_tools`
+预先授权，且名称只能指向 Registry 中明确 `requires_approval=true` 的 descriptor，最多 32 个。
+tenant、channel 与 approval names 进入 Run request hash 并持久化；worker reclaim、进程重启或
+lease 转移时从执行快照重建绑定后的 grant。
 
 `ToolSession` 在 Runtime 构造时按 grant 过滤 Tool 可见性。因此未来即使新增审批状态变更，
 也必须先以 durable transaction 更新 Run，再重建该 Run 的 Runtime/ToolSession；禁止向正在

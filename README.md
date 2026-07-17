@@ -165,11 +165,12 @@ SANDBOX_DOCKER_HOST=unix:///path/to/supermew-rootless.sock
 SANDBOX_REQUIRE_ROOTLESS=true
 ```
 
-当前没有互动审批 UX。只有 trusted admin 能在创建 durable Run 时通过
-`approved_tools=["sandbox_execute"]` 预先授权；grant 绑定该 Run 完整身份，Runtime 构造和每次
-执行都会复核。Sandbox 启用但 daemon/image 不 ready 时 `/health/ready` 返回 503；关闭时不会
-探测 Docker，也不影响 readiness。发布、烟雾测试、审计和事件响应见
-`docs/runbooks/guardrails-and-sandbox.md`。
+前端会在发送 Sandbox Run 前展示预授权确认，但这不是运行中审批或 approval resume 流程。
+只有 trusted admin 能确认并在创建 durable Run 时提交
+`approved_tools=["sandbox_execute"]`；names-only grant 绑定该用户、Tenant、Thread 与新建 Run，
+不能复用于后续 Run，Runtime 构造和每次执行都会复核。Sandbox 启用但 daemon/image 不 ready 时
+`/health/ready` 返回 503；关闭时不会探测 Docker，也不影响 readiness。发布、烟雾测试、审计
+和事件响应见 `docs/runbooks/guardrails-and-sandbox.md`。
 
 浏览器认证采用短期 Access Token + 可轮换 Refresh Token。Access Token 只保存在当前页面的
 JavaScript 内存中，受保护 API 仍使用标准 `Authorization: Bearer <access-token>`；页面刷新时
@@ -282,6 +283,30 @@ npm run build
 - **入口保护与浏览器响应头**：Rate Limit Module 用 HMAC identity 隐藏原始凭据，生产 Redis 多实例共享计数且故障 fail-closed；登录/注册在 PBKDF2 前执行 IP 与 IP+username 二级限流。CSP 只保护正式前端 HTML，其他安全响应头全局应用。
 - **只读 SQL Assistant**：默认关闭；启用后只向 `admin` 披露 allowlist 内 PostgreSQL catalog 与有界只读查询，并执行 AST、权限、RLS、成本、超时、结果脱敏和审计门禁。
 - **可审计 Tool 执行**：Skill/Tool Registry 决定可见能力，Guardrail 对每次调用给出确定性决策，Sandbox 只隔离已经获准的代码执行。
+
+## 前端能力中心与专业模式
+
+登录后可通过以下入口选择当前 Thread 使用的 Skill：
+
+- 侧边栏或欢迎页的“能力中心”：查看当前账号可见的 Skill 与 Tool，并按可用状态筛选；目录会展示角色要求、网络策略、资源范围、Tool 暴露方式和是否需要创建 Run 前审批。
+- 输入区的模式选择器：切换“智能对话”、知识库问答或专业 Skill，并显示当前模式的约束和快速提示。
+- `⌘K`（Windows/Linux 使用 `Ctrl+K`）命令面板：搜索模式或 Skill，使用方向键选择、`Enter` 确认、`Esc` 关闭。不可用能力会标记为“权限不足”或“尚未配置”，不会创建 Run。
+
+当前产品化入口包括：
+
+- **Web Research**：选择 Web Research 后输入需要调查的公开问题、时间范围或来源偏好。前端以 `/web-research` 激活 Skill；只有 feature flag、Brave Search Secret、角色与受限公网策略满足时才可用。回答中的外部事实应来自当前 Run 的 Web Evidence，并由服务端校验引用身份。
+- **SQL Assistant**：选择 SQL Assistant 后用自然语言描述指标、维度、筛选条件和时间范围。该模式仅对满足配置与角色要求的账号开放，只能读取 allowlist 内 PostgreSQL catalog 并执行有界只读查询；它不提供 DDL、DML 或任何写入能力。
+- **Sandbox**：选择 Sandbox 后先选 Python 或 Shell，再输入要执行的源码。该模式固定无网络、无宿主挂载、无持久 workspace；发送前会展示 Tool、网络和资源范围确认。确认只会为即将创建的单个 Run 签发 names-only Approval Grant，并绑定当前用户、Tenant、Thread 与 Run，Run 结束后失效，也不会为后续 Run 自动续权。
+
+审批确认发生在 Run 创建之前。当前没有“Run 已开始后弹窗审批、暂停等待、再恢复执行”的状态机；未随创建请求预授权的 approval-only Tool 会被拒绝，而不会在运行中临时扩权。
+
+### Artifact 展示与下载边界
+
+前端会把 `artifact.created` Event 投影为 Run 时间线和 Artifact 卡片，但 Artifact descriptor 与文件下载是两件事：
+
+- `artifact://art_*` 只表示稳定 Artifact 身份，不能被浏览器直接打开，也不能转换为宿主路径或对象存储 key。
+- 只有服务端已经持久化、完成所有权校验并发布 `/api/artifacts/art_*` URI 时，前端才会通过携带当前 Access Token 的同源请求预览或下载；没有该 URI 的卡片只展示身份与媒体信息。
+- 当前 Sandbox 不提供持久 Artifact export。Sandbox workspace 在调用结束后销毁，创建的文件只计入有界执行结果，不会生成可下载 Artifact，也不会暴露容器或宿主路径。
 
 ## 后续迭代
 
@@ -485,6 +510,8 @@ npm run build
   - `GET /v1/runs/{run_id}/stream`：订阅 Event v1 SSE；重连时发送 `Last-Event-ID: <sequence>`。
   - `POST /v1/runs/{run_id}/resume`：携带一次性 `hitl_token` 与幂等键恢复同一 Checkpoint。
   - `POST /v1/runs/{run_id}/cancel`：请求取消真实后端 Run；客户端应等待 `run.cancelled` 或其他权威 terminal Event。
+- Capability control plane
+  - `GET /v1/capabilities`：返回当前账号可见且不含 Secret 的 Skill/Tool 目录、可用状态、网络与资源策略以及审批要求，供能力中心和命令面板使用。
 - 文档（管理员权限）
   - `GET /documents`：列出已入库文档及 chunk 数。
   - `POST /documents/upload/async`：保存上传并提交持久化 Index Job。

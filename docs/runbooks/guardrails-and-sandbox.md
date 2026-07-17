@@ -100,9 +100,10 @@ image，也不阻止 `/health/ready`。
 
 ## Approval 与 Skill 激活
 
-当前没有互动审批 UX，也没有 approval resume endpoint。只有数据库角色为 `admin` 的可信
-调用方能在 durable Run 创建时预先声明 `approved_tools`；普通用户会收到 403，未知工具或
-未声明 `requires_approval=true` 的工具会收到 400。
+当前前端有创建 Run 前的审批确认 UX，但没有运行中 approval interrupt 或 resume endpoint。
+确认操作最终仍是在 durable Run 创建请求中预先声明 names-only `approved_tools`；只有数据库
+角色为 `admin` 的可信调用方可以提交，普通用户会收到 403，未知工具或未声明
+`requires_approval=true` 的工具会收到 400。
 
 示例请求：
 
@@ -122,6 +123,10 @@ curl --fail-with-body \
 approval names 被绑定到该 user、tenant、Thread 与 Run；不要复制到另一 Run，不要让模型生成
 approval token，也不要把审批材料写进 prompt。`sandbox_execute` 仍是 deferred Tool，必须由
 active `/sandbox` Skill 收窄后才可见。
+
+前端确认框不是独立授权凭证：它只在真正创建 Run 时把已确认的 Tool 名称放入同一请求。取消
+确认不会签发 grant；创建失败后也不能把本地确认状态用于另一 Run。当前 Runtime 不会在执行
+过程中弹出审批框、进入 waiting_input 或通过 HITL resume 扩权。
 
 未预授权时，Registry 不把 Sandbox schema 放进当前 `ToolSession`；伪造调用在执行 Seam 被
 拒绝。若未来控制面改变已持久化的 approval 集合，必须重建该 Run 的 Runtime/ToolSession，

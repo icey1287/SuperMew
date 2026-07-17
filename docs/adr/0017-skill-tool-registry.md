@@ -43,9 +43,11 @@ Registry 在授权时取以下交集：
 `requires_approval=true` 的 descriptor 只有在可信 `RunToolApprovalGrant` 明确包含该工具时
 才可进入 `ToolSession`。grant 只持久化工具名称，并绑定 user、tenant、Thread 与 Run 完整
 身份；它不是模型可生成、可复用或可写入 prompt 的 approval token。即使 Registry 已在建图时
-认可 grant，`ToolPolicyMiddleware` 仍必须在每次 handler 执行前按当前身份重新校验。当前没有
-互动审批 UX：只有 trusted admin 能在创建 durable Run 时预先授权，授权集合改变后必须重建
-该 Run 的 Runtime/ToolSession 才能改变可见性，不能原地扩权。完整决策矩阵见 ADR-0020。
+认可 grant，`ToolPolicyMiddleware` 仍必须在每次 handler 执行前按当前身份重新校验。运行中
+互动审批状态机不在本 ADR 范围内：前端控制面可以在创建 durable Run 前要求 trusted
+admin 明确确认，并把 names-only `approved_tools` 随创建请求提交；它仍是预授权，而不是 Run
+开始后的 approval interrupt。授权集合改变后必须重建该 Run 的 Runtime/ToolSession 才能改变
+可见性，不能原地扩权。完整决策矩阵见 ADR-0020。
 
 所有经 Registry 绑定的工具统一向模型返回 `ToolResultV1`。领域 Adapter 的原始输出先
 按 descriptor output schema 校验，再封装为成功结果；timeout、非法输出和超限结果
