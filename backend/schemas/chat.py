@@ -77,7 +77,7 @@ class RetrievedChunk(StrictSchema):
     merged_child_count: Optional[int] = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def require_versioned_manifest_hash(self):
+    def require_versioned_manifest_hash(self) -> "RetrievedChunk":
         if self.document_version_id and self.content_hash is None:
             raise ValueError("versioned retrieved chunk requires content_hash")
         return self
@@ -230,7 +230,7 @@ class PendingHitlState(StrictSchema):
     created_at: str
 
 
-def _normalize_chunks(value) -> list[dict]:
+def _normalize_chunks(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     fields = RetrievedChunk.model_fields
@@ -255,7 +255,7 @@ def _normalize_chunks(value) -> list[dict]:
     return normalized
 
 
-def _normalize_retrieval_targets(value) -> list[dict]:
+def _normalize_retrieval_targets(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     fields = RetrievalTargetTrace.model_fields
@@ -268,7 +268,9 @@ def _normalize_retrieval_targets(value) -> list[dict]:
     ]
 
 
-def _normalize_trace_fields(trace: dict, fields: dict) -> dict:
+def _normalize_trace_fields(
+    trace: dict[str, Any], fields: Mapping[str, Any]
+) -> dict[str, Any]:
     normalized = {key: trace[key] for key in fields if key in trace}
     for key in (
         "retrieved_chunks",

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol, TypeGuard, runtime_checkable
 
 from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
 
@@ -19,8 +20,58 @@ from backend.schemas.chat import normalize_rag_trace
 from backend.skills import SkillRegistryError
 
 
-def extract_message_content(message) -> str:
-    content = getattr(message, "content", "")
+@runtime_checkable
+class _ContentCarrier(Protocol):
+    @property
+    def content(self) -> object: ...
+
+
+class CompiledAgent(Protocol):
+    def invoke(
+        self,
+        payload: dict[str, list[BaseMessage]],
+        *,
+        config: dict[str, int],
+        context: AgentRuntimeContext,
+    ) -> object: ...
+
+    async def ainvoke(
+        self,
+        payload: dict[str, list[BaseMessage]],
+        *,
+        config: dict[str, int],
+        context: AgentRuntimeContext,
+    ) -> object: ...
+
+    def astream(
+        self,
+        payload: dict[str, list[BaseMessage]],
+        *,
+        stream_mode: list[str],
+        config: dict[str, int],
+        context: AgentRuntimeContext,
+    ) -> AsyncIterator[object]: ...
+
+
+def _is_object_mapping(value: object) -> TypeGuard[Mapping[object, object]]:
+    return isinstance(value, Mapping)
+
+
+def _is_object_sequence(value: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    )
+
+
+def _is_object_tuple(value: object) -> TypeGuard[tuple[object, ...]]:
+    return isinstance(value, tuple)
+
+
+def extract_message_content(message: object) -> str:
+    if not isinstance(message, _ContentCarrier):
+        return ""
+    content = message.content
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -28,26 +79,26 @@ def extract_message_content(message) -> str:
         for block in content:
             if isinstance(block, str):
                 text += block
-            elif isinstance(block, dict) and block.get("type") == "text":
+            elif _is_object_mapping(block) and block.get("type") == "text":
                 text += str(block.get("text") or "")
         return text
     return str(content or "")
 
 
-def extract_agent_content(result) -> str:
-    if isinstance(result, dict):
+def extract_agent_content(result: object) -> str:
+    if _is_object_mapping(result):
         if "output" in result:
             return str(result["output"] or "")
-        messages = result.get("messages") or []
-        if messages:
+        messages = result.get("messages")
+        if _is_object_sequence(messages) and messages:
             return extract_message_content(messages[-1])
         return str(result)
-    if hasattr(result, "content"):
+    if isinstance(result, _ContentCarrier):
         return extract_message_content(result)
     return str(result or "")
 
 
-def _is_hitl_trace(trace: dict | None) -> bool:
+def _is_hitl_trace(trace: Mapping[str, object] | None) -> bool:
     if not trace:
         return False
     return trace.get("retrieval_status") in {
@@ -69,10 +120,10 @@ class AgentRuntimeInput:
 @dataclass(frozen=True)
 class AgentRuntimeResult:
     content: str
-    rag_trace: dict | None
-    hitl_resume_state: dict | None
-    runtime_trace: tuple[dict, ...]
-    checkpoint_pause: dict | None = None
+    rag_trace: dict[str, object] | None
+    hitl_resume_state: dict[str, object] | None
+    runtime_trace: tuple[dict[str, object], ...]
+    checkpoint_pause: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -85,21 +136,21 @@ class AgentRuntimeEvent:
 class AgentRuntime:
     """Small interface over the compiled Agent graph and its middleware context."""
 
-    def __init__(self, *, agent, context: AgentRuntimeContext) -> None:
+    def __init__(self, *, agent: CompiledAgent, context: AgentRuntimeContext) -> None:
         self.agent = agent
         self.context = context
 
-    def _config(self) -> dict:
+    def _config(self) -> dict[str, int]:
         return {"recursion_limit": self.context.budget.recursion_limit}
 
     def _requires_terminal_buffering(self) -> bool:
         active = (
-            getattr(self.context.skill_session, "active", None)
+            self.context.skill_session.active
             if self.context.skill_session is not None
             else None
         )
         return bool(
-            getattr(active, "name", None) == "web-research"
+            (active is not None and active.name == "web-research")
             or self.context.request_context.web_research_requires_terminal_validation()
         )
 
@@ -191,9 +242,12 @@ class AgentRuntime:
             raise self._timeout_error(exc) from exc
         return self._finish(extract_agent_content(result))
 
-    async def astream(self, request: AgentRuntimeInput):
+    async def astream(
+        self,
+        request: AgentRuntimeInput,
+    ) -> AsyncIterator[AgentRuntimeEvent]:
         full_response = ""
-        final_state = None
+        final_state: object | None = None
         terminal_buffering = False
         try:
             request = await self._aprepare(request)
@@ -206,26 +260,28 @@ class AgentRuntime:
                     config=self._config(),
                     context=self.context,
                 ):
-                    mode = None
+                    mode: Literal["messages", "values"] | None = None
                     payload = item
                     if (
-                        isinstance(item, tuple)
+                        _is_object_tuple(item)
                         and len(item) == 2
                         and isinstance(item[0], str)
-                        and item[0] in {"messages", "values"}
                     ):
-                        mode, payload = item
+                        candidate_mode = item[0]
+                        if candidate_mode in ("messages", "values"):
+                            mode = (
+                                "messages" if candidate_mode == "messages" else "values"
+                            )
+                            payload = item[1]
                     if mode == "values":
                         final_state = payload
                         continue
                     message = (
-                        payload[0]
-                        if isinstance(payload, tuple) and payload
-                        else payload
+                        payload[0] if _is_object_tuple(payload) and payload else payload
                     )
                     if not isinstance(message, AIMessageChunk):
                         continue
-                    if getattr(message, "tool_call_chunks", None):
+                    if message.tool_call_chunks:
                         continue
                     content = extract_message_content(message)
                     if not content:

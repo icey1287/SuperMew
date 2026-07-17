@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 import redis.asyncio as redis_async
 
@@ -30,13 +30,27 @@ _CANCELLATION_REASON_PRIORITY = {
 }
 
 
+class CancellationTransport(Protocol):
+    async def request(self, run_id: str) -> None: ...
+
+    async def is_requested(self, run_id: str) -> bool: ...
+
+    async def listen(
+        self,
+        stop_event: asyncio.Event,
+        callback: Callable[[str], Awaitable[None]],
+    ) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 class RedisCancellationTransport:
     def __init__(self, redis_url: str | None = None, *, key_prefix: str | None = None):
         settings = get_settings()
         self.redis_url = redis_url or settings.storage.redis_url.get_secret_value()
         self.key_prefix = key_prefix or settings.storage.redis_key_prefix
         self.ttl = settings.runs.cancellation_ttl_seconds
-        self._client = None
+        self._client: redis_async.Redis[str] | None = None
 
     @property
     def channel(self) -> str:
@@ -45,7 +59,7 @@ class RedisCancellationTransport:
     def _key(self, run_id: str) -> str:
         return f"{self.key_prefix}:run_cancelled:v1:{run_id}"
 
-    def _get_client(self):
+    def _get_client(self) -> redis_async.Redis[str]:
         if self._client is None:
             self._client = redis_async.Redis.from_url(
                 self.redis_url,
@@ -95,7 +109,7 @@ class RedisCancellationTransport:
 class CancellationToken:
     run_id: str
     event: asyncio.Event
-    transport: RedisCancellationTransport | None = None
+    transport: CancellationTransport | None = None
     _partial_chunks: list[str] = field(default_factory=list)
     reason: Literal["user", "shutdown", "ownership_lost"] | None = None
 
@@ -141,17 +155,19 @@ class CancellationToken:
 @dataclass
 class _Registration:
     token: CancellationToken
-    task: asyncio.Task | None = None
+    task: asyncio.Task[object] | None = None
 
 
 class CancellationRegistry:
-    def __init__(self, transport: RedisCancellationTransport | None = None):
+    def __init__(self, transport: CancellationTransport | None = None):
         self.transport = transport
         self._registrations: dict[str, _Registration] = {}
         self._lock = asyncio.Lock()
 
     async def register(
-        self, run_id: str, task: asyncio.Task | None = None
+        self,
+        run_id: str,
+        task: asyncio.Task[object] | None = None,
     ) -> CancellationToken:
         async with self._lock:
             registration = self._registrations.get(run_id)
@@ -217,12 +233,15 @@ class CancellationRegistry:
             return
         while not stop_event.is_set():
             try:
-                await self.transport.listen(stop_event, self.cancel_local)
+                await self.transport.listen(stop_event, self._cancel_from_transport)
             except Exception:
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=1)
                 except TimeoutError:
                     continue
+
+    async def _cancel_from_transport(self, run_id: str) -> None:
+        await self.cancel_local(run_id)
 
     async def close(self) -> None:
         if self.transport is not None:
@@ -390,7 +409,7 @@ class RunExecutionManager:
         *,
         run: RunRecord,
         runner: Runner,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task[None]:
         return asyncio.create_task(
             self.execute(run=run, runner=runner),
             name=f"run-execution:{run.id}",

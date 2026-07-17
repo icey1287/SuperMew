@@ -1,0 +1,202 @@
+name: Backend quality gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_ENV: test
+  DATABASE_URL: "sqlite+pysqlite:///:memory:"
+  JWT_SECRET_KEY: ci-only-secret-ci-only-secret-ci-only-secret
+  SANDBOX_ENABLED: "false"
+
+jobs:
+  backend-quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: supermew_ci
+          POSTGRES_USER: supermew_ci
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U supermew_ci -d supermew_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --dev --locked
+
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+
+      - name: Lint and reject known blocking calls in async functions
+        run: uv run --no-sync ruff check .
+
+      - name: Type-check critical interfaces
+        run: uv run --no-sync mypy
+
+      - name: Verify generated contracts
+        run: |
+          uv run --no-sync python scripts/generate_contract_types.py --check
+          uv run --no-sync python scripts/generate_rag_eval_schemas.py --check
+
+      - name: Validate Skill and Tool Registry
+        run: uv run --no-sync python -m backend.tools.registry_cli validate
+
+      - name: Exercise SQLite migration compatibility tests
+        run: >-
+          uv run --no-sync pytest -q
+          tests/test_migrations.py
+          tests/test_document_catalog_migration.py
+          tests/test_indexing_worker_migration.py
+
+      - name: Exercise production Alembic chain on PostgreSQL
+        env:
+          DATABASE_URL: postgresql+psycopg2://supermew_ci:ci-only-password@127.0.0.1:5432/supermew_ci
+        run: |
+          uv run --no-sync alembic upgrade head
+          uv run --no-sync alembic downgrade -1
+          uv run --no-sync alembic upgrade head
+
+      - name: Verify cross-instance refresh rotation on PostgreSQL
+        env:
+          AUTH_POSTGRES_TEST_URL: postgresql+psycopg2://supermew_ci:ci-only-password@127.0.0.1:5432/supermew_ci
+        run: >-
+          uv run --no-sync pytest -q
+          tests/test_auth_postgres_integration.py
+
+      - name: Rebuild committed RAG baseline
+        run: |
+          uv run --no-sync python scripts/evaluate_rag.py score \
+            --dataset evals/rag/rag_smoke_v1.json \
+            --observations evals/rag/offline_smoke_observations_v1.json \
+            --gates evals/rag/gates_v1.json \
+            --report /tmp/rebuilt-rag-baseline.json \
+            --fail-on-regression
+          cmp /tmp/rebuilt-rag-baseline.json evals/rag/baseline_v1.json
+
+      - name: Check deterministic non-model runtime baseline
+        run: >-
+          uv run --no-sync python -m scripts.benchmark_runtime
+          --check
+          --report /tmp/runtime-benchmark.json
+
+      - name: Run tests with coverage gate
+        run: >-
+          uv run --no-sync pytest -q
+          --cov=backend
+          --cov=scripts
+          --cov-report=term-missing:skip-covered
+          --cov-report=xml
+          --cov-fail-under=80
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked audit tool
+        run: uv sync --only-group dev --locked
+
+      - name: Export locked production dependencies
+        run: >-
+          uv export --frozen
+          --no-dev
+          --no-emit-project
+          --format requirements-txt
+          --output-file /tmp/requirements.txt
+
+      - name: Audit production dependencies
+        run: >-
+          uv run --no-sync pip-audit
+          --requirement /tmp/requirements.txt
+          --disable-pip
+          --strict
+          --progress-spinner off
+
+  storage-compatibility:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_VOLUME_DIRECTORY: /tmp/supermew-storage-ci
+      POSTGRES_DB: unused
+      POSTGRES_USER: unused
+      POSTGRES_PASSWORD: unused-ci-placeholder
+      REDIS_PASSWORD: supermew-ci-redis-placeholder
+      REDIS_URL: redis://:supermew-ci-redis-placeholder@127.0.0.1:6379/0
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: "6379"
+      MINIO_ROOT_USER: supermew-ci
+      MINIO_ROOT_PASSWORD: supermew-ci-placeholder
+      MILVUS_HOST: 127.0.0.1
+      MILVUS_PORT: "19530"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked storage compatibility dependencies
+        run: uv sync --only-group storage-compatibility --locked
+
+      - name: Reject missing or empty production Compose Secrets
+        run: uv run --no-sync python -m scripts.check_production_compose
+
+      - name: Start production storage dependencies
+        run: >-
+          docker compose --env-file /dev/null
+          -f docker-compose.prod.yml
+          up -d --wait --wait-timeout 180
+          redis etcd minio standalone
+
+      - name: Exercise authenticated Redis Streams, cancellation, and rate limits
+        run: uv run --no-sync python -m scripts.smoke_redis_compat
+
+      - name: Exercise real schema, dense and BM25 hybrid retrieval
+        run: uv run --no-sync python -m scripts.smoke_milvus_compat
+
+      - name: Stop storage dependencies
+        if: always()
+        run: >-
+          docker compose --env-file /dev/null
+          -f docker-compose.prod.yml
+          down -v --remove-orphans

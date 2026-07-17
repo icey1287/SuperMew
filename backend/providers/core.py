@@ -4,12 +4,12 @@ import asyncio
 import math
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Buffer, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
-from typing import Any, TypeVar
+from typing import Any, SupportsIndex, SupportsInt, TypeVar
 
 from backend.core.errors import AppError
 
@@ -260,7 +260,7 @@ class ProviderError(AppError):
             provider=provider,
             retry_after=retry_after,
         )
-        self.provider = provider
+        self.provider: str = provider
         self.operation = context.operation
         self.retry_after_seconds = retry_after
         self.attempts = safe_details["attempts"]
@@ -352,6 +352,11 @@ def _status_code(exc: BaseException) -> int | None:
                 continue
             for name in ("status_code", "status"):
                 value = getattr(source, name, None)
+                if not isinstance(
+                    value,
+                    (str, Buffer, SupportsInt, SupportsIndex),
+                ):
+                    continue
                 try:
                     parsed = int(value)
                 except (TypeError, ValueError):
@@ -429,7 +434,7 @@ _TIMEOUT_TYPE_NAMES = {
 }
 
 
-def _exception_chain(exc: BaseException):
+def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
     """Walk explicit exception chaining without inspecting provider messages."""
 
     current: BaseException | None = exc

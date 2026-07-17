@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "profile": "runtime-non-model-v1",
+  "samples": {
+    "cancel_local": 300,
+    "event_publish": 200,
+    "sse_format": 1000,
+    "thread_http_concurrent": 100,
+    "thread_http_sequential": 200
+  },
+  "concurrency": 20,
+  "budgets_ms": {
+    "cancel_local_p95_ms": 5.0,
+    "event_publish_p95_ms": 10.0,
+    "sse_format_p95_ms": 2.0,
+    "thread_http_concurrent_p95_ms": 100.0,
+    "thread_http_sequential_p95_ms": 25.0
+  }
+}

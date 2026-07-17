@@ -17,13 +17,14 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import BinaryIO, Protocol, runtime_checkable
 
 from backend.sandbox.contracts import (
     SandboxError,
     SandboxErrorCode,
     SandboxExecutionResult,
     SandboxExecutionSpec,
+    SandboxLanguage,
     validate_image_digest,
 )
 from backend.sandbox.runtime import CancellationProbe, SandboxRuntimeConfig
@@ -170,7 +171,7 @@ class SubprocessDockerCommandRunner:
         output_lock = threading.Lock()
         overflow = threading.Event()
 
-        def read_stream(stream, destination: bytearray) -> None:
+        def read_stream(stream: BinaryIO, destination: bytearray) -> None:
             try:
                 while True:
                     chunk = stream.read(16 * 1024)
@@ -201,17 +202,18 @@ class SubprocessDockerCommandRunner:
             reader.start()
 
         writer = None
-        if input_bytes is not None and process.stdin is not None:
+        stdin = process.stdin
+        if input_bytes is not None and stdin is not None:
 
             def write_input() -> None:
                 try:
-                    process.stdin.write(input_bytes)
-                    process.stdin.flush()
+                    stdin.write(input_bytes)
+                    stdin.flush()
                 except (BrokenPipeError, OSError):
                     pass
                 finally:
                     try:
-                        process.stdin.close()
+                        stdin.close()
                     except OSError:
                         pass
 
@@ -592,7 +594,7 @@ class DockerSandboxAdapter:
     def _request_frame(self, spec: SandboxExecutionSpec) -> bytes:
         payload = {
             "schema_version": 1,
-            "language": spec.language.value,
+            "language": SandboxLanguage(spec.language).value,
             "source_b64": base64.b64encode(spec.source.encode("utf-8")).decode("ascii"),
             "limits": spec.limits.runner_payload(),
         }

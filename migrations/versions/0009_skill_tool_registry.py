@@ -26,9 +26,7 @@ def _backfill_tool_audit_keys(connection) -> None:
     for audit_id in connection.execute(sa.select(audits.c.id)).scalars():
         digest = hashlib.sha256(f"legacy-tool-audit:{audit_id}".encode()).hexdigest()
         connection.execute(
-            audits.update()
-            .where(audits.c.id == audit_id)
-            .values(audit_key=digest)
+            audits.update().where(audits.c.id == audit_id).values(audit_key=digest)
         )
 
 
@@ -82,7 +80,9 @@ def upgrade() -> None:
     _backfill_tool_audit_keys(op.get_bind())
 
     with op.batch_alter_table("tool_audits") as batch:
-        batch.alter_column("audit_key", existing_type=sa.CHAR(length=64), nullable=False)
+        batch.alter_column(
+            "audit_key", existing_type=sa.CHAR(length=64), nullable=False
+        )
         batch.create_unique_constraint(
             "uq_tool_audit_run_key",
             ["run_id", "audit_key"],

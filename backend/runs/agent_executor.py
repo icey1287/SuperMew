@@ -9,7 +9,7 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from backend.agent.factory import AgentRuntimeFactory, runtime_factory
 from backend.agent.runtime import AgentRuntimeInput, AgentRuntimeResult
@@ -21,6 +21,8 @@ from backend.events.bus import PersistentEventBus, event_bus
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
+    ConsumedResume,
+    RagRunOutcome,
     ResumeAccessState,
     checkpointed_rag_runner,
 )
@@ -30,6 +32,7 @@ from backend.rag.outcomes import (
 )
 from backend.runs.cancellation import (
     CancellationToken,
+    Runner,
     RunExecutionManager,
     RunExecutionOutcome,
     execution_manager,
@@ -59,8 +62,8 @@ _WARNING_TRACE_STAGES = {
 }
 
 
-def _history_messages(snapshot: RunExecutionSnapshot) -> list:
-    messages = []
+def _history_messages(snapshot: RunExecutionSnapshot) -> list[BaseMessage]:
+    messages: list[BaseMessage] = []
     for item in snapshot.history:
         if item.role == "human":
             messages.append(HumanMessage(content=item.content))
@@ -165,16 +168,16 @@ class RunAgentExecutor:
         self._semaphore = asyncio.Semaphore(
             max_concurrent_runs or settings.max_concurrent_runs
         )
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
         self._task_kinds: dict[str, str] = {}
         self._pending_resumes: dict[str, dict] = {}
         self._lock = asyncio.Lock()
         self._closing = False
         self._dispatcher_stop = asyncio.Event()
-        self._dispatcher_task: asyncio.Task | None = None
+        self._dispatcher_task: asyncio.Task[None] | None = None
 
     def _runtime_tool_ceiling(self) -> frozenset[str]:
-        ceiling = getattr(self.runtime_builder, "tool_ceiling", frozenset())
+        ceiling: object = getattr(self.runtime_builder, "tool_ceiling", frozenset())
         if isinstance(ceiling, (set, frozenset, tuple, list)):
             return frozenset(str(name) for name in ceiling)
         return frozenset()
@@ -184,7 +187,7 @@ class RunAgentExecutor:
         *,
         username: str,
         run_id: str,
-    ) -> asyncio.Task | None:
+    ) -> asyncio.Task[None] | None:
         async with self._lock:
             if self._closing:
                 return None
@@ -223,7 +226,7 @@ class RunAgentExecutor:
         hitl_token: str,
         answer: str,
         idempotency_key: str,
-    ) -> asyncio.Task | None:
+    ) -> asyncio.Task[None] | None:
         async with self._lock:
             if self._closing:
                 return None
@@ -360,7 +363,13 @@ class RunAgentExecutor:
         await self._execute_claimed(claimed, runner)
         await self._dispatch_next(username=username, thread_id=claimed.thread_id)
 
-    async def _resume_checkpoint(self, *, snapshot, consumed, token: CancellationToken):
+    async def _resume_checkpoint(
+        self,
+        *,
+        snapshot: RunExecutionSnapshot,
+        consumed: ConsumedResume,
+        token: CancellationToken,
+    ) -> RagRunOutcome:
         output_queue: asyncio.Queue = asyncio.Queue()
         context = ChatRequestContext.for_stream(
             user_id=snapshot.username,
@@ -400,7 +409,7 @@ class RunAgentExecutor:
             pump_stop.set()
             await pump_task
 
-    async def _execute_claimed(self, run: RunRecord, runner) -> None:
+    async def _execute_claimed(self, run: RunRecord, runner: Runner) -> None:
         heartbeat_stop = asyncio.Event()
         manager_task = asyncio.create_task(
             self.manager.execute(run=run, runner=runner),
@@ -767,8 +776,14 @@ class RunAgentExecutor:
         trace_queue: asyncio.Queue,
         error_event: asyncio.Event,
     ) -> None:
-        joins = asyncio.gather(output_queue.join(), trace_queue.join())
-        failed = asyncio.create_task(error_event.wait())
+        async def wait_for_queues() -> None:
+            await asyncio.gather(output_queue.join(), trace_queue.join())
+
+        async def wait_for_error() -> None:
+            await error_event.wait()
+
+        joins = asyncio.create_task(wait_for_queues())
+        failed = asyncio.create_task(wait_for_error())
         done, _ = await asyncio.wait(
             {joins, failed},
             return_when=asyncio.FIRST_COMPLETED,

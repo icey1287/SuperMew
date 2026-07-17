@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-from backend.skills import SkillRegistryError
+from backend.skills import SkillActivationSession, SkillRegistryError
 from backend.tools.contracts import ToolResultV1, new_tool_failure, new_tool_success
 from backend.tools.registry import ToolDescriptor, ToolSession
 
@@ -30,10 +30,12 @@ def _descriptor_payload(descriptor: ToolDescriptor) -> dict[str, Any]:
 def make_control_tool_overrides(holder: Mapping[str, object]) -> dict[str, object]:
     """Build request-owned control Adapters over Run-local registry sessions."""
 
-    def _sessions():
+    def _sessions() -> tuple[SkillActivationSession, ToolSession]:
         skill_session = holder.get("skill_session")
         tool_session = holder.get("tool_session")
-        if skill_session is None or not isinstance(tool_session, ToolSession):
+        if not isinstance(skill_session, SkillActivationSession) or not isinstance(
+            tool_session, ToolSession
+        ):
             raise RuntimeError("registry control tools are not bound to a Run")
         return skill_session, tool_session
 

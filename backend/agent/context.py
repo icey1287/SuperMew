@@ -6,10 +6,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from html import escape
-from typing import Any
 
 from backend.chat.request_context import ChatRequestContext
 from backend.guardrails import RunToolApprovalGrant, ToolGuardrail, ToolGuardrailResult
+from backend.skills import SkillActivationSession
+from backend.tools.registry import ToolDescriptor, ToolSession
 
 
 @dataclass(frozen=True)
@@ -47,16 +48,16 @@ class AgentRuntimeContext:
     persistent_note: str = ""
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     approval_grant: RunToolApprovalGrant | None = None
-    tool_session: Any | None = None
-    skill_session: Any | None = None
+    tool_session: ToolSession | None = None
+    skill_session: SkillActivationSession | None = None
     guardrail: ToolGuardrail | None = None
     tool_catalog_hash: str = ""
     deadline_at: float | None = None
     current_date: str = field(
         default_factory=lambda: datetime.now(UTC).date().isoformat()
     )
-    trace_events: list[dict[str, Any]] = field(default_factory=list)
-    trace_queue: asyncio.Queue | None = None
+    trace_events: list[dict[str, object]] = field(default_factory=list)
+    trace_queue: asyncio.Queue[dict[str, object]] | None = None
     trace_loop: asyncio.AbstractEventLoop | None = None
     trimmed_message_count: int = 0
     _tool_fingerprint_counts: dict[str, int] = field(default_factory=dict)
@@ -76,7 +77,7 @@ class AgentRuntimeContext:
             return None
         return max(self.deadline_at - time.monotonic(), 0.0)
 
-    def record_trace(self, stage: str, **data: Any) -> None:
+    def record_trace(self, stage: str, **data: object) -> None:
         event = {
             "stage": stage,
             "elapsed_ms": self.request_context.elapsed_ms(),
@@ -105,7 +106,7 @@ class AgentRuntimeContext:
 
     def is_tool_allowed(self, name: str) -> bool:
         if self.tool_session is not None:
-            return bool(self.tool_session.is_allowed(name))
+            return self.tool_session.is_allowed(name)
         return name in (self.allowed_tools or frozenset())
 
     def visible_tool_names(self) -> frozenset[str]:
@@ -114,28 +115,17 @@ class AgentRuntimeContext:
         return self.allowed_tools or frozenset()
 
     def active_skill_name(self) -> str | None:
-        active = (
-            getattr(self.skill_session, "active", None)
-            if self.skill_session is not None
-            else None
-        )
-        name = getattr(active, "name", None)
-        return name if isinstance(name, str) and name else None
+        active = self.skill_session.active if self.skill_session is not None else None
+        return active.name if active is not None and active.name else None
 
     def active_skill_allows_tool(self, name: str) -> bool:
-        active = (
-            getattr(self.skill_session, "active", None)
-            if self.skill_session is not None
-            else None
-        )
-        allowed = getattr(active, "allowed_tools", frozenset())
-        return bool(active is not None and name in frozenset(allowed))
+        active = self.skill_session.active if self.skill_session is not None else None
+        return active is not None and name in active.allowed_tools
 
-    def tool_descriptor(self, name: str) -> Any | None:
+    def tool_descriptor(self, name: str) -> ToolDescriptor | None:
         if self.tool_session is None:
             return None
-        describe = getattr(self.tool_session, "describe", None)
-        return describe(name) if callable(describe) else None
+        return self.tool_session.describe(name)
 
     def is_tool_approved(self, name: str) -> bool:
         grant = self.approval_grant
@@ -174,8 +164,7 @@ class AgentRuntimeContext:
 
     def has_active_skill(self) -> bool:
         return bool(
-            self.skill_session is not None
-            and getattr(self.skill_session, "active", None) is not None
+            self.skill_session is not None and self.skill_session.active is not None
         )
 
     def dynamic_context_message(

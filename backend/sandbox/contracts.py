@@ -312,7 +312,7 @@ class SandboxExecutionRequest:
     def __repr__(self) -> str:
         return (
             "SandboxExecutionRequest("
-            f"language={self.language.value!r}, source_redacted=True)"
+            f"language={SandboxLanguage(self.language).value!r}, source_redacted=True)"
         )
 
 
@@ -341,7 +341,7 @@ class SandboxExecutionSpec:
         return (
             "SandboxExecutionSpec("
             f"invocation_id={self.invocation_id!r}, "
-            f"language={self.language.value!r}, source_redacted=True)"
+            f"language={SandboxLanguage(self.language).value!r}, source_redacted=True)"
         )
 
 

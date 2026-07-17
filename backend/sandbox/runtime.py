@@ -406,6 +406,7 @@ def build_sandbox_runtime(
     if not config.enabled or config.adapter == "disabled":
         runtime = SandboxRuntime.disabled()
     else:
+        adapter: SandboxAdapter
         if adapter_factory is None:
             from backend.sandbox.docker import DockerSandboxAdapter
 
