@@ -7,7 +7,9 @@ SuperMew 是知识库优先的智能任务平台。它以持久化 **Thread**、
 ### Conversation and execution
 
 **Thread**:
-一个用户拥有的连续对话容器；它按 sequence 保存 **Message**，并以 version 保护并发写入。
+一个用户拥有的连续对话容器；正式 Interface 由服务端生成安全 ID。它按 sequence 保存
+**Message**，以只随 append 递增的 version 保护并发写入；自身 lifecycle status 与活跃
+**Run** status 是两个独立事实。
 _Avoid_: Session、conversation session
 
 **Message**:
@@ -56,6 +58,29 @@ _Avoid_: Context text、raw chunk
 Run 对检索路线、候选、评分、降级、Evidence 与耗时的可审计投影；它不包含模型私有推理。
 _Avoid_: Chain of thought、debug dump
 
+### Identity and ingress
+
+**Access Token**:
+短期、带 `iat`/`jti` 的签名 Bearer credential；正式浏览器只在内存中持有，并在页面恢复时
+通过 Refresh Token 重新签发。
+_Avoid_: Browser session、localStorage token
+
+**Refresh Token**:
+仅由 `Path=/auth`、HttpOnly Cookie 承载的高熵 opaque credential；服务端只持久化其 SHA-256
+hash，并通过 rotation、replay detection 与撤销 ledger 管理生命周期。ledger 在自然过期后仍
+保留独立 forensic/audit retention window；过期 token 不再触发用户级 replay 撤销。
+_Avoid_: Refresh JWT、remember-me value
+
+**Auth Origin Decision**:
+在 Rate Limit 与 credential mutation 前对 auth unsafe POST 作出的来源/JSON/大小判断；same-origin
+始终可信，跨 origin 只有 credentials CORS 与显式 allowlist 同时允许时可信。
+_Avoid_: Same-site trust、CORS wildcard
+
+**Rate Limit Decision**:
+对一个稳定 policy 与 HMAC identity 原子消费后的 allowed/remaining/reset 结果；它不携带原始
+IP、username、Bearer 或 Cookie。
+_Avoid_: Route counter、raw identity key
+
 ### Extensibility and safety
 
 **Skill**:
@@ -88,18 +113,32 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 
 ## Relationships
 
-- 一个 **Thread** 有多个有序 **Message** 和多个串行或排队的 **Run**。
+- 一个 **Thread** 有多个有序 **Message** 和多个串行或排队的 **Run**；更新已有 assistant
+  Message 的正文或终态不会推进 Thread append version。
 - 一个 **Run** 产生多个 **Event**，最多有一个当前 **Checkpoint**，并投影到一个 assistant Message。
 - 一个 **Document** 有多个 **Document Version**，但任一时刻最多发布一个当前版本。
 - 一个 **Skill** 允许零到多个 **Tool**；每次 Tool 调用都必须先产生 **Guardrail Decision**。
 - **Sandbox Execution** 是 Tool 的一种隔离实现，不替代 Guardrail Decision。
 - **Evidence** 来自已发布 Document Version 或受控 Web Research，并由 RAG Trace 记录其公开身份。
+- 浏览器用内存 **Access Token** 调用受保护 Interface；页面刷新通过 Cookie 中的
+  **Refresh Token** 恢复身份，每次成功刷新都会轮换该 credential；支持 Web Locks 时跨标签页
+  串行 refresh，并在等待锁后重检 generation/tombstone 与主体。
+- **Refresh Token** 的所有在线生命周期写事务先锁 User，再锁定或写入该用户的 token；独立 purge 只能删除
+  自然过期且已越过 retention window 的 ledger 行。
+- 每个 auth unsafe POST 必须先得到允许的 **Auth Origin Decision**；login/register JSON media
+  type 与声明的 16 KiB 上限在 Rate Limit 前校验，实际 stream 在计费后、route 前受同一上限约束。
+- 一个入口请求可先后产生 IP 与 IP+规范化 username 两个 **Rate Limit Decision**；登录与注册
+  只有在两者都允许后才进入密码校验，复合 identity 每次消耗两个 quota unit。
 
 ## Flagged ambiguities
 
-- **Session**：旧代码与旧路由曾用 session 表示对话。领域统一称 **Thread**；`/sessions` 仅是待迁移的历史读取路由名称。
+- **Session**：旧代码与旧路由曾用 session 表示对话。领域统一称 **Thread**；正式历史 Interface 是 `/v1/threads`，`/sessions` 仅保留为标记 deprecated 的兼容别名。
 - **Task**：只用于面向用户描述工作，不用于持久化模型。Agent 执行称 **Run**，文档后台工作称 **Index Job**。
 - **Chat**：只描述产品交互体验。公开执行 Interface 是 Run/Event；`backend.chat.service` 是退役的内部兼容 Implementation。
+- **Bearer**：描述受保护 HTTP Interface 的 access credential 传输协议，不表示浏览器可把
+  Access Token 持久化；正式前端只从内存认证状态读取它。
+- **Same-site**：不是认证来源信任边界。Auth 使用严格 same-origin；跨 origin 即使 same-site，
+  也必须同时满足 credentials CORS 与显式 allowlist。
 
 ## Example dialogue
 
@@ -114,3 +153,18 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 > 开发：模型想抓取搜索结果里的 URL，直接把 URL 交给 Web Tool 吗？
 >
 > 领域专家：不可以。Tool 只接受 Evidence identity；Run 用 Destination Capability 绑定已验证目标，再由 Guardrail Decision 决定是否执行。
+>
+> 开发：页面刷新后从 localStorage 恢复 Bearer 可以吗？
+>
+> 领域专家：不可以。Access Token 只在内存中；页面先用 HttpOnly Refresh Token 调用
+> `/auth/refresh`，轮换成功后再恢复受保护请求。
+>
+> 开发：Redis 限流不可用时，先放行登录避免影响可用性吗？
+>
+> 领域专家：生产环境不可以。Rate Limit 是 PBKDF2 前的入口保护，存储异常必须 fail-closed，
+> 返回 typed 503，不能把昂贵认证路径暴露为降级模式。
+>
+> 开发：Nginx 已经加了 X-Forwarded-For，Rate Limit 直接读它可以吗？
+>
+> 领域专家：不可以。只有可信 ProxyHeaders/forwarded allowlist 可以先修正 `scope.client`；
+> Module 直接信任任意转发头会允许客户端伪造 quota identity。
