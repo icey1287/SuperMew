@@ -25,8 +25,12 @@
 
         <template v-else>
           <DocumentSettings v-if="chatStore.activeNav === 'settings'" />
-          <HistorySidebar />
-          <ChatArea v-show="chatStore.activeNav !== 'settings'" />
+          <ModelCenter v-else-if="chatStore.activeNav === 'models'" />
+          <RagEvaluationWorkbench v-else-if="chatStore.activeNav === 'evaluations'" />
+          <template v-else>
+            <HistorySidebar />
+            <ChatArea />
+          </template>
           <CapabilityCenter />
           <CommandPalette />
           <ApprovalDialog />
@@ -46,11 +50,17 @@ import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
 import { useRunsStore } from '@/stores/runs';
 import { useCapabilityStore } from '@/stores/capabilities';
+import { useModelStore } from '@/stores/models';
+import { useEvaluationStore } from '@/stores/evaluations';
 
 const HistorySidebar = defineAsyncComponent(() => import('@/components/HistorySidebar.vue'));
 const ChatArea = defineAsyncComponent(() => import('@/components/Chat/ChatArea.vue'));
 const DocumentSettings = defineAsyncComponent(
   () => import('@/components/Documents/DocumentSettings.vue')
+);
+const ModelCenter = defineAsyncComponent(() => import('@/components/Models/ModelCenter.vue'));
+const RagEvaluationWorkbench = defineAsyncComponent(
+  () => import('@/components/Evaluations/RagEvaluationWorkbench.vue')
 );
 const CapabilityCenter = defineAsyncComponent(
   () => import('@/components/Capabilities/CapabilityCenter.vue')
@@ -67,6 +77,8 @@ const chatStore = useChatStore();
 const threadStore = useThreadStore();
 const runsStore = useRunsStore();
 const capabilityStore = useCapabilityStore();
+const modelStore = useModelStore();
+const evaluationStore = useEvaluationStore();
 
 type Theme = 'dark' | 'light';
 
@@ -91,6 +103,8 @@ watch(
     if (username === previousUsername) return;
     chatStore.resetWorkspace();
     threadStore.$reset();
+    modelStore.reset();
+    evaluationStore.reset();
     if (username) void capabilityStore.fetchCatalog().catch(() => undefined);
   }
 );
@@ -129,5 +143,6 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalShortcut);
   window.removeEventListener('capability-selected', handleCapabilitySelected);
   runsStore.disconnectAll();
+  evaluationStore.stopPolling();
 });
 </script>

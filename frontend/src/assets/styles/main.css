@@ -3866,8 +3866,15 @@ span.cite-ref,
 
   .sidebar-nav {
     display: flex;
-    justify-content: center;
+    min-width: 0;
+    justify-content: flex-start;
     gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .sidebar-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .nav-btn {

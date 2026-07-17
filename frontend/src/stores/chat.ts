@@ -87,7 +87,7 @@ export const useChatStore = defineStore('chat', {
     messagesByThread: {} as Record<string, Message[]>,
     messagePagesByThread: {} as Record<string, ThreadMessagePageState>,
     userInput: '',
-    activeNav: 'newChat' as 'newChat' | 'history' | 'settings',
+    activeNav: 'newChat' as 'newChat' | 'history' | 'settings' | 'models' | 'evaluations',
     threadId: '',
     isCreatingThread: false,
     loadingThreadId: '',

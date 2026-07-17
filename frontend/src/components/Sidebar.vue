@@ -62,6 +62,26 @@
         <i class="fa-regular fa-bookmark"></i>
         <span>知识库</span>
       </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
+        :class="['nav-btn', { active: chatStore.activeNav === 'models' }]"
+        aria-label="模型中心"
+        @click="onModels"
+      >
+        <i class="fa-solid fa-microchip"></i>
+        <span>模型中心</span>
+      </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
+        :class="['nav-btn', { active: chatStore.activeNav === 'evaluations' }]"
+        aria-label="RAG 评估"
+        @click="onEvaluations"
+      >
+        <i class="fa-solid fa-flask-vial"></i>
+        <span>RAG 评估</span>
+      </button>
     </nav>
 
     <template v-if="authStore.isAuthenticated">
@@ -217,6 +237,24 @@ const onSettings = () => {
     return;
   }
   chatStore.activeNav = 'settings';
+  threadStore.showHistorySidebar = false;
+};
+
+const onModels = () => {
+  if (!authStore.isAdmin) {
+    alert('仅管理员可访问模型中心');
+    return;
+  }
+  chatStore.activeNav = 'models';
+  threadStore.showHistorySidebar = false;
+};
+
+const onEvaluations = () => {
+  if (!authStore.isAdmin) {
+    alert('仅管理员可访问 RAG 评估');
+    return;
+  }
+  chatStore.activeNav = 'evaluations';
   threadStore.showHistorySidebar = false;
 };
 
