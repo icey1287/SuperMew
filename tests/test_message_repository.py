@@ -145,6 +145,15 @@ class MessageRepositoryTests(unittest.TestCase):
             run_id=reservation.run.id,
             worker_id="worker-1",
         )
+        run_repository.pin_skill_activation(
+            run_id=reservation.run.id,
+            worker_id="worker-1",
+            fencing_token=claimed.fencing_token,
+            name="web-research",
+            version="1.0.0",
+            content_hash="a" * 64,
+            source="slash",
+        )
         run_repository.finalize(
             run_id=reservation.run.id,
             target_status=RunStatus.SUCCEEDED,
@@ -161,6 +170,10 @@ class MessageRepositoryTests(unittest.TestCase):
             [message.content for message in messages],
         )
         self.assertEqual("completed", messages[0].status)
+        self.assertEqual(
+            ["web-research", "web-research"],
+            [message.skill_name for message in messages],
+        )
         self.assertEqual(2, threads[0].message_count)
         self.assertEqual(2, threads[0].version)
         self.assertEqual("thread-1", threads[0].thread_id)

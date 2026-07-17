@@ -164,6 +164,63 @@ describe('run event reducer', () => {
     expect(state.warnings[0].code).toBe('CANCEL_REQUESTED');
   });
 
+  it('projects tool lifecycle, public guardrail fields and Artifact identities', () => {
+    let state = initialRunEventState('run_1', 'thread-1');
+    state = applyRunEvent(
+      state,
+      event(1, 'tool.started', {
+        tool_name: 'sandbox_execute',
+        tool_call_id: 'call_1',
+      })
+    );
+    state = applyRunEvent(
+      state,
+      event(2, 'tool.completed', {
+        tool_name: 'sandbox_execute',
+        tool_call_id: 'call_1',
+        duration_ms: 245,
+        result_size: 512,
+        guardrail_decision: 'ALLOW',
+        reason_code: 'ALLOWED',
+      })
+    );
+    state = applyRunEvent(
+      state,
+      event(3, 'artifact.created', {
+        artifact_id: 'art_result_1',
+        name: 'result.json',
+        media_type: 'application/json',
+        uri: '/api/artifacts/art_result_1',
+        size_bytes: 512,
+        sha256: 'a'.repeat(64),
+        tool_name: 'sandbox_execute',
+        tool_call_id: 'call_1',
+      })
+    );
+
+    expect(state.timeline[0]).toMatchObject({
+      id: 'tool:call_1',
+      status: 'completed',
+      toolName: 'sandbox_execute',
+      durationMs: 245,
+      resultSize: 512,
+      guardrailDecision: 'ALLOW',
+      guardrailReasonCode: 'ALLOWED',
+    });
+    expect(state.artifacts).toEqual([
+      expect.objectContaining({
+        artifactId: 'art_result_1',
+        name: 'result.json',
+        mediaType: 'application/json',
+        uri: '/api/artifacts/art_result_1',
+      }),
+    ]);
+    expect(state.timeline.at(-1)).toMatchObject({
+      kind: 'artifact',
+      title: '生成 Artifact：result.json',
+    });
+  });
+
   it('captures typed provider failures and safely records unknown events', () => {
     let state = applyRunEvent(
       initialRunEventState('run_1', 'thread-1'),

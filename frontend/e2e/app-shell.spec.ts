@@ -1,4 +1,71 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+async function mockCapabilityCatalog(page: Page, role: 'user' | 'admin' = 'user') {
+  const isAdmin = role === 'admin';
+  await page.route('**/v1/capabilities', async (route) => {
+    await route.fulfill({
+      json: {
+        schema_version: 1,
+        catalog_hash: 'a'.repeat(64),
+        skills: [
+          {
+            name: 'knowledge-base',
+            version: '1.0.0',
+            description: 'Search the configured knowledge base.',
+            activation: '/knowledge-base',
+            available: true,
+            availability_reason: null,
+            required_roles: [],
+            tool_names: ['search_knowledge_base'],
+            approval_tools: [],
+            network_policies: ['restricted'],
+            resource_scopes: ['knowledge-read'],
+          },
+          {
+            name: 'web-research',
+            version: '1.0.0',
+            description: 'Research current public information.',
+            activation: '/web-research',
+            available: true,
+            availability_reason: null,
+            required_roles: [],
+            tool_names: ['web_search', 'web_fetch'],
+            approval_tools: [],
+            network_policies: ['restricted'],
+            resource_scopes: ['public-web'],
+          },
+          {
+            name: 'sql-assistant',
+            version: '1.0.0',
+            description: 'Run bounded read-only SQL analysis.',
+            activation: '/sql-assistant',
+            available: isAdmin,
+            availability_reason: isAdmin ? null : 'permission_required',
+            required_roles: ['admin'],
+            tool_names: ['sql_schema', 'sql_query'],
+            approval_tools: [],
+            network_policies: ['private-data'],
+            resource_scopes: ['private-data-read'],
+          },
+          {
+            name: 'sandbox',
+            version: '1.0.0',
+            description: 'Execute approved isolated code.',
+            activation: '/sandbox',
+            available: isAdmin,
+            availability_reason: isAdmin ? null : 'permission_required',
+            required_roles: ['admin'],
+            tool_names: ['sandbox_execute'],
+            approval_tools: ['sandbox_execute'],
+            network_policies: ['none'],
+            resource_scopes: ['code-execution'],
+          },
+        ],
+        tools: [],
+      },
+    });
+  });
+}
 
 test('renders the unauthenticated application shell and registration mode', async ({ page }) => {
   let releaseRefresh!: () => void;
@@ -30,6 +97,8 @@ test('projects a durable Run event stream into the chat UI', async ({ page }) =>
   let createThreadRequest: Record<string, unknown> | null = null;
   let createdThreadId = '';
   let lastEventId = '';
+
+  await mockCapabilityCatalog(page);
 
   await page.route('**/auth/refresh', async (route) => {
     await route.fulfill({ status: 401, json: { detail: 'no refresh session' } });
@@ -139,6 +208,7 @@ test('silently restores an HttpOnly refresh session without rendering the login 
   page,
 }) => {
   let threadAuthorization = '';
+  await mockCapabilityCatalog(page);
   await page.route('**/auth/refresh', async (route) => {
     await route.fulfill({
       json: { access_token: 'restored-token', username: 'restored-user', role: 'user' },
@@ -161,6 +231,7 @@ test('silently restores an HttpOnly refresh session without rendering the login 
 test('keeps a failed logout locally revoked across a page reload', async ({ page }) => {
   let refreshCalls = 0;
   let logoutCalls = 0;
+  await mockCapabilityCatalog(page);
   await page.route('**/auth/refresh', async (route) => {
     refreshCalls += 1;
     await route.fulfill({

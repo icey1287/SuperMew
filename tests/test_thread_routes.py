@@ -55,6 +55,7 @@ def _thread_message(
     content: str,
     *,
     run_id: str | None = "run_1",
+    skill_name: str | None = None,
 ) -> ThreadMessage:
     return ThreadMessage(
         id=sequence,
@@ -65,6 +66,7 @@ def _thread_message(
         content=content,
         timestamp=NOW,
         rag_trace=None,
+        skill_name=skill_name,
     )
 
 
@@ -146,7 +148,7 @@ def test_canonical_messages_use_recent_page_contract_and_canonical_roles() -> No
     page = ThreadMessagePage(
         messages=(
             _thread_message(4, "user", "问题", run_id=None),
-            _thread_message(5, "assistant", "回答"),
+            _thread_message(5, "assistant", "回答", skill_name="web-research"),
         ),
         previous_cursor=4,
     )
@@ -177,6 +179,7 @@ def test_canonical_messages_use_recent_page_contract_and_canonical_roles() -> No
                 "content": "问题",
                 "timestamp": "2026-07-16T08:00:00Z",
                 "rag_trace": None,
+                "skill_name": None,
             },
             {
                 "id": 5,
@@ -187,6 +190,7 @@ def test_canonical_messages_use_recent_page_contract_and_canonical_roles() -> No
                 "content": "回答",
                 "timestamp": "2026-07-16T08:00:00Z",
                 "rag_trace": None,
+                "skill_name": "web-research",
             },
         ],
         "previous_cursor": 4,

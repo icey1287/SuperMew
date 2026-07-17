@@ -1,14 +1,15 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearAuthSession, installAuthSession } from '@/auth/session';
-import type { RuntimeRunEvent } from '@/events/runEventReducer';
 import { connectRunEventStream } from '@/events/runEventStream';
 import { cancelRun, createRun, getRun, getRunEvents, resumeRun } from '@/runs/runClient';
 import { createThread, deleteThread, getThreadMessages } from '@/threads/threadClient';
+import type { RunEventType, RunEventV1 } from '@/types/chat';
 import { useAuthStore } from './auth';
 import { useChatStore } from './chat';
 import { useRunsStore } from './runs';
 import { useThreadStore } from './threads';
+import { useCapabilityStore } from './capabilities';
 
 vi.mock('@/runs/runClient', () => ({
   cancelRun: vi.fn(),
@@ -46,9 +47,9 @@ function event(
   runId: string,
   threadId: string,
   sequence: number,
-  type: RuntimeRunEvent['type'],
+  type: RunEventType,
   data: Record<string, unknown> = {}
-): RuntimeRunEvent {
+): RunEventV1 {
   return {
     schema_version: 1,
     event_id: `evt_${runId}_${sequence}`,
@@ -159,7 +160,46 @@ function setupStores(threadId = 'thread-1') {
     chatStore,
     runsStore: useRunsStore(),
     threadStore,
+    capabilityStore: useCapabilityStore(),
   };
+}
+
+function installCapabilityCatalog() {
+  const store = useCapabilityStore();
+  store.catalog = {
+    schema_version: 1,
+    catalog_hash: 'a'.repeat(64),
+    skills: [
+      {
+        name: 'web-research',
+        version: '1.0.0',
+        description: 'Research public web evidence.',
+        activation: '/web-research',
+        available: true,
+        availability_reason: null,
+        required_roles: [],
+        tool_names: ['web_search', 'web_fetch'],
+        approval_tools: [],
+        network_policies: ['restricted'],
+        resource_scopes: ['public-web'],
+      },
+      {
+        name: 'sandbox',
+        version: '1.0.0',
+        description: 'Execute isolated code.',
+        activation: '/sandbox',
+        available: true,
+        availability_reason: null,
+        required_roles: ['admin'],
+        tool_names: ['sandbox_execute'],
+        approval_tools: ['sandbox_execute'],
+        network_policies: ['none'],
+        resource_scopes: ['code-execution'],
+      },
+    ],
+    tools: [],
+  };
+  return store;
 }
 
 function installControlledStreams() {
@@ -175,7 +215,7 @@ function installControlledStreams() {
   });
   return {
     connections,
-    emit(runId: string, item: RuntimeRunEvent) {
+    emit(runId: string, item: RunEventV1) {
       connections.get(runId)?.options.onEvent(item);
     },
     finish(runId: string, sequence: number) {
@@ -246,6 +286,123 @@ describe('durable chat projection', () => {
     await sending;
   });
 
+  it('keeps the user-facing prompt clean while activating Web Research for the Run', async () => {
+    const streams = installControlledStreams();
+    vi.mocked(createRun).mockResolvedValue(createResponse('run_1', 'thread-1'));
+    const { chatStore } = setupStores();
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('web-research');
+    chatStore.userInput = '核验今天的公开发布信息';
+
+    const sending = chatStore.handleSend();
+    await flushPromises();
+
+    expect(createRun).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({
+        message: '/web-research\n核验今天的公开发布信息',
+        approved_tools: [],
+      }),
+      'test-token'
+    );
+    expect(chatStore.messages[0]).toMatchObject({
+      text: '核验今天的公开发布信息',
+      skillName: 'web-research',
+    });
+
+    streams.emit('run_1', event('run_1', 'thread-1', 1, 'run.created'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 2, 'message.completed', { content: '研究完成' })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 3, 'run.completed'));
+    streams.finish('run_1', 3);
+    await sending;
+  });
+
+  it('opens a real pre-Run approval flow before sending Sandbox source', async () => {
+    const streams = installControlledStreams();
+    vi.mocked(createRun).mockResolvedValue(createResponse('run_2', 'thread-1'));
+    const { chatStore } = setupStores();
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('sandbox');
+    capabilityStore.setSandboxLanguage('python');
+    chatStore.userInput = 'print(6 * 7)';
+
+    await chatStore.handleSend();
+
+    expect(capabilityStore.approvalOpen).toBe(true);
+    expect(createRun).not.toHaveBeenCalled();
+
+    capabilityStore.confirmPendingApproval();
+    const sending = chatStore.handleSend({ approvalConfirmed: true });
+    await flushPromises();
+
+    expect(createRun).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({
+        message: expect.stringContaining('"source": "print(6 * 7)"'),
+        approved_tools: ['sandbox_execute'],
+      }),
+      'test-token'
+    );
+    expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
+
+    streams.emit('run_2', event('run_2', 'thread-1', 1, 'run.created'));
+    streams.emit(
+      'run_2',
+      event('run_2', 'thread-1', 2, 'message.completed', { content: '输出 42' })
+    );
+    streams.emit('run_2', event('run_2', 'thread-1', 3, 'run.completed'));
+    streams.finish('run_2', 3);
+    await sending;
+  });
+
+  it('restores an approved Sandbox draft when Run creation fails before reservation', async () => {
+    vi.mocked(createRun).mockRejectedValue({
+      code: 'SERVICE_UNAVAILABLE',
+      message: '运行服务暂不可用',
+      retryable: true,
+      category: 'run',
+    });
+    const { chatStore } = setupStores();
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('sandbox');
+    chatStore.userInput = 'print("retry")';
+    capabilityStore.openApproval();
+    capabilityStore.confirmPendingApproval();
+
+    await expect(chatStore.handleSend({ approvalConfirmed: true })).rejects.toMatchObject({
+      code: 'SERVICE_UNAVAILABLE',
+    });
+
+    expect(chatStore.userInput).toBe('print("retry")');
+    expect(chatStore.messages).toEqual([]);
+    expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
+  });
+
+  it('clears approved Sandbox state when creating the first Thread fails', async () => {
+    vi.mocked(createThread).mockRejectedValue({
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'Thread 服务暂不可用',
+      retryable: true,
+      category: 'thread',
+    });
+    const { chatStore } = setupStores('');
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('sandbox');
+    chatStore.userInput = 'print("new thread")';
+    capabilityStore.openApproval();
+    capabilityStore.confirmPendingApproval();
+
+    await chatStore.handleSend({ approvalConfirmed: true });
+
+    expect(createRun).not.toHaveBeenCalled();
+    expect(chatStore.userInput).toBe('print("new thread")');
+    expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
+    expect(alert).toHaveBeenCalledWith('Thread 服务暂不可用');
+  });
+
   it('authoritatively deletes the current Thread before creating a replacement', async () => {
     vi.mocked(deleteThread).mockResolvedValue({
       thread_id: 'thread-1',
@@ -296,6 +453,202 @@ describe('durable chat projection', () => {
     expect(chatStore.currentRunStatus).toBe('running');
     expect(chatStore.isInputLocked).toBe(true);
     expect(chatStore.isViewingStreamingThread).toBe(false);
+  });
+
+  it('restores the persisted Skill when reopening a Thread', async () => {
+    const { chatStore, capabilityStore } = setupStores();
+    installCapabilityCatalog();
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '/web-research\n旧问题', {
+          run_id: 'run-history',
+          skill_name: 'web-research',
+        }),
+        threadMessage(2, 'assistant', '旧回答', {
+          run_id: 'run-history',
+          skill_name: 'web-research',
+        }),
+      ],
+      previous_cursor: null,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    expect(capabilityStore.selectedSkillName).toBe('web-research');
+    expect(chatStore.messages[0].skillName).toBe('web-research');
+    expect(chatStore.messages[0].text).toBe('旧问题');
+  });
+
+  it('treats the latest general Run as an explicit null Skill selection', async () => {
+    const { chatStore, capabilityStore } = setupStores();
+    installCapabilityCatalog();
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '/web-research\n旧问题', {
+          run_id: 'run-web',
+          skill_name: 'web-research',
+        }),
+        threadMessage(2, 'assistant', '旧回答', {
+          run_id: 'run-web',
+          skill_name: 'web-research',
+        }),
+        threadMessage(3, 'user', '最新通用问题', {
+          run_id: 'run-general',
+          skill_name: null,
+        }),
+        threadMessage(4, 'assistant', '最新通用回答', {
+          run_id: 'run-general',
+          skill_name: null,
+        }),
+      ],
+      previous_cursor: null,
+    });
+    vi.mocked(getRun).mockResolvedValue(runRecord('run-general', 'thread-1', 'succeeded'));
+    vi.mocked(getRunEvents).mockResolvedValue({
+      events: [
+        event('run-general', 'thread-1', 1, 'run.created', {
+          status: 'pending',
+          user_message_id: 3,
+          assistant_message_id: 4,
+        }),
+        event('run-general', 'thread-1', 2, 'message.completed', {
+          content: '最新通用回答',
+          status: 'completed',
+        }),
+        event('run-general', 'thread-1', 3, 'run.completed'),
+      ],
+      next_after: 3,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    expect(capabilityStore.selectedSkillName).toBeNull();
+  });
+
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'keeps a persisted %s Message authoritative when Run lookup transport fails',
+    async (messageStatus) => {
+      const runId = `run-${messageStatus}`;
+      const content = `${messageStatus} 持久正文`;
+      const { chatStore, runsStore } = setupStores();
+      vi.mocked(getThreadMessages).mockResolvedValue({
+        messages: [
+          threadMessage(1, 'user', '问题', { run_id: runId }),
+          threadMessage(2, 'assistant', content, {
+            run_id: runId,
+            status: messageStatus,
+          }),
+        ],
+        previous_cursor: null,
+      });
+      vi.mocked(getRun).mockRejectedValue(new TypeError('offline lookup'));
+
+      await chatStore.loadThread('thread-1');
+
+      expect(chatStore.messages[1]).toMatchObject({
+        status: messageStatus,
+        isThinking: false,
+        text: content,
+      });
+      expect(runsStore.byId[runId]).toBeUndefined();
+    }
+  );
+
+  it.each([
+    ['completed', 'succeeded'],
+    ['failed', 'failed'],
+    ['cancelled', 'cancelled'],
+  ] as const)(
+    'keeps a persisted %s Message authoritative when Event Journal transport fails',
+    async (messageStatus, runStatus) => {
+      const runId = `run-${messageStatus}`;
+      const content = `${messageStatus} 持久正文`;
+      const { chatStore, runsStore } = setupStores();
+      vi.mocked(getThreadMessages).mockResolvedValue({
+        messages: [
+          threadMessage(1, 'user', '问题', { run_id: runId }),
+          threadMessage(2, 'assistant', content, {
+            run_id: runId,
+            status: messageStatus,
+          }),
+        ],
+        previous_cursor: null,
+      });
+      vi.mocked(getRun).mockResolvedValue(runRecord(runId, 'thread-1', runStatus));
+      vi.mocked(getRunEvents).mockRejectedValue(new TypeError('offline journal'));
+
+      await chatStore.loadThread('thread-1');
+
+      expect(chatStore.messages[1]).toMatchObject({
+        status: messageStatus,
+        isThinking: false,
+        text: content,
+      });
+      expect(runsStore.byId[runId]?.transportError?.code).toBe('NETWORK_UNAVAILABLE');
+    }
+  );
+
+  it('replays terminal Run Events so timeline and Artifacts survive a reload', async () => {
+    const { chatStore } = setupStores();
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '生成报告', { run_id: 'run-terminal' }),
+        threadMessage(2, 'assistant', '报告完成', {
+          run_id: 'run-terminal',
+          status: 'completed',
+        }),
+      ],
+      previous_cursor: null,
+    });
+    vi.mocked(getRun).mockResolvedValue(runRecord('run-terminal', 'thread-1', 'succeeded'));
+    vi.mocked(getRunEvents).mockResolvedValue({
+      events: [
+        event('run-terminal', 'thread-1', 1, 'run.created', { status: 'pending' }),
+        event('run-terminal', 'thread-1', 2, 'run.started'),
+        event('run-terminal', 'thread-1', 3, 'tool.started', {
+          tool_name: 'sandbox_execute',
+          tool_call_id: 'call-terminal',
+        }),
+        event('run-terminal', 'thread-1', 4, 'tool.completed', {
+          tool_name: 'sandbox_execute',
+          tool_call_id: 'call-terminal',
+          duration_ms: 20,
+          guardrail_decision: 'ALLOW',
+          reason_code: 'ALLOWED',
+        }),
+        event('run-terminal', 'thread-1', 5, 'artifact.created', {
+          artifact_id: 'art_terminal',
+          name: 'report.json',
+          media_type: 'application/json',
+          uri: '/api/artifacts/art_terminal',
+          tool_name: 'sandbox_execute',
+          tool_call_id: 'call-terminal',
+        }),
+        event('run-terminal', 'thread-1', 6, 'message.completed', {
+          content: '报告完成',
+          status: 'completed',
+        }),
+        event('run-terminal', 'thread-1', 7, 'run.completed'),
+      ] as any,
+      next_after: 7,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    const assistant = chatStore.messages.find((message) => !message.isUser);
+    expect(assistant?.runTimeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'tool:call-terminal',
+          status: 'completed',
+          guardrailDecision: 'ALLOW',
+        }),
+      ])
+    );
+    expect(assistant?.artifacts).toEqual([
+      expect.objectContaining({ artifactId: 'art_terminal', name: 'report.json' }),
+    ]);
+    expect(connectRunEventStream).not.toHaveBeenCalled();
   });
 
   it('creates optimistic messages, reserves a durable Run, and projects final authority', async () => {
