@@ -20,9 +20,7 @@ uv sync
 
 # 运行服务
 uv run alembic upgrade head
-uv run python backend/app.py
-# 或
-uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+./scripts/start.sh
 ```
 
 ```bash
@@ -33,9 +31,8 @@ pip install -U pip
 pip install -e .
 
 # 运行服务
-python backend/app.py
-# 或
-uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+alembic upgrade head
+python -m backend.launcher
 ```
 
 ### 3) 创建 `.env` 文件
@@ -87,25 +84,25 @@ npm run build
 编译完成后，构建产物会自动保存在 `frontend/dist/` 中，后端启动时会自动挂载此目录。
 
 ### 6) 启动应用并访问
-在 Milvus 启动且前端编译完成后，返回项目根目录并运行后端应用：
+在 Milvus 启动且前端编译完成后，返回项目根目录并运行统一启动器：
 
 ```bash
 # 若当前处于 frontend 目录下，先返回项目根目录
 cd ..
 
-# 运行后端应用
-uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+# 同时启动 API 与持久化 Index Job worker
+./scripts/start.sh
 ```
 
-另开一个终端启动持久化 Index Job worker；API 不再在请求进程内解析和向量化 Document Version：
+启动器默认启用 Uvicorn 自动重载；需要关闭时运行：
 
 ```bash
-uv run python -m backend.workers.indexing
+./scripts/start.sh --no-reload
 ```
 
-API 与 Index Job worker 必须共享同一个 `UPLOAD_DIR`。`GET /health/ready` 会检查近期 worker heartbeat；本地确实不启动 worker 时才可显式设置 `INDEX_WORKER_REQUIRED=false`。
+启动器使用同一个 Python 环境和项目配置拉起两个进程，确保 API 与 Index Job worker 共享 `UPLOAD_DIR`。任一进程退出时，启动器会关闭另一个进程，避免 API 仍可访问但文档任务无人消费。`GET /health/ready` 会继续检查近期 worker heartbeat。
 
-当前 `docker-compose.yml` 与 `docker-compose.prod.yml` 只管理 PostgreSQL、Redis、Milvus 等依赖，不会启动 API 或 Index Job worker。生产部署必须由 systemd、Kubernetes 或等价 supervisor 分别管理两个进程，并为它们挂载同一持久上传目录、配置自动重启和 termination grace。
+当前 `docker-compose.yml` 与 `docker-compose.prod.yml` 只管理 PostgreSQL、Redis、Milvus 等依赖，不会启动应用进程。本地使用 `scripts/start.sh`；生产部署仍应由 systemd、Kubernetes 或等价 supervisor 分别管理 API 与 Index Job worker，并为它们挂载同一持久上传目录、配置自动重启和 termination grace。
 
 启动或发布前可验证 Skill/Tool Registry。Skill 正文只在显式 slash、可信路由或 `describe_skill` 后向 Agent 披露；`tool_search` 只返回当前 Run 已授权的 deferred schema：
 

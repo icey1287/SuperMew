@@ -9,6 +9,16 @@
 - 禁止旧版 FastAPI BackgroundTask writer 与 PR-16 worker 混跑。
 - 仓库现有 compose 文件只启动基础依赖；API 与 worker 由外部 supervisor 管理。两者必须共享上传持久卷，并分别配置 restart 与 termination grace。
 
+## 本地联合启动
+
+本地开发使用统一入口同时管理 API 与 indexing worker：
+
+```bash
+./scripts/start.sh
+```
+
+该入口默认为 API 启用自动重载，并在任一子进程退出时终止另一个子进程，避免形成“API 可访问但 Index Job 无消费者”的半健康状态。需要更接近生产的本地运行方式时使用 `./scripts/start.sh --no-reload`。生产环境仍按下文使用 systemd、Kubernetes 或等价 supervisor 分别管理两个进程。
+
 ## 升级顺序
 
 1. 暂停上传入口，并等待旧 API 进程内的上传任务结束。
