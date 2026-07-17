@@ -170,6 +170,12 @@ export const useRunsStore = defineStore('runs', {
       if (typeof data.idempotency_key === 'string') {
         current.idempotencyKey = data.idempotency_key;
       }
+      if (typeof data.skill_name === 'string' && data.skill_name.trim()) {
+        current.activeSkillName = data.skill_name.trim();
+      }
+      if (typeof data.skill_version === 'string' && data.skill_version.trim()) {
+        current.activeSkillVersion = data.skill_version.trim();
+      }
 
       if (status === 'completed') {
         current.error = null;

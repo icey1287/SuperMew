@@ -42,6 +42,17 @@
         </small>
       </button>
       <button
+        v-if="authStore.isAuthenticated"
+        type="button"
+        :class="['nav-btn', { active: capabilityStore.centerOpen }]"
+        aria-label="能力中心"
+        @click="capabilityStore.openCenter"
+      >
+        <i class="fa-solid fa-wand-magic-sparkles"></i>
+        <span>能力中心</span>
+        <small class="nav-shortcut">⌘K</small>
+      </button>
+      <button
         v-if="authStore.isAdmin"
         type="button"
         :class="['nav-btn', { active: chatStore.activeNav === 'settings' }]"
@@ -135,6 +146,7 @@ import ThemeToggle from '@/components/ThemeToggle.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
+import { useCapabilityStore } from '@/stores/capabilities';
 import type { ThreadListItem } from '@/types/threads';
 
 defineProps<{
@@ -148,6 +160,7 @@ defineEmits<{
 const authStore = useAuthStore();
 const chatStore = useChatStore();
 const threadStore = useThreadStore();
+const capabilityStore = useCapabilityStore();
 
 const recentThreads = computed(() => threadStore.threads.slice(0, 4));
 
@@ -216,6 +229,7 @@ const onLoadThread = async (threadId: string) => {
 };
 
 const onLogout = async () => {
+  capabilityStore.reset();
   threadStore.showHistorySidebar = false;
   await authStore.handleLogout();
 };

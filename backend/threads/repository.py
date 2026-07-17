@@ -43,6 +43,7 @@ class MessageRecord:
     timestamp: datetime
     updated_at: datetime
     rag_trace: dict | None
+    skill_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,12 @@ class ThreadRepository:
         return thread
 
     @staticmethod
-    def _record(message: Message, thread_id: str) -> MessageRecord:
+    def _record(
+        message: Message,
+        thread_id: str,
+        *,
+        skill_name: str | None = None,
+    ) -> MessageRecord:
         return MessageRecord(
             id=message.id,
             thread_id=thread_id,
@@ -159,6 +165,7 @@ class ThreadRepository:
             timestamp=message.timestamp,
             updated_at=message.updated_at,
             rag_trace=normalize_rag_trace(message.rag_trace),
+            skill_name=skill_name,
         )
 
     @staticmethod
@@ -328,7 +335,11 @@ class ThreadRepository:
             thread = self._thread_query(db, user.id, thread_id).first()
             if not thread:
                 return None
-            query = db.query(Message).filter(Message.thread_ref_id == thread.id)
+            query = (
+                db.query(Message, Run.skill_name)
+                .outerjoin(Run, Run.id == Message.run_id)
+                .filter(Message.thread_ref_id == thread.id)
+            )
             if before is not None:
                 query = query.filter(Message.sequence < before)
             rows = (
@@ -336,7 +347,10 @@ class ThreadRepository:
                 .limit(max(1, min(limit, 501)))
                 .all()
             )
-            return [self._record(row, thread_id) for row in rows]
+            return [
+                self._record(message, thread_id, skill_name=skill_name)
+                for message, skill_name in rows
+            ]
         finally:
             db.close()
 

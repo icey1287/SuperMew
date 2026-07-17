@@ -12,6 +12,14 @@
           </span>
         </div>
         <div class="chat-header-actions">
+          <button
+            type="button"
+            title="打开命令面板 (⌘K)"
+            aria-label="打开命令面板"
+            @click="capabilityStore.openPalette"
+          >
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+          </button>
           <button type="button" title="历史对话" aria-label="打开历史对话" @click="openHistory">
             <i class="fa-solid fa-clock-rotate-left"></i>
           </button>
@@ -96,10 +104,12 @@ import ChatInput from './ChatInput.vue';
 import KnowledgeContextPanel from './KnowledgeContextPanel.vue';
 import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
+import { useCapabilityStore } from '@/stores/capabilities';
 import type { Message } from '@/types/chat';
 
 const chatStore = useChatStore();
 const threadStore = useThreadStore();
+const capabilityStore = useCapabilityStore();
 const chatContainerRef = ref<HTMLDivElement | null>(null);
 const messageItemRefs = ref<any[]>([]);
 const preservingOlderScroll = ref(false);

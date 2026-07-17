@@ -32,6 +32,7 @@ export interface ThreadMessage {
   content: string;
   timestamp: string;
   rag_trace: RagTrace | null;
+  skill_name?: string | null;
 }
 
 export interface ThreadMessagePage {

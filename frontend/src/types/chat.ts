@@ -1,3 +1,5 @@
+import type { RunArtifactState, RunTimelineItem } from '@/events/runEventReducer';
+
 export type { RunEventType, RunEventV1 } from './generated/run-event-v1';
 
 export interface RetrievedChunk {
@@ -166,7 +168,11 @@ export interface Message {
   hitlPrompt?: string;
   hitlOptions?: string[];
   hitlResumeText?: string;
+  skillName?: string | null;
+  skillVersion?: string | null;
   ragTrace?: RagTrace | null;
   ragSteps?: RagStep[];
+  runTimeline?: RunTimelineItem[];
+  artifacts?: RunArtifactState[];
   _groupedSteps?: GroupedRagStep[];
 }

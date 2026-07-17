@@ -3,20 +3,27 @@ import { watch, type WatchStopHandle } from 'vue';
 import { useAuthStore } from './auth';
 import { useThreadStore } from './threads';
 import { useRunsStore } from './runs';
+import { useCapabilityStore } from './capabilities';
 import type { RunEventState } from '@/events/runEventReducer';
 import { getThreadMessages } from '@/threads/threadClient';
 import type { ThreadMessage } from '@/types/threads';
 import { getPublicError, type PublicRequestError } from '@/utils/api';
 import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
+import type { CapabilityExecutionMessage } from '@/types/capabilities';
 
 const BUSY_RUN_STATUSES = new Set(['creating', 'queued', 'pending', 'running', 'cancelling']);
 const RECOVERABLE_MESSAGE_STATUSES = new Set(['queued', 'streaming', 'waiting_input']);
+const TERMINAL_MESSAGE_STATUSES = new Set(['completed', 'failed', 'cancelled', 'incomplete']);
 const projectionStops = new WeakMap<object, Map<string, WatchStopHandle>>();
 
 interface ThreadMessagePageState {
   previousCursor: number | null;
   hasOlder: boolean;
   loadingOlder: boolean;
+}
+
+interface SendOptions {
+  approvalConfirmed?: boolean;
 }
 
 function projectionMap(store: object): Map<string, WatchStopHandle> {
@@ -45,10 +52,33 @@ function formatHitlText(hitl: HitlRequest): string {
   return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
 }
 
+function publicMessageContent(message: ThreadMessage): string {
+  const skillName = message.skill_name?.trim();
+  if (!skillName || message.role !== 'user') return message.content;
+  const activation = `/${skillName}`;
+  if (!message.content.startsWith(activation)) return message.content;
+  const remainder = message.content.slice(activation.length);
+  if (remainder && !/^\s/.test(remainder)) return message.content;
+  const body = remainder.trimStart();
+  if (skillName !== 'sandbox') return body;
+  const jsonStart = body.indexOf('{');
+  if (jsonStart < 0) return body;
+  try {
+    const payload = JSON.parse(body.slice(jsonStart));
+    return typeof payload?.source === 'string' ? payload.source : body;
+  } catch {
+    return body;
+  }
+}
+
 function messageIdentity(message: Message): string {
   if (message.id !== undefined) return `id:${message.id}`;
   if (message.sequence !== undefined) return `sequence:${message.sequence}`;
   return `local:${message.runId || ''}:${message.isUser ? 'user' : 'assistant'}:${message.text}`;
+}
+
+function isTerminalMessage(message: Message | undefined): boolean {
+  return Boolean(message && TERMINAL_MESSAGE_STATUSES.has(String(message.status || '')));
 }
 
 export const useChatStore = defineStore('chat', {
@@ -144,6 +174,11 @@ export const useChatStore = defineStore('chat', {
       if (this.currentPendingHitl) {
         return '输入自定义补充，或选择上方选项后发送...';
       }
+      const skillName = useCapabilityStore().selectedSkillName;
+      if (skillName === 'web-research') return '描述要调研的公开问题、时间范围或来源偏好…';
+      if (skillName === 'sql-assistant') return '描述要分析的业务问题、指标、维度与时间范围…';
+      if (skillName === 'sandbox') return '输入要在隔离 Sandbox 中执行的源码…';
+      if (skillName === 'knowledge-base') return '询问已上传文档，并说明需要引用的范围…';
       return '和喵喵说点什么吧... (Shift+Enter 换行)';
     },
   },
@@ -152,6 +187,7 @@ export const useChatStore = defineStore('chat', {
     resetWorkspace() {
       stopAllProjections(this);
       const runsStore = useRunsStore();
+      useCapabilityStore().reset();
       runsStore.disconnectAll();
       runsStore.$reset();
       this.$reset();
@@ -184,6 +220,7 @@ export const useChatStore = defineStore('chat', {
       this.threadId = threadId;
       this.messages = this.ensureThreadMessages(threadId);
       this.activeNav = 'newChat';
+      useCapabilityStore().setActiveThread(threadId || null);
     },
 
     getLocalThreadTitle(threadId: string, messages: Message[]): string {
@@ -203,12 +240,13 @@ export const useChatStore = defineStore('chat', {
           runId: message.run_id || undefined,
           sequence: message.sequence,
           status: message.status,
-          text: message.content,
+          text: publicMessageContent(message),
           isUser,
           isThinking: !isUser && ['queued', 'streaming'].includes(String(message.status || '')),
           isHitlRequest: false,
           isHitlAnswer: false,
           ragTrace,
+          skillName: message.skill_name || null,
         };
       });
     },
@@ -275,12 +313,6 @@ export const useChatStore = defineStore('chat', {
     },
 
     projectRunState(run: RunEventState) {
-      const threadStore = useThreadStore();
-      threadStore.setRunView(
-        run.threadId,
-        run.terminal ? null : run.runId,
-        run.terminal ? null : run.status
-      );
       const messages = this.ensureThreadMessages(run.threadId);
       const assistant = messages.find(
         (message) =>
@@ -294,6 +326,16 @@ export const useChatStore = defineStore('chat', {
           (message.runId === run.runId ||
             (run.userMessageId !== null && message.id === run.userMessageId))
       );
+      const preservePersistedTerminal =
+        isTerminalMessage(assistant) &&
+        !TERMINAL_MESSAGE_STATUSES.has(String(run.messageStatus || ''));
+      if (!preservePersistedTerminal || run.terminal) {
+        useThreadStore().setRunView(
+          run.threadId,
+          run.terminal ? null : run.runId,
+          run.terminal ? null : run.status
+        );
+      }
       if (user) {
         user.runId = run.runId;
         if (run.userMessageId !== null) user.id = run.userMessageId;
@@ -302,38 +344,44 @@ export const useChatStore = defineStore('chat', {
 
       assistant.runId = run.runId;
       if (run.assistantMessageId !== null) assistant.id = run.assistantMessageId;
-      assistant.status = run.messageStatus || run.status;
-      assistant.isThinking = BUSY_RUN_STATUSES.has(run.status) && !run.messageText;
-      assistant.isHitlRequest = Boolean(run.pendingHitl);
-      assistant.hitlResumeText = run.lastResumeAnswer || assistant.hitlResumeText;
+      if (!preservePersistedTerminal) {
+        assistant.status = run.messageStatus || run.status;
+        assistant.isThinking = BUSY_RUN_STATUSES.has(run.status) && !run.messageText;
+        assistant.isHitlRequest = Boolean(run.pendingHitl);
+        assistant.hitlResumeText = run.lastResumeAnswer || assistant.hitlResumeText;
 
-      if (run.pendingHitl) {
-        const hitl: HitlRequest = {
-          runId: run.runId,
-          hitlToken: run.pendingHitl.hitlToken || undefined,
-          checkpointId: run.pendingHitl.checkpointId || undefined,
-          prompt: run.pendingHitl.prompt,
-          options: run.pendingHitl.options,
-          route: run.pendingHitl.route || undefined,
-          retrieval_status: run.pendingHitl.retrievalStatus || undefined,
-          original_question: run.pendingHitl.originalQuestion || undefined,
-        };
-        assistant.text = formatHitlText(hitl);
-        assistant.isThinking = false;
-        assistant.hitlPrompt = hitl.prompt;
-        assistant.hitlOptions = hitl.options || [];
-      } else {
-        assistant.hitlPrompt = undefined;
-        assistant.hitlOptions = undefined;
-        if (run.messageText || run.messageStatus) assistant.text = run.messageText;
+        if (run.pendingHitl) {
+          const hitl: HitlRequest = {
+            runId: run.runId,
+            hitlToken: run.pendingHitl.hitlToken || undefined,
+            checkpointId: run.pendingHitl.checkpointId || undefined,
+            prompt: run.pendingHitl.prompt,
+            options: run.pendingHitl.options,
+            route: run.pendingHitl.route || undefined,
+            retrieval_status: run.pendingHitl.retrievalStatus || undefined,
+            original_question: run.pendingHitl.originalQuestion || undefined,
+          };
+          assistant.text = formatHitlText(hitl);
+          assistant.isThinking = false;
+          assistant.hitlPrompt = hitl.prompt;
+          assistant.hitlOptions = hitl.options || [];
+        } else {
+          assistant.hitlPrompt = undefined;
+          assistant.hitlOptions = undefined;
+          if (run.messageText || run.messageStatus) assistant.text = run.messageText;
+        }
       }
 
       if (run.ragTrace) assistant.ragTrace = run.ragTrace as RagTrace;
       const steps = run.toolProgress.map((item) => item.step as unknown as RagStep);
       assistant.ragSteps = steps;
+      assistant.runTimeline = run.timeline;
+      assistant.artifacts = run.artifacts;
+      assistant.skillName = run.activeSkillName || assistant.skillName;
+      assistant.skillVersion = run.activeSkillVersion || assistant.skillVersion;
       assistant._groupedSteps = this.groupRagSteps(steps);
 
-      if (run.terminal) {
+      if (run.terminal && !preservePersistedTerminal) {
         assistant.isThinking = false;
         if (!assistant.text && run.error) {
           assistant.text = appendPublicError('', getPublicError(run.error));
@@ -375,35 +423,55 @@ export const useChatStore = defineStore('chat', {
       await this.connectRun(run.runId, useAuthStore().token);
     },
 
-    async restoreRunsForThread(threadId: string) {
+    async restoreRunProjection(runId: string, threadId?: string) {
       const authStore = useAuthStore();
       const runsStore = useRunsStore();
+      const effectiveThreadId = threadId || this.threadId;
+      this.attachRunProjection(runId, effectiveThreadId);
+      const run = await runsStore.replay(runId, authStore.token);
+      this.projectRunState(run);
+      if (!run.terminal && run.status !== 'waiting_input') {
+        void this.connectRun(runId, authStore.token);
+      }
+      return run;
+    },
+
+    async restoreRunsForThread(threadId: string) {
+      const runsStore = useRunsStore();
+      const assistantMessages = [...this.ensureThreadMessages(threadId)]
+        .reverse()
+        .filter((message) => !message.isUser && message.runId);
+      const latestRunId = assistantMessages[0]?.runId;
       const runIds = Array.from(
         new Set(
-          this.ensureThreadMessages(threadId)
+          assistantMessages
             .filter(
               (message) =>
-                !message.isUser &&
-                message.runId &&
+                message.runId === latestRunId ||
                 RECOVERABLE_MESSAGE_STATUSES.has(String(message.status || ''))
             )
             .map((message) => message.runId as string)
         )
       );
 
-      for (const runId of runIds) {
-        this.attachRunProjection(runId, threadId);
+      const restore = async (runId: string) => {
         try {
-          const run = await runsStore.replay(runId, authStore.token);
-          this.projectRunState(run);
-          if (!run.terminal && run.status !== 'waiting_input') {
-            void this.connectRun(runId, authStore.token);
-          }
+          await this.restoreRunProjection(runId, threadId);
         } catch (error) {
-          const run = runsStore.ensure(runId, threadId);
+          const assistant = this.ensureThreadMessages(threadId).find(
+            (message) => !message.isUser && message.runId === runId
+          );
+          const run =
+            runsStore.byId[runId] ||
+            (isTerminalMessage(assistant) ? null : runsStore.ensure(runId, threadId));
+          if (!run) return;
           runsStore.setTransport(runId, 'closed', 0, error);
           this.projectRunState(run);
         }
+      };
+
+      for (let index = 0; index < runIds.length; index += 4) {
+        await Promise.all(runIds.slice(index, index + 4).map(restore));
       }
     },
 
@@ -423,6 +491,11 @@ export const useChatStore = defineStore('chat', {
           hasOlder: response.previous_cursor !== null,
           loadingOlder: false,
         };
+        const messagesNewestFirst = [...loadedMessages].reverse();
+        const latestRunMessage =
+          messagesNewestFirst.find((message) => !message.isUser && message.runId) ||
+          messagesNewestFirst.find((message) => message.runId);
+        useCapabilityStore().restoreThreadSkill(latestRunMessage?.skillName ?? null, threadId);
         this.setViewedThread(threadId, loadedMessages);
         this.mergeCachedThreadsIntoHistory();
         await this.restoreRunsForThread(threadId);
@@ -470,7 +543,7 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async createNewThread(title?: string) {
+    async createNewThread(title?: string, initialSkillName?: string | null) {
       if (this.isCreatingThread) return null;
       const selectedBeforeCreate = this.threadId;
       this.isCreatingThread = true;
@@ -483,6 +556,9 @@ export const useChatStore = defineStore('chat', {
           loadingOlder: false,
         };
         if (this.threadId === selectedBeforeCreate) {
+          if (initialSkillName !== undefined) {
+            useCapabilityStore().selectSkill(initialSkillName, thread.thread_id);
+          }
           this.setViewedThread(thread.thread_id);
         }
         return thread;
@@ -493,6 +569,7 @@ export const useChatStore = defineStore('chat', {
 
     async handleNewChat() {
       this.userInput = '';
+      useCapabilityStore().setActiveThread(null);
       this.setViewedThread('', []);
       useThreadStore().showHistorySidebar = false;
       try {
@@ -577,90 +654,140 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async handleSend() {
+    async handleSend(options: SendOptions = {}) {
       const authStore = useAuthStore();
       const threadStore = useThreadStore();
       const runsStore = useRunsStore();
-      if (!authStore.isAuthenticated) {
-        alert('请先登录');
-        return;
-      }
-
-      const text = this.userInput.trim();
-      if (!text) return;
-      const pendingHitl = this.currentPendingHitl;
-      if (pendingHitl) {
-        await this.resumeHitl(pendingHitl, text);
-        return;
-      }
-      if (this.isLoading) {
-        alert('当前会话已有回答正在生成，请先等待或终止该运行');
-        return;
-      }
-
-      let threadId = this.threadId;
-      if (!threadId) {
-        try {
-          const thread = await this.createNewThread(text.replace(/\s+/g, ' ').slice(0, 32));
-          if (!thread) return;
-          threadId = thread.thread_id;
-        } catch (error) {
-          const publicError = getPublicError(error);
-          alert(publicError.message);
+      const capabilityStore = useCapabilityStore();
+      try {
+        if (!authStore.isAuthenticated) {
+          alert('请先登录');
           return;
         }
-      }
-      const messages = this.ensureThreadMessages(threadId);
-      const userMessage: Message = {
-        text,
-        isUser: true,
-        status: 'completed',
-      };
-      const assistantMessage: Message = {
-        text: '',
-        isUser: false,
-        isThinking: true,
-        thinkingStartedAt: Date.now(),
-        status: 'creating',
-        ragTrace: null,
-        ragSteps: [],
-        _groupedSteps: [],
-      };
-      messages.push(userMessage, assistantMessage);
-      if (this.threadId === threadId) this.messages = messages;
-      this.userInput = '';
-      this.mergeCachedThreadsIntoHistory();
 
-      try {
-        const thread = threadStore.threads.find((item) => item.thread_id === threadId);
-        const createPromise = runsStore.create({
-          threadId,
-          message: text,
-          token: authStore.token,
-          expectedThreadVersion: thread?.version,
-          multitaskStrategy: 'reject',
-          onDisconnect: 'continue',
-          approvedTools: [],
-        });
+        const text = this.userInput.trim();
+        if (!text) return;
+        const pendingHitl = this.currentPendingHitl;
+        if (pendingHitl) {
+          await this.resumeHitl(pendingHitl, text);
+          return;
+        }
+        if (this.isLoading) {
+          alert('当前会话已有回答正在生成，请先等待或终止该运行');
+          return;
+        }
+
+        if (capabilityStore.selectedModeUnavailableReason) {
+          alert(
+            capabilityStore.selectedModeUnavailableReason === 'permission_required'
+              ? '当前账号没有使用所选能力的权限，请切换模式。'
+              : '所选能力的运行配置尚未就绪，请切换模式或稍后重试。'
+          );
+          return;
+        }
+        if (capabilityStore.selectedSkill?.approval_tools.length && !options.approvalConfirmed) {
+          try {
+            capabilityStore.openApproval();
+          } catch (error) {
+            alert(getPublicError(error).message);
+          }
+          return;
+        }
+
+        let executionMessage: CapabilityExecutionMessage;
+        try {
+          executionMessage = capabilityStore.composeExecutionMessage(text);
+        } catch (error) {
+          alert(getPublicError(error).message);
+          return;
+        }
+        const selectedSkillName = capabilityStore.selectedSkill?.name || null;
+        const selectedSkillVersion = capabilityStore.selectedSkill?.version || null;
+
+        let threadId = this.threadId;
+        if (!threadId) {
+          try {
+            const thread = await this.createNewThread(
+              text.replace(/\s+/g, ' ').slice(0, 32),
+              selectedSkillName
+            );
+            if (!thread) return;
+            threadId = thread.thread_id;
+          } catch (error) {
+            const publicError = getPublicError(error);
+            alert(publicError.message);
+            return;
+          }
+        }
+        const messages = this.ensureThreadMessages(threadId);
+        const optimisticStartIndex = messages.length;
+        const userMessage: Message = {
+          text,
+          isUser: true,
+          status: 'completed',
+          skillName: selectedSkillName,
+          skillVersion: selectedSkillVersion,
+        };
+        const assistantMessage: Message = {
+          text: '',
+          isUser: false,
+          isThinking: true,
+          thinkingStartedAt: Date.now(),
+          status: 'creating',
+          skillName: selectedSkillName,
+          skillVersion: selectedSkillVersion,
+          ragTrace: null,
+          ragSteps: [],
+          runTimeline: [],
+          artifacts: [],
+          _groupedSteps: [],
+        };
+        messages.push(userMessage, assistantMessage);
+        if (this.threadId === threadId) this.messages = messages;
+        this.userInput = '';
         this.mergeCachedThreadsIntoHistory();
-        const created = await createPromise;
-        const runId = created.response.run.id;
-        userMessage.id = created.response.run.user_message_id;
-        userMessage.runId = runId;
-        assistantMessage.id = created.response.run.assistant_message_id;
-        assistantMessage.runId = runId;
-        assistantMessage.status = created.response.run.status;
-        if (thread) thread.version = created.response.thread_version;
-        this.attachRunProjection(runId, threadId);
-        this.projectRunState(created.state);
-        await this.connectRun(runId, authStore.token);
-      } catch (error) {
-        const publicError = getPublicError(error);
-        assistantMessage.isThinking = false;
-        assistantMessage.status = 'failed';
-        assistantMessage.text = appendPublicError(assistantMessage.text, publicError);
+
+        try {
+          const thread = threadStore.threads.find((item) => item.thread_id === threadId);
+          const createPromise = runsStore.create({
+            threadId,
+            message: executionMessage.message,
+            token: authStore.token,
+            expectedThreadVersion: thread?.version,
+            multitaskStrategy: 'reject',
+            onDisconnect: 'continue',
+            approvedTools: executionMessage.approvedTools,
+          });
+          this.mergeCachedThreadsIntoHistory();
+          const created = await createPromise;
+          capabilityStore.clearApprovalConfirmation();
+          const runId = created.response.run.id;
+          userMessage.id = created.response.run.user_message_id;
+          userMessage.runId = runId;
+          assistantMessage.id = created.response.run.assistant_message_id;
+          assistantMessage.runId = runId;
+          assistantMessage.status = created.response.run.status;
+          if (thread) thread.version = created.response.thread_version;
+          this.attachRunProjection(runId, threadId);
+          this.projectRunState(created.state);
+          await this.connectRun(runId, authStore.token);
+        } catch (error) {
+          const publicError = getPublicError(error);
+          if (options.approvalConfirmed && !assistantMessage.runId) {
+            const currentMessages = this.ensureThreadMessages(threadId);
+            currentMessages.splice(optimisticStartIndex, 2);
+            if (this.threadId === threadId) this.messages = currentMessages;
+            this.userInput = text;
+            throw publicError;
+          }
+          assistantMessage.isThinking = false;
+          assistantMessage.status = 'failed';
+          assistantMessage.text = appendPublicError(assistantMessage.text, publicError);
+        } finally {
+          this.mergeCachedThreadsIntoHistory();
+        }
       } finally {
-        this.mergeCachedThreadsIntoHistory();
+        if (options.approvalConfirmed) capabilityStore.clearApprovalConfirmation();
       }
     },
 
@@ -675,6 +802,7 @@ export const useChatStore = defineStore('chat', {
         });
       delete this.messagesByThread[threadId];
       delete this.messagePagesByThread[threadId];
+      useCapabilityStore().clearThreadSelection(threadId);
     },
   },
 });

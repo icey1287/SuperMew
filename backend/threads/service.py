@@ -40,6 +40,7 @@ class ThreadMessage:
     content: str
     timestamp: datetime
     rag_trace: dict[str, object] | None
+    skill_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,7 @@ def _message(record: MessageRecord) -> ThreadMessage:
         content=record.content,
         timestamp=_utc(record.timestamp),
         rag_trace=record.rag_trace,
+        skill_name=record.skill_name,
     )
 
 

@@ -27,6 +27,9 @@
           <DocumentSettings v-if="chatStore.activeNav === 'settings'" />
           <HistorySidebar />
           <ChatArea v-show="chatStore.activeNav !== 'settings'" />
+          <CapabilityCenter />
+          <CommandPalette />
+          <ApprovalDialog />
         </template>
       </main>
     </div>
@@ -42,17 +45,28 @@ import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
 import { useRunsStore } from '@/stores/runs';
+import { useCapabilityStore } from '@/stores/capabilities';
 
 const HistorySidebar = defineAsyncComponent(() => import('@/components/HistorySidebar.vue'));
 const ChatArea = defineAsyncComponent(() => import('@/components/Chat/ChatArea.vue'));
 const DocumentSettings = defineAsyncComponent(
   () => import('@/components/Documents/DocumentSettings.vue')
 );
+const CapabilityCenter = defineAsyncComponent(
+  () => import('@/components/Capabilities/CapabilityCenter.vue')
+);
+const CommandPalette = defineAsyncComponent(
+  () => import('@/components/Capabilities/CommandPalette.vue')
+);
+const ApprovalDialog = defineAsyncComponent(
+  () => import('@/components/Capabilities/ApprovalDialog.vue')
+);
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
 const threadStore = useThreadStore();
 const runsStore = useRunsStore();
+const capabilityStore = useCapabilityStore();
 
 type Theme = 'dark' | 'light';
 
@@ -77,6 +91,7 @@ watch(
     if (username === previousUsername) return;
     chatStore.resetWorkspace();
     threadStore.$reset();
+    if (username) void capabilityStore.fetchCatalog().catch(() => undefined);
   }
 );
 
@@ -85,13 +100,34 @@ const handleUnauthorized = () => {
   alert('登录已过期，请重新登录');
 };
 
+const handleGlobalShortcut = (event: KeyboardEvent) => {
+  if (!authStore.isAuthenticated) return;
+  if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
+    event.preventDefault();
+    if (capabilityStore.approvalOpen) return;
+    capabilityStore.togglePalette();
+  }
+};
+
+const handleCapabilitySelected = () => {
+  chatStore.activeNav = 'newChat';
+  threadStore.showHistorySidebar = false;
+};
+
 onMounted(async () => {
   window.addEventListener('unauthorized', handleUnauthorized);
+  window.addEventListener('keydown', handleGlobalShortcut);
+  window.addEventListener('capability-selected', handleCapabilitySelected);
   await authStore.restoreSession();
+  if (authStore.isAuthenticated && !capabilityStore.catalog && !capabilityStore.loading) {
+    void capabilityStore.fetchCatalog().catch(() => undefined);
+  }
 });
 
 onUnmounted(() => {
   window.removeEventListener('unauthorized', handleUnauthorized);
+  window.removeEventListener('keydown', handleGlobalShortcut);
+  window.removeEventListener('capability-selected', handleCapabilitySelected);
   runsStore.disconnectAll();
 });
 </script>

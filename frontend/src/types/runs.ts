@@ -22,6 +22,9 @@ export interface RunRecord {
   on_disconnect: 'cancel' | 'continue' | string;
   error_code?: string | null;
   error?: PublicErrorInfo | null;
+  skill_name?: string | null;
+  skill_version?: string | null;
+  skill_activation_source?: string | null;
   created_at?: string;
   updated_at?: string;
 }

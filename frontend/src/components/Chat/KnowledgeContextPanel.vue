@@ -27,25 +27,14 @@
           <span v-if="totalDuration">{{ totalDuration }}</span>
         </div>
 
-        <div class="run-timeline">
-          <div v-for="(step, index) in runSteps" :key="step.key + index" class="run-step">
-            <span :class="['run-step-dot', { active: isRunning && index === runSteps.length - 1 }]">
-              <i
-                :class="
-                  isRunning && index === runSteps.length - 1
-                    ? 'fa-solid fa-ellipsis'
-                    : 'fa-solid fa-check'
-                "
-              ></i>
-            </span>
-            <span class="run-step-copy">
-              <strong>{{ step.label }}</strong>
-              <small v-if="step.detail">{{ step.detail }}</small>
-            </span>
-            <span v-if="step.time" class="run-step-time">{{ step.time }}</span>
-          </div>
-        </div>
+        <ExecutionTimeline :items="timelineItems" />
       </section>
+
+      <ArtifactShelf
+        v-if="latestMessage?.artifacts?.length"
+        :artifacts="latestMessage.artifacts"
+        compact
+      />
 
       <section class="context-card confidence-card">
         <div class="confidence-ring" :style="{ '--confidence': (confidence ?? 0) + '%' }">
@@ -92,6 +81,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useChatStore } from '@/stores/chat';
+import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
+import ArtifactShelf from '@/components/Artifacts/ArtifactShelf.vue';
+import type { RunTimelineItem } from '@/events/runEventReducer';
 import type { RetrievedChunk } from '@/types/chat';
 
 interface RunStepView {
@@ -190,6 +182,28 @@ const runSteps = computed<RunStepView[]>(() => {
     detail: sources.value.length ? sources.value.length + ' 个来源已对齐' : '回答生成完成',
   });
   return result;
+});
+
+const timelineItems = computed<RunTimelineItem[]>(() => {
+  const durableItems = latestMessage.value?.runTimeline || [];
+  if (durableItems.length) return durableItems;
+  return runSteps.value.map((step, index) => ({
+    id: `legacy-rag:${step.key}:${index}`,
+    sequence: index + 1,
+    kind: 'retrieval',
+    eventType: 'retrieval.progress',
+    status: isRunning.value && index === runSteps.value.length - 1 ? 'running' : 'completed',
+    title: step.label,
+    detail: step.detail || null,
+    timestamp: '',
+    toolName: null,
+    toolCallId: null,
+    durationMs: null,
+    resultSize: null,
+    guardrailDecision: null,
+    guardrailReasonCode: null,
+    error: null,
+  }));
 });
 
 const confidence = computed<number | null>(() => {

@@ -59,6 +59,7 @@ class ThreadMessageInfo(ThreadSchema):
     content: str
     timestamp: datetime
     rag_trace: RagTrace | None
+    skill_name: str | None = Field(default=None, max_length=64)
 
     @field_validator("timestamp")
     @classmethod

@@ -479,6 +479,16 @@ html[data-theme='light'] .workspace-switcher {
   text-align: center;
 }
 
+.nav-shortcut {
+  margin-left: auto;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  font-size: 7px;
+  font-weight: 650;
+}
+
 html[data-theme='light'] .nav-count {
   background: rgba(31, 39, 55, 0.065);
 }
@@ -3773,6 +3783,10 @@ span.cite-ref,
     right: 1px;
     min-width: 14px;
     padding: 2px 4px;
+  }
+
+  .nav-shortcut {
+    display: none;
   }
 
   .sidebar-bottom {
