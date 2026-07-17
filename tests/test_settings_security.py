@@ -11,6 +11,7 @@ from backend.core.settings import (
     ObservabilitySettings,
     PROJECT_ROOT,
     RagSettings,
+    RateLimitSettings,
     RerankSettings,
     RunSettings,
     SandboxSettings,
@@ -27,8 +28,14 @@ def make_settings(
     *,
     secret: str,
     environment: str = "development",
-    cors: str = "http://localhost:5173",
+    cors: str | None = None,
 ):
+    if cors is None:
+        cors = (
+            "https://frontend.example.test"
+            if environment == "production"
+            else "http://localhost:3000"
+        )
     return AppSettings(
         app=ApplicationSettings(_env_file=None, APP_ENV=environment),
         models=ModelSettings(_env_file=None, ARK_API_KEY="test", MODEL="answer"),
@@ -40,7 +47,13 @@ def make_settings(
         security=SecuritySettings(
             _env_file=None,
             JWT_SECRET_KEY=secret,
+            ADMIN_INVITE_CODE="",
             CORS_ORIGINS=cors,
+        ),
+        rate_limits=RateLimitSettings(
+            _env_file=None,
+            RATE_LIMIT_BACKEND=("redis" if environment == "production" else "memory"),
+            RATE_LIMIT_HMAC_KEY="r" * 40,
         ),
         storage=StorageSettings(
             _env_file=None,
@@ -64,6 +77,128 @@ class SettingsSecurityTests(unittest.TestCase):
         settings = make_settings(secret="x" * 40, cors="*")
         with self.assertRaisesRegex(ValueError, "CORS_ORIGINS"):
             settings.validate_startup()
+
+    def test_empty_cors_allowlist_supports_same_origin_only_deployments(self):
+        settings = make_settings(secret="x" * 40, cors="")
+
+        settings.validate_startup()
+        self.assertEqual([], settings.security.cors_origins)
+
+    def test_cors_origins_must_be_canonical_http_origins(self):
+        invalid_values = (
+            "ftp://frontend.example.test",
+            "https://frontend.example.test/path",
+            "https://frontend.example.test?debug=1",
+            "https://user@frontend.example.test",
+            "https://frontend.example.test:invalid",
+        )
+
+        for value in invalid_values:
+            with self.subTest(value=value):
+                settings = make_settings(secret="x" * 40, cors=value)
+                with self.assertRaisesRegex(ValueError, "CORS_ORIGINS"):
+                    settings.validate_startup()
+
+    def test_production_cross_origin_allowlist_requires_https(self):
+        for value in ("http://localhost:3000", "HTTP://LOCALHOST:3000"):
+            with self.subTest(value=value):
+                settings = make_settings(
+                    secret="x" * 40,
+                    environment="production",
+                    cors=value,
+                )
+                settings.security.refresh_cookie_secure = True
+
+                with self.assertRaisesRegex(ValueError, "CORS_ORIGINS.*HTTPS"):
+                    settings.validate_startup()
+
+        settings = make_settings(
+            secret="x" * 40,
+            environment="production",
+            cors="",
+        )
+        settings.security.refresh_cookie_secure = True
+        settings.validate_startup()
+
+    def test_production_credentialed_cors_allows_only_one_browser_origin(self):
+        settings = make_settings(
+            secret="x" * 40,
+            environment="production",
+            cors="https://app.example.test,https://admin.example.test",
+        )
+        settings.security.refresh_cookie_secure = True
+
+        with self.assertRaisesRegex(ValueError, "最多允许一个浏览器 Origin"):
+            settings.validate_startup()
+
+    def test_production_requires_secure_refresh_cookie(self):
+        settings = make_settings(secret="x" * 40, environment="production")
+
+        with self.assertRaisesRegex(ValueError, "refresh Cookie.*Secure"):
+            settings.validate_startup()
+
+        settings.security.refresh_cookie_secure = True
+        settings.validate_startup()
+
+    def test_samesite_none_requires_secure_refresh_cookie(self):
+        settings = make_settings(secret="x" * 40)
+        settings.security.refresh_cookie_samesite = "none"
+
+        with self.assertRaisesRegex(ValueError, "SameSite=None.*Secure"):
+            settings.validate_startup()
+
+        settings.security.refresh_cookie_secure = True
+        settings.validate_startup()
+
+    def test_admin_invite_is_disabled_when_empty_and_rejects_public_placeholders(self):
+        settings = make_settings(secret="x" * 40)
+        settings.security.admin_invite_code = SecretStr("")
+        settings.validate_startup()
+
+        settings.security.admin_invite_code = SecretStr(
+            "replace-with-private-admin-invite-code"
+        )
+        with self.assertRaisesRegex(ValueError, "ADMIN_INVITE_CODE"):
+            settings.validate_startup()
+
+        settings.security.admin_invite_code = SecretStr("a" * 40)
+        settings.validate_startup()
+
+        settings.security.admin_invite_code = SecretStr("x" * 40)
+        with self.assertRaisesRegex(ValueError, "不得与 JWT"):
+            settings.validate_startup()
+
+    def test_redis_rate_limit_requires_an_independent_hmac_key(self):
+        settings = make_settings(secret="x" * 40)
+        settings.rate_limits.backend = "redis"
+        settings.rate_limits.identity_hmac_key = SecretStr("")
+
+        with self.assertRaisesRegex(ValueError, "RATE_LIMIT_HMAC_KEY"):
+            settings.validate_startup()
+
+        settings.rate_limits.identity_hmac_key = SecretStr("r" * 40)
+        settings.validate_startup()
+
+    def test_production_requires_redis_rate_limit_and_distinct_secret(self):
+        settings = make_settings(secret="x" * 40, environment="production")
+        settings.security.refresh_cookie_secure = True
+        settings.rate_limits.enabled = False
+
+        with self.assertRaisesRegex(ValueError, "RATE_LIMIT_ENABLED"):
+            settings.validate_startup()
+
+        settings.rate_limits.enabled = True
+        settings.rate_limits.backend = "memory"
+        with self.assertRaisesRegex(ValueError, "RATE_LIMIT_BACKEND"):
+            settings.validate_startup()
+
+        settings.rate_limits.backend = "redis"
+        settings.rate_limits.identity_hmac_key = SecretStr("x" * 40)
+        with self.assertRaisesRegex(ValueError, "不得与 JWT_SECRET_KEY 相同"):
+            settings.validate_startup()
+
+        settings.rate_limits.identity_hmac_key = SecretStr("r" * 40)
+        settings.validate_startup()
 
     def test_production_default_database_credentials_are_rejected(self):
         settings = make_settings(secret="x" * 40, environment="production")
@@ -89,6 +224,7 @@ class SettingsSecurityTests(unittest.TestCase):
         self.assertNotIn("app:strong", dumped)
         self.assertNotIn("rerank-secret", dumped)
         self.assertNotIn("brave-secret", dumped)
+        self.assertNotIn("r" * 40, dumped)
 
     def test_agent_budget_relationships_are_validated_at_startup(self):
         settings = make_settings(secret="x" * 40)

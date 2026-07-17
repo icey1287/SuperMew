@@ -78,12 +78,55 @@ class MigrationTests(unittest.TestCase):
                     "approved_tools_json",
                 }.issubset({column["name"] for column in inspector.get_columns("runs")})
             )
+            self.assertIn(
+                "ix_refresh_tokens_expires_at",
+                {index["name"] for index in inspector.get_indexes("refresh_tokens")},
+            )
             engine.dispose()
 
             command.downgrade(config, "base")
             engine = create_engine(url)
             remaining = set(inspect(engine).get_table_names())
             self.assertLessEqual(remaining, {"alembic_version"})
+            engine.dispose()
+
+    def test_refresh_token_retention_index_upgrades_and_downgrades_one_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "refresh-retention.db"
+            url = f"sqlite:///{database_path}"
+            config = alembic_config(url)
+            command.upgrade(config, "0010_guardrails_and_sandbox")
+
+            engine = create_engine(url)
+            self.assertNotIn(
+                "ix_refresh_tokens_expires_at",
+                {
+                    index["name"]
+                    for index in inspect(engine).get_indexes("refresh_tokens")
+                },
+            )
+            engine.dispose()
+
+            command.upgrade(config, "0011_refresh_token_retention")
+            engine = create_engine(url)
+            self.assertIn(
+                "ix_refresh_tokens_expires_at",
+                {
+                    index["name"]
+                    for index in inspect(engine).get_indexes("refresh_tokens")
+                },
+            )
+            engine.dispose()
+
+            command.downgrade(config, "0010_guardrails_and_sandbox")
+            engine = create_engine(url)
+            self.assertNotIn(
+                "ix_refresh_tokens_expires_at",
+                {
+                    index["name"]
+                    for index in inspect(engine).get_indexes("refresh_tokens")
+                },
+            )
             engine.dispose()
 
     def test_guardrail_context_migrates_existing_runs_and_downgrades_one_step(self):

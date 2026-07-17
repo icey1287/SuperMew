@@ -2,6 +2,7 @@ from backend.schemas.auth import (
     AuthResponse,
     CurrentUserResponse,
     LoginRequest,
+    LogoutResponse,
     RegisterRequest,
 )
 from backend.schemas.chat import (
@@ -51,6 +52,7 @@ __all__ = [
     "LoginRequest",
     "AuthResponse",
     "CurrentUserResponse",
+    "LogoutResponse",
     "ChatRequest",
     "RetrievedChunk",
     "RagTrace",

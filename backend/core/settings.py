@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.sandbox.contracts import validate_image_digest
+from backend.security.origins import canonical_http_origin
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -82,7 +83,10 @@ class RagSettings(_EnvSettings):
 
 class EmbeddingSettings(_EnvSettings):
     model: str = Field(default="BAAI/bge-m3", validation_alias="EMBEDDING_MODEL")
-    revision: str = Field(default="main", validation_alias="EMBEDDING_MODEL_REVISION")
+    revision: str = Field(
+        default="5617a9f61b028005a4858fdac845db406aefb181",
+        validation_alias="EMBEDDING_MODEL_REVISION",
+    )
     device: str = Field(default="cpu", validation_alias="EMBEDDING_DEVICE")
     dimension: int = Field(
         default=1024,
@@ -355,6 +359,27 @@ class SecuritySettings(_EnvSettings):
         ge=1,
         validation_alias="JWT_REFRESH_EXPIRE_DAYS",
     )
+    refresh_token_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        validation_alias="AUTH_REFRESH_LEDGER_RETENTION_DAYS",
+    )
+    refresh_cookie_name: str = Field(
+        default="supermew_refresh",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        validation_alias="AUTH_REFRESH_COOKIE_NAME",
+    )
+    refresh_cookie_secure: bool = Field(
+        default=False,
+        validation_alias="AUTH_REFRESH_COOKIE_SECURE",
+    )
+    refresh_cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        validation_alias="AUTH_REFRESH_COOKIE_SAMESITE",
+    )
     admin_invite_code: SecretStr = Field(
         default=SecretStr(""),
         validation_alias="ADMIN_INVITE_CODE",
@@ -365,7 +390,7 @@ class SecuritySettings(_EnvSettings):
         validation_alias="PASSWORD_PBKDF2_ROUNDS",
     )
     cors_origins_raw: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173",
+        default="http://localhost:3000,http://127.0.0.1:3000",
         validation_alias="CORS_ORIGINS",
     )
     cors_allow_credentials: bool = Field(
@@ -377,11 +402,30 @@ class SecuritySettings(_EnvSettings):
     def cors_origins(self) -> list[str]:
         return list(
             dict.fromkeys(
-                origin.strip().rstrip("/")
+                canonical_http_origin(origin) or origin.strip()
                 for origin in self.cors_origins_raw.split(",")
                 if origin.strip()
             )
         )
+
+
+class RateLimitSettings(_EnvSettings):
+    enabled: bool = Field(default=True, validation_alias="RATE_LIMIT_ENABLED")
+    backend: Literal["memory", "redis"] = Field(
+        default="memory",
+        validation_alias="RATE_LIMIT_BACKEND",
+    )
+    identity_hmac_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="RATE_LIMIT_HMAC_KEY",
+    )
+    key_prefix: str = Field(
+        default="supermew",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$",
+        validation_alias="RATE_LIMIT_KEY_PREFIX",
+    )
 
 
 class StorageSettings(_EnvSettings):
@@ -1054,6 +1098,9 @@ class AppSettings(BaseModel):
     runs: RunSettings
     agent: AgentSettings
     security: SecuritySettings
+    rate_limits: RateLimitSettings = Field(
+        default_factory=lambda: RateLimitSettings(_env_file=None)
+    )
     storage: StorageSettings
     worker: WorkerSettings
     observability: ObservabilitySettings
@@ -1072,6 +1119,31 @@ class AppSettings(BaseModel):
 
         if self.security.jwt_algorithm not in {"HS256", "HS384", "HS512"}:
             problems.append("JWT_ALGORITHM 只能使用 HS256、HS384 或 HS512")
+
+        if (
+            self.security.refresh_cookie_samesite == "none"
+            and not self.security.refresh_cookie_secure
+        ):
+            problems.append("SameSite=None 的 refresh Cookie 必须启用 Secure")
+
+        rate_limit_key = self.rate_limits.identity_hmac_key.get_secret_value().strip()
+        admin_invite = self.security.admin_invite_code.get_secret_value().strip()
+        if admin_invite:
+            if len(admin_invite) < 32 or _is_placeholder(admin_invite):
+                problems.append(
+                    "ADMIN_INVITE_CODE 留空表示禁用；启用时必须是至少 32 字符的随机 Secret"
+                )
+            if admin_invite in {secret, rate_limit_key}:
+                problems.append(
+                    "ADMIN_INVITE_CODE 不得与 JWT 或 Rate Limit Secret 相同"
+                )
+        if self.rate_limits.enabled and rate_limit_key and len(rate_limit_key) < 32:
+            problems.append("RATE_LIMIT_HMAC_KEY 必须至少包含 32 个字符")
+        if self.rate_limits.enabled and self.rate_limits.backend == "redis":
+            if len(rate_limit_key) < 32 or rate_limit_key.lower() in _WEAK_SECRETS:
+                problems.append(
+                    "Redis Rate Limit 必须配置至少 32 字符的随机 RATE_LIMIT_HMAC_KEY"
+                )
 
         if self.worker.indexing_heartbeat_seconds >= self.worker.indexing_lease_seconds:
             problems.append(
@@ -1094,12 +1166,49 @@ class AppSettings(BaseModel):
             )
 
         origins = self.security.cors_origins
-        if not origins:
-            problems.append("CORS_ORIGINS 不能为空")
+        invalid_origins = [
+            origin
+            for origin in origins
+            if origin != "*" and canonical_http_origin(origin) is None
+        ]
+        if invalid_origins:
+            problems.append(
+                "CORS_ORIGINS 每一项都必须是无 path、query、userinfo 的 HTTP/HTTPS Origin"
+            )
         if "*" in origins:
             problems.append("CORS_ORIGINS 禁止使用通配符 *")
+        canonical_origins = [
+            normalized
+            for origin in origins
+            if (normalized := canonical_http_origin(origin)) is not None
+        ]
+        if self.app.environment == "production" and any(
+            origin.startswith("http://") for origin in canonical_origins
+        ):
+            problems.append("生产环境 CORS_ORIGINS 的跨源项必须使用 HTTPS")
+        if (
+            self.app.environment == "production"
+            and self.security.cors_allow_credentials
+            and len(canonical_origins) > 1
+        ):
+            problems.append(
+                "生产环境 credentialed CORS 最多允许一个浏览器 Origin；"
+                "Web Locks 无法跨 Origin 串行 Refresh Cookie 轮换"
+            )
 
         if self.app.environment == "production":
+            if not self.security.refresh_cookie_secure:
+                problems.append("生产环境 refresh Cookie 必须启用 Secure")
+            if not self.rate_limits.enabled:
+                problems.append("生产环境必须启用 RATE_LIMIT_ENABLED")
+            if self.rate_limits.backend != "redis":
+                problems.append("生产环境 RATE_LIMIT_BACKEND 必须为 redis")
+            if len(rate_limit_key) < 32 or rate_limit_key.lower() in _WEAK_SECRETS:
+                problems.append(
+                    "生产环境必须配置至少 32 字符的随机 RATE_LIMIT_HMAC_KEY"
+                )
+            if rate_limit_key and rate_limit_key == secret:
+                problems.append("RATE_LIMIT_HMAC_KEY 不得与 JWT_SECRET_KEY 相同")
             if not self.worker.indexing_worker_required:
                 problems.append("生产环境必须启用 INDEX_WORKER_REQUIRED")
             database_url = self.storage.database_url.get_secret_value()
@@ -1311,6 +1420,7 @@ class AppSettings(BaseModel):
         payload["rerank"]["api_key"] = "***"
         payload["security"]["jwt_secret_key"] = "***"
         payload["security"]["admin_invite_code"] = "***"
+        payload["rate_limits"]["identity_hmac_key"] = "***"
         payload["storage"]["database_url"] = _redact_url(
             self.storage.database_url.get_secret_value()
         )
@@ -1346,6 +1456,7 @@ def get_settings() -> AppSettings:
         runs=RunSettings(),
         agent=AgentSettings(),
         security=SecuritySettings(),
+        rate_limits=RateLimitSettings(),
         storage=StorageSettings(),
         worker=WorkerSettings(),
         observability=ObservabilitySettings(),

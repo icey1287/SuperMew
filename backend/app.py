@@ -21,11 +21,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.router import router
+from backend.auth.access import resolve_access_token_subject
+from backend.auth.origin import (
+    AuthBodyLimitMiddleware,
+    AuthRequestGuardMiddleware,
+)
 from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
 from backend.events.outbox import default_publisher
 from backend.infra.database import init_db
 from backend.providers.runtime import provider_runtime
+from backend.rate_limits.http import RateLimitMiddleware
+from backend.rate_limits.runtime import build_rate_limiter
 from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 from backend.sandbox import (
@@ -33,6 +40,7 @@ from backend.sandbox import (
     clear_sandbox_runtime,
     install_sandbox_runtime,
 )
+from backend.security.headers import SecurityHeadersMiddleware
 from backend.sql_assistant.runtime import get_sql_assistant_runtime
 from backend.web_research.runtime import (
     build_web_research_runtime,
@@ -45,10 +53,10 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    rate_limiter = build_rate_limiter(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        settings.validate_startup()
         provider_started = False
         sql_start_attempted = False
         sql_runtime = None
@@ -63,6 +71,7 @@ def create_app() -> FastAPI:
         publisher_task: asyncio.Task | None = None
         cancellation_task: asyncio.Task | None = None
         try:
+            settings.validate_startup()
             await asyncio.to_thread(init_db)
             await provider_runtime.start()
             provider_started = True
@@ -159,6 +168,11 @@ def create_app() -> FastAPI:
                     await provider_runtime.aclose()
                 except BaseException as exc:
                     cleanup_errors.append(exc)
+            if rate_limiter is not None:
+                try:
+                    await rate_limiter.close()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
             if len(cleanup_errors) == 1:
                 raise cleanup_errors[0]
             if cleanup_errors:
@@ -166,7 +180,25 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="SuperMew API", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings
+    app.state.rate_limiter = rate_limiter
     install_exception_handlers(app)
+
+    # Streamed auth bodies are bounded after Rate Limit has charged host quota.
+    app.add_middleware(AuthBodyLimitMiddleware)
+
+    if rate_limiter is not None:
+        app.add_middleware(
+            RateLimitMiddleware,
+            limiter=rate_limiter,
+            bearer_subject_resolver=resolve_access_token_subject,
+        )
+
+    # Added after Rate Limit so Starlette places this metadata guard outside it:
+    # cross-site, non-JSON and declared-oversized requests consume no quota.
+    app.add_middleware(
+        AuthRequestGuardMiddleware,
+        settings=settings.security,
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -188,11 +220,16 @@ def create_app() -> FastAPI:
     async def _no_cache(request, call_next):
         response = await call_next(request)
         path = request.url.path or ""
-        if path == "/" or path.endswith((".html", ".js", ".css")):
+        if path == "/auth" or path.startswith("/auth/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+        elif path == "/" or path.endswith((".html", ".js", ".css")):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
         return response
+
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(router)
 

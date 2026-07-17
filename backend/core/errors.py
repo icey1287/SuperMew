@@ -12,6 +12,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from backend.security.headers import browser_hardening_headers
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "NOT_FOUND"
     CONFLICT = "CONFLICT"
     RATE_LIMITED = "RATE_LIMITED"
+    RATE_LIMIT_UNAVAILABLE = "RATE_LIMIT_UNAVAILABLE"
     MODEL_RATE_LIMITED = "MODEL_RATE_LIMITED"
     MODEL_TIMEOUT = "MODEL_TIMEOUT"
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
@@ -107,6 +110,7 @@ def _status_for_code(code: ErrorCode | str) -> int:
         ErrorCode.RERANK_UNAVAILABLE.value,
         ErrorCode.TOOL_UNAVAILABLE.value,
         ErrorCode.STORAGE_UNAVAILABLE.value,
+        ErrorCode.RATE_LIMIT_UNAVAILABLE.value,
         "PROVIDER_AUTHENTICATION_FAILED",
     }:
         return 503
@@ -474,5 +478,5 @@ def install_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=public.status_code,
             content=error_payload(public, request_id),
-            headers=_response_headers(public),
+            headers=_response_headers(public, browser_hardening_headers()),
         )
