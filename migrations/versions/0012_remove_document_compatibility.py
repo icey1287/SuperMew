@@ -17,16 +17,20 @@ depends_on = None
 
 def upgrade() -> None:
     connection = op.get_bind()
-    retired_versions = connection.execute(
-        sa.text(
-            "SELECT dv.id, dv.document_id, dv.status, dv.index_cleaned_at, "
-            "d.current_version_id, d.pending_version_id "
-            "FROM document_versions dv "
-            "JOIN documents d ON d.id = dv.document_id "
-            "WHERE dv.storage_layout <> 'versioned' "
-            "OR (dv.legacy_identity IS NOT NULL AND dv.legacy_identity <> '')"
+    retired_versions = (
+        connection.execute(
+            sa.text(
+                "SELECT dv.id, dv.document_id, dv.status, dv.index_cleaned_at, "
+                "d.current_version_id, d.pending_version_id "
+                "FROM document_versions dv "
+                "JOIN documents d ON d.id = dv.document_id "
+                "WHERE dv.storage_layout <> 'versioned' "
+                "OR (dv.legacy_identity IS NOT NULL AND dv.legacy_identity <> '')"
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     unsafe_versions = [
         row
         for row in retired_versions
@@ -81,8 +85,7 @@ def upgrade() -> None:
             )
         connection.execute(
             sa.text(
-                "DELETE FROM document_versions "
-                "WHERE id IN :retired_version_ids"
+                "DELETE FROM document_versions WHERE id IN :retired_version_ids"
             ).bindparams(version_filter),
             {"retired_version_ids": sorted(retired_version_ids)},
         )
