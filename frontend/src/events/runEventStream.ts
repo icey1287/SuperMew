@@ -1,4 +1,5 @@
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
+import { isThreadId, requireThreadId } from '@/threads/threadId';
 import { getPublicError, getPublicErrorFromResponse, type PublicRequestError } from '@/utils/api';
 
 type UnknownRecord = Record<string, unknown>;
@@ -30,8 +31,7 @@ function parseEventPayload(value: unknown): RuntimeRunEvent {
     !payload.event_id ||
     typeof payload.run_id !== 'string' ||
     !payload.run_id ||
-    typeof payload.thread_id !== 'string' ||
-    !payload.thread_id ||
+    !isThreadId(payload.thread_id) ||
     typeof payload.type !== 'string' ||
     !payload.type ||
     typeof payload.timestamp !== 'string' ||
@@ -117,6 +117,7 @@ async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
 }
 
 export async function connectRunEventStream(options: RunEventStreamOptions): Promise<number> {
+  requireThreadId(options.threadId);
   let lastSequence = Math.max(options.after || 0, 0);
   let reconnectAttempt = 0;
 

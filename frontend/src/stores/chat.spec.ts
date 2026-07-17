@@ -1,9 +1,10 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearAuthSession, installAuthSession } from '@/auth/session';
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
 import { connectRunEventStream } from '@/events/runEventStream';
 import { cancelRun, createRun, getRun, getRunEvents, resumeRun } from '@/runs/runClient';
-import api from '@/utils/api';
+import { createThread, deleteThread, getThreadMessages } from '@/threads/threadClient';
 import { useAuthStore } from './auth';
 import { useChatStore } from './chat';
 import { useRunsStore } from './runs';
@@ -22,16 +23,12 @@ vi.mock('@/events/runEventStream', () => ({
   connectRunEventStream: vi.fn(),
 }));
 
-vi.mock('@/utils/api', async () => {
-  const actual = await vi.importActual<typeof import('@/utils/api')>('@/utils/api');
-  return {
-    ...actual,
-    default: {
-      get: vi.fn(),
-      delete: vi.fn(),
-    },
-  };
-});
+vi.mock('@/threads/threadClient', () => ({
+  createThread: vi.fn(),
+  deleteThread: vi.fn(),
+  getThreadMessages: vi.fn(),
+  listThreads: vi.fn(),
+}));
 
 type StreamOptions = Parameters<typeof connectRunEventStream>[0];
 
@@ -93,6 +90,48 @@ function createResponse(runId = 'run_1', threadId = 'thread-1') {
   };
 }
 
+function threadDetail(threadId = 'thread-1') {
+  return {
+    thread_id: threadId,
+    title: '新对话',
+    message_count: 0,
+    version: 0,
+    thread_status: 'active',
+    active_run_id: null,
+    active_run_status: null,
+    created_at: '2026-07-16T00:00:00Z',
+    updated_at: '2026-07-16T00:00:00Z',
+  };
+}
+
+function threadListItem(threadId = 'thread-1') {
+  return {
+    ...threadDetail(threadId),
+    activeRunId: null,
+    activeRunStatus: null,
+    isStreaming: false,
+  };
+}
+
+function threadMessage(
+  sequence: number,
+  role: 'user' | 'assistant' | 'system',
+  content: string,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    id: sequence,
+    run_id: null,
+    sequence,
+    status: 'completed',
+    role,
+    content,
+    timestamp: `2026-07-16T00:00:${String(sequence).padStart(2, '0')}Z`,
+    rag_trace: null,
+    ...overrides,
+  } as any;
+}
+
 function createLocalStorageMock() {
   const values = new Map<string, string>();
   return {
@@ -105,16 +144,21 @@ function createLocalStorageMock() {
 
 function setupStores(threadId = 'thread-1') {
   setActivePinia(createPinia());
+  installAuthSession({
+    access_token: 'test-token',
+    username: 'tester',
+    role: 'user',
+  });
   const authStore = useAuthStore();
-  authStore.token = 'test-token';
-  authStore.currentUser = { username: 'tester', role: 'user' };
   const chatStore = useChatStore();
+  const sessionStore = useSessionStore();
+  if (threadId) sessionStore.sessions = [threadListItem(threadId)];
   chatStore.setViewedSession(threadId, []);
   return {
     authStore,
     chatStore,
     runsStore: useRunsStore(),
-    sessionStore: useSessionStore(),
+    sessionStore,
   };
 }
 
@@ -144,6 +188,7 @@ const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('durable chat projection', () => {
   beforeEach(() => {
+    clearAuthSession();
     vi.clearAllMocks();
     vi.stubGlobal('localStorage', createLocalStorageMock());
     vi.stubGlobal('alert', vi.fn());
@@ -151,8 +196,10 @@ describe('durable chat projection', () => {
       'confirm',
       vi.fn(() => true)
     );
-    vi.mocked(api.get).mockResolvedValue({
-      data: { messages: [], next_cursor: null },
+    vi.mocked(createThread).mockResolvedValue(threadDetail());
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [],
+      previous_cursor: null,
     });
   });
 
@@ -169,6 +216,87 @@ describe('durable chat projection', () => {
     expect(chatStore.messages).toEqual([]);
     expect(chatStore.userInput).toBe('');
     expect(runsStore.byId).toEqual({});
+  });
+
+  it('creates a server-owned Thread before the first durable Run', async () => {
+    const streams = installControlledStreams();
+    vi.mocked(createThread).mockResolvedValue(threadDetail('thread-server'));
+    vi.mocked(createRun).mockResolvedValue(createResponse('run_1', 'thread-server'));
+    const { chatStore } = setupStores('');
+    chatStore.userInput = '第一条问题';
+
+    const sending = chatStore.handleSend();
+    await flushPromises();
+
+    expect(createThread).toHaveBeenCalledWith({ title: '第一条问题' });
+    expect(createRun).toHaveBeenCalledWith(
+      'thread-server',
+      expect.objectContaining({ expected_thread_version: 0 }),
+      'test-token'
+    );
+    expect(chatStore.sessionId).toBe('thread-server');
+    expect(chatStore.sessionId).not.toMatch(/^session_/);
+
+    streams.emit('run_1', event('run_1', 'thread-server', 1, 'run.created'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-server', 2, 'message.completed', { content: '第一条回答' })
+    );
+    streams.emit('run_1', event('run_1', 'thread-server', 3, 'run.completed'));
+    streams.finish('run_1', 3);
+    await sending;
+  });
+
+  it('authoritatively deletes the current Thread before creating a replacement', async () => {
+    vi.mocked(deleteThread).mockResolvedValue({
+      thread_id: 'thread-1',
+      message: '成功删除 Thread',
+    });
+    vi.mocked(createThread).mockResolvedValue(threadDetail('thread-replacement'));
+    const { chatStore, sessionStore } = setupStores();
+    chatStore.messagesBySession['thread-1'] = [{ text: '旧消息', isUser: true }];
+    chatStore.messages = chatStore.messagesBySession['thread-1'];
+
+    await chatStore.handleClearChat();
+
+    expect(deleteThread).toHaveBeenCalledWith('thread-1');
+    expect(createThread).toHaveBeenCalledWith({});
+    expect(chatStore.sessionId).toBe('thread-replacement');
+    expect(chatStore.messagesBySession['thread-1']).toBeUndefined();
+    expect(sessionStore.sessions.map((thread) => thread.thread_id)).toEqual(['thread-replacement']);
+  });
+
+  it('keeps the current Thread intact when authoritative deletion reports an active Run', async () => {
+    vi.mocked(deleteThread).mockRejectedValue({
+      code: 'RUN_ACTIVE',
+      message: 'Thread 仍有活跃 Run',
+      retryable: false,
+      category: 'thread',
+    });
+    const { chatStore, sessionStore } = setupStores();
+    chatStore.messagesBySession['thread-1'] = [{ text: '仍需保留', isUser: true }];
+    chatStore.messages = chatStore.messagesBySession['thread-1'];
+
+    await chatStore.handleClearChat();
+
+    expect(createThread).not.toHaveBeenCalled();
+    expect(chatStore.sessionId).toBe('thread-1');
+    expect(chatStore.messages[0].text).toBe('仍需保留');
+    expect(sessionStore.sessions[0].thread_id).toBe('thread-1');
+    expect(alert).toHaveBeenCalledWith('Thread 仍有活跃 Run');
+  });
+
+  it('locks input from canonical active Run metadata until the Run is restored', () => {
+    const { chatStore, sessionStore } = setupStores();
+    sessionStore.sessions[0].active_run_id = 'run-server';
+    sessionStore.sessions[0].active_run_status = 'running';
+    sessionStore.sessions[0].activeRunId = 'run-server';
+    sessionStore.sessions[0].activeRunStatus = 'running';
+    sessionStore.sessions[0].isStreaming = true;
+
+    expect(chatStore.currentRunStatus).toBe('running');
+    expect(chatStore.isInputLocked).toBe(true);
+    expect(chatStore.isViewingStreamingSession).toBe(false);
   });
 
   it('creates optimistic messages, reserves a durable Run, and projects final authority', async () => {
@@ -193,7 +321,7 @@ describe('durable chat projection', () => {
       isThinking: true,
     });
     expect(sessionStore.sessions[0]).toMatchObject({
-      session_id: 'thread-1',
+      thread_id: 'thread-1',
       isStreaming: true,
     });
     expect(createRun).toHaveBeenCalledWith(
@@ -251,11 +379,9 @@ describe('durable chat projection', () => {
     const sending = chatStore.handleSend();
     await flushPromises();
 
-    vi.mocked(api.get).mockResolvedValueOnce({
-      data: {
-        messages: [{ id: 21, sequence: 1, type: 'human', content: '另一会话' }],
-        next_cursor: null,
-      },
+    vi.mocked(getThreadMessages).mockResolvedValueOnce({
+      messages: [threadMessage(1, 'user', '另一会话', { id: 21 })],
+      previous_cursor: null,
     });
     await chatStore.loadSession('thread-2');
 
@@ -423,28 +549,16 @@ describe('durable chat projection', () => {
   });
 
   it('restores a waiting Run by replaying durable events after page load', async () => {
-    vi.mocked(api.get).mockResolvedValueOnce({
-      data: {
-        messages: [
-          {
-            id: 11,
-            run_id: 'run_1',
-            sequence: 1,
-            status: 'completed',
-            type: 'human',
-            content: '角色属性？',
-          },
-          {
-            id: 12,
-            run_id: 'run_1',
-            sequence: 2,
-            status: 'waiting_input',
-            type: 'ai',
-            content: '',
-          },
-        ],
-        next_cursor: null,
-      },
+    vi.mocked(getThreadMessages).mockResolvedValueOnce({
+      messages: [
+        threadMessage(1, 'user', '角色属性？', { id: 11, run_id: 'run_1' }),
+        threadMessage(2, 'assistant', '', {
+          id: 12,
+          run_id: 'run_1',
+          status: 'waiting_input',
+        }),
+      ],
+      previous_cursor: null,
     });
     vi.mocked(getRun).mockResolvedValue(runRecord('run_1', 'thread-1', 'waiting_input'));
     vi.mocked(getRunEvents).mockResolvedValue({
@@ -524,31 +638,38 @@ describe('durable chat projection', () => {
     expect(chatStore.messagesBySession['thread-2'][1].text).toBe('回答二');
   });
 
-  it('loads all message pages before restoring the Thread', async () => {
-    vi.mocked(api.get)
+  it('loads the latest message page and prepends older messages on demand', async () => {
+    vi.mocked(getThreadMessages)
       .mockResolvedValueOnce({
-        data: {
-          messages: [{ id: 1, sequence: 1, type: 'human', content: '第一页' }],
-          next_cursor: 1,
-        },
+        messages: [threadMessage(3, 'user', '最近问题'), threadMessage(4, 'assistant', '最近回答')],
+        previous_cursor: 3,
       })
       .mockResolvedValueOnce({
-        data: {
-          messages: [{ id: 2, sequence: 2, type: 'ai', content: '第二页' }],
-          next_cursor: null,
-        },
+        messages: [threadMessage(1, 'user', '更早问题'), threadMessage(2, 'assistant', '更早回答')],
+        previous_cursor: null,
       });
     const { chatStore } = setupStores();
 
     await chatStore.loadSession('thread-1');
 
-    expect(api.get).toHaveBeenNthCalledWith(1, '/sessions/thread-1', {
-      params: { after: 0, limit: 200 },
+    expect(getThreadMessages).toHaveBeenCalledTimes(1);
+    expect(getThreadMessages).toHaveBeenCalledWith('thread-1', { limit: 200 });
+    expect(chatStore.messages.map((message) => message.text)).toEqual(['最近问题', '最近回答']);
+    expect(chatStore.hasOlderMessages).toBe(true);
+
+    await chatStore.loadOlderMessages();
+
+    expect(getThreadMessages).toHaveBeenNthCalledWith(2, 'thread-1', {
+      before: 3,
+      limit: 200,
     });
-    expect(api.get).toHaveBeenNthCalledWith(2, '/sessions/thread-1', {
-      params: { after: 1, limit: 200 },
-    });
-    expect(chatStore.messages.map((message) => message.text)).toEqual(['第一页', '第二页']);
+    expect(chatStore.messages.map((message) => message.text)).toEqual([
+      '更早问题',
+      '更早回答',
+      '最近问题',
+      '最近回答',
+    ]);
+    expect(chatStore.hasOlderMessages).toBe(false);
   });
 
   it('renders a safe create failure without exposing transport details', async () => {

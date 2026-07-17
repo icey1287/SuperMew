@@ -4,23 +4,20 @@ import { useAuthStore } from './auth';
 import { useSessionStore } from './sessions';
 import { useRunsStore } from './runs';
 import type { RunEventState } from '@/events/runEventReducer';
-import api, { getPublicError, type PublicRequestError } from '@/utils/api';
+import { getThreadMessages } from '@/threads/threadClient';
+import type { ThreadMessage } from '@/types/threads';
+import { getPublicError, type PublicRequestError } from '@/utils/api';
 import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
-
-type ServerMessage = {
-  id?: number;
-  run_id?: string | null;
-  sequence?: number;
-  status?: string;
-  type: string;
-  content: string;
-  timestamp?: string;
-  rag_trace?: RagTrace | null;
-};
 
 const BUSY_RUN_STATUSES = new Set(['creating', 'queued', 'pending', 'running', 'cancelling']);
 const RECOVERABLE_MESSAGE_STATUSES = new Set(['queued', 'streaming', 'waiting_input']);
 const projectionStops = new WeakMap<object, Map<string, WatchStopHandle>>();
+
+interface ThreadMessagePageState {
+  previousCursor: number | null;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+}
 
 function projectionMap(store: object): Map<string, WatchStopHandle> {
   let stops = projectionStops.get(store);
@@ -69,26 +66,30 @@ function formatHitlText(hitl: HitlRequest): string {
   return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
 }
 
-function createSessionId(messagesBySession: Record<string, Message[]>): string {
-  let nextId = `session_${Date.now()}`;
-  while (messagesBySession[nextId]) {
-    nextId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-  return nextId;
+function messageIdentity(message: Message): string {
+  if (message.id !== undefined) return `id:${message.id}`;
+  if (message.sequence !== undefined) return `sequence:${message.sequence}`;
+  return `local:${message.runId || ''}:${message.isUser ? 'user' : 'assistant'}:${message.text}`;
 }
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as Message[],
     messagesBySession: {} as Record<string, Message[]>,
+    messagePagesBySession: {} as Record<string, ThreadMessagePageState>,
     userInput: '',
     activeNav: 'newChat' as 'newChat' | 'history' | 'settings',
-    sessionId: `session_${Date.now()}`,
+    sessionId: '',
+    isCreatingThread: false,
   }),
 
   getters: {
     currentRunStatus(state): string | null {
-      return useRunsStore().activeForThread(state.sessionId)?.status || null;
+      return (
+        useRunsStore().activeForThread(state.sessionId)?.status ||
+        useSessionStore().threadById(state.sessionId)?.activeRunStatus ||
+        null
+      );
     },
 
     currentTransportStatus(state): string | null {
@@ -97,7 +98,8 @@ export const useChatStore = defineStore('chat', {
 
     isLoading(state): boolean {
       const run = useRunsStore().activeForThread(state.sessionId);
-      return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
+      const status = run?.status || useSessionStore().threadById(state.sessionId)?.activeRunStatus;
+      return state.isCreatingThread || BUSY_RUN_STATUSES.has(String(status || ''));
     },
 
     isViewingStreamingSession(state): boolean {
@@ -107,7 +109,17 @@ export const useChatStore = defineStore('chat', {
 
     isInputLocked(state): boolean {
       const run = useRunsStore().activeForThread(state.sessionId);
-      return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
+      if (state.isCreatingThread) return true;
+      if (run) return BUSY_RUN_STATUSES.has(run.status);
+      return Boolean(useSessionStore().threadById(state.sessionId)?.activeRunStatus);
+    },
+
+    hasOlderMessages(state): boolean {
+      return Boolean(state.messagePagesBySession[state.sessionId]?.hasOlder);
+    },
+
+    isLoadingOlderMessages(state): boolean {
+      return Boolean(state.messagePagesBySession[state.sessionId]?.loadingOlder);
     },
 
     currentPendingHitl(state): HitlRequest | null {
@@ -153,6 +165,17 @@ export const useChatStore = defineStore('chat', {
       return this.messagesBySession[sessionId];
     },
 
+    ensureMessagePage(sessionId: string): ThreadMessagePageState {
+      if (!this.messagePagesBySession[sessionId]) {
+        this.messagePagesBySession[sessionId] = {
+          previousCursor: null,
+          hasOlder: false,
+          loadingOlder: false,
+        };
+      }
+      return this.messagePagesBySession[sessionId];
+    },
+
     selectHitlOption(option: string) {
       this.userInput = option;
     },
@@ -171,13 +194,13 @@ export const useChatStore = defineStore('chat', {
       return title.length > 10 ? `${title.substring(0, 10)}...` : title;
     },
 
-    mapServerMessages(messages: ServerMessage[]): Message[] {
+    mapServerMessages(messages: ThreadMessage[]): Message[] {
       let awaitingLegacyHitlAnswer = false;
       let legacyResumeText: string | undefined;
 
       return (messages || []).map((message) => {
         const ragTrace = message.rag_trace || null;
-        const isUser = message.type === 'human';
+        const isUser = message.role === 'user';
         const isHitlRequest = !message.run_id && !isUser && isHitlTrace(ragTrace);
         const isHitlAnswer = !message.run_id && isUser && awaitingLegacyHitlAnswer;
         const resumeTextForMessage =
@@ -214,40 +237,22 @@ export const useChatStore = defineStore('chat', {
     mergeCachedSessionsIntoHistory() {
       const sessionStore = useSessionStore();
       const runsStore = useRunsStore();
-      const sessions = sessionStore.sessions.map((session) => {
-        const run = runsStore.activeForThread(session.session_id);
-        const creating = Boolean(runsStore.pendingCreates[session.session_id]);
-        return {
-          ...session,
-          status: creating ? 'creating' : run?.status || session.status,
-          isStreaming: creating || Boolean(run && BUSY_RUN_STATUSES.has(run.status)),
-        };
+      sessionStore.sessions.forEach((session) => {
+        const run = runsStore.activeForThread(session.thread_id);
+        const creating = Boolean(runsStore.pendingCreates[session.thread_id]);
+        if (creating) sessionStore.setRunView(session.thread_id, null, 'creating');
+        else if (run) sessionStore.setRunView(session.thread_id, run.runId, run.status);
       });
 
       Object.entries(this.messagesBySession).forEach(([sessionId, messages]) => {
-        if (!messages.length) return;
-        const existingIndex = sessions.findIndex((session) => session.session_id === sessionId);
-        const existing = existingIndex >= 0 ? sessions[existingIndex] : null;
-        const run = runsStore.activeForThread(sessionId);
-        const creating = Boolean(runsStore.pendingCreates[sessionId]);
+        const existing = sessionStore.threadById(sessionId);
+        if (!existing || !messages.length) return;
         const localTitle = this.getLocalSessionTitle(sessionId, messages);
-        const existingTitle = existing?.title;
-        const title = !existingTitle || existingTitle === sessionId ? localTitle : existingTitle;
-        const localSession = {
-          session_id: sessionId,
-          title,
-          message_count: Math.max(existing?.message_count || 0, messages.length),
-          updated_at: existing?.updated_at || new Date().toISOString(),
-          version: existing?.version,
-          status: creating ? 'creating' : run?.status || existing?.status,
-          isStreaming: creating || Boolean(run && BUSY_RUN_STATUSES.has(run.status)),
-        };
-
-        if (existingIndex >= 0) sessions[existingIndex] = { ...existing, ...localSession };
-        else sessions.unshift(localSession);
+        if (!existing.title || existing.title === sessionId || existing.title === '新对话') {
+          existing.title = localTitle;
+        }
+        existing.message_count = Math.max(existing.message_count, messages.length);
       });
-
-      sessionStore.sessions = sessions;
     },
 
     appendRagStepToGroups(prev: GroupedRagStep[], step: RagStep): GroupedRagStep[] {
@@ -291,6 +296,12 @@ export const useChatStore = defineStore('chat', {
     },
 
     projectRunState(run: RunEventState) {
+      const sessionStore = useSessionStore();
+      sessionStore.setRunView(
+        run.threadId,
+        run.terminal ? null : run.runId,
+        run.terminal ? null : run.status
+      );
       const messages = this.ensureSessionMessages(run.threadId);
       const assistant = messages.find(
         (message) =>
@@ -378,7 +389,6 @@ export const useChatStore = defineStore('chat', {
       assistant.isThinking = false;
       assistant.status = 'failed';
       assistant.text = appendPublicError(assistant.text, publicError);
-      if (publicError.code === 'AUTHENTICATION_REQUIRED') useAuthStore().handleLogout();
     },
 
     async connectRun(runId: string, token: string) {
@@ -429,18 +439,13 @@ export const useChatStore = defineStore('chat', {
       sessionStore.showHistorySidebar = false;
 
       try {
-        const records: ServerMessage[] = [];
-        let after = 0;
-        for (let page = 0; page < 1000; page += 1) {
-          const response = await api.get(`/sessions/${encodeURIComponent(sessionId)}`, {
-            params: { after, limit: 200 },
-          });
-          records.push(...(response.data.messages || []));
-          const nextCursor = response.data.next_cursor;
-          if (!Number.isInteger(nextCursor) || nextCursor <= after) break;
-          after = nextCursor;
-        }
-        const loadedMessages = this.mapServerMessages(records);
+        const response = await getThreadMessages(sessionId, { limit: 200 });
+        const loadedMessages = this.mapServerMessages(response.messages || []);
+        this.messagePagesBySession[sessionId] = {
+          previousCursor: response.previous_cursor,
+          hasOlder: response.previous_cursor !== null,
+          loadingOlder: false,
+        };
         this.setViewedSession(sessionId, loadedMessages);
         this.mergeCachedSessionsIntoHistory();
         await this.restoreRunsForSession(sessionId);
@@ -451,21 +456,93 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    handleNewChat() {
-      const sessionId = createSessionId(this.messagesBySession);
-      this.messagesBySession[sessionId] = [];
-      this.setViewedSession(sessionId);
-      useSessionStore().showHistorySidebar = false;
+    async loadOlderMessages() {
+      const sessionId = this.sessionId;
+      if (!sessionId) return;
+      const page = this.ensureMessagePage(sessionId);
+      if (!page.hasOlder || page.loadingOlder || page.previousCursor === null) return;
+
+      page.loadingOlder = true;
+      try {
+        const response = await getThreadMessages(sessionId, {
+          before: page.previousCursor,
+          limit: 200,
+        });
+        const current = this.ensureSessionMessages(sessionId);
+        const seen = new Set(current.map(messageIdentity));
+        const older = this.mapServerMessages(response.messages || []).filter(
+          (message) => !seen.has(messageIdentity(message))
+        );
+        const merged = [...older, ...current].sort((left, right) => {
+          if (left.sequence === undefined) return 1;
+          if (right.sequence === undefined) return -1;
+          return left.sequence - right.sequence;
+        });
+        this.messagesBySession[sessionId] = merged;
+        if (this.sessionId === sessionId) this.messages = merged;
+        page.previousCursor = response.previous_cursor;
+        page.hasOlder = response.previous_cursor !== null;
+      } catch (error) {
+        throw getPublicError(error);
+      } finally {
+        page.loadingOlder = false;
+      }
     },
 
-    handleClearChat() {
-      if (useRunsStore().activeForThread(this.sessionId)) {
+    async createNewThread(title?: string) {
+      if (this.isCreatingThread) return null;
+      const selectedBeforeCreate = this.sessionId;
+      this.isCreatingThread = true;
+      try {
+        const thread = await useSessionStore().createSession(title);
+        this.messagesBySession[thread.thread_id] = [];
+        this.messagePagesBySession[thread.thread_id] = {
+          previousCursor: null,
+          hasOlder: false,
+          loadingOlder: false,
+        };
+        if (this.sessionId === selectedBeforeCreate) {
+          this.setViewedSession(thread.thread_id);
+        }
+        return thread;
+      } finally {
+        this.isCreatingThread = false;
+      }
+    },
+
+    async handleNewChat() {
+      this.userInput = '';
+      this.setViewedSession('', []);
+      useSessionStore().showHistorySidebar = false;
+      try {
+        await this.createNewThread();
+      } catch (error) {
+        alert(getPublicError(error).message);
+      }
+    },
+
+    async handleClearChat() {
+      const threadId = this.sessionId;
+      if (!threadId) {
+        await this.handleNewChat();
+        return;
+      }
+      if (
+        useRunsStore().activeForThread(threadId) ||
+        useSessionStore().threadById(threadId)?.isStreaming
+      ) {
         alert('当前会话仍有活跃运行，请先终止或等待完成后再清空');
         return;
       }
-      if (confirm('确定要清空当前对话吗？喵？')) {
-        this.messagesBySession[this.sessionId] = [];
-        this.messages = this.messagesBySession[this.sessionId];
+      if (!confirm('确定要永久删除当前对话吗？喵？')) return;
+
+      try {
+        await useSessionStore().deleteSession(threadId);
+        this.removeSessionState(threadId);
+        this.setViewedSession('', []);
+        await this.createNewThread();
+      } catch (error) {
+        alert(getPublicError(error).message);
       }
     },
 
@@ -513,7 +590,6 @@ export const useChatStore = defineStore('chat', {
         this.userInput = answer;
         this.projectRunState(run);
         const publicError = getPublicError(error);
-        if (publicError.code === 'AUTHENTICATION_REQUIRED') authStore.handleLogout();
         alert(publicError.message);
       } finally {
         this.projectRunState(runsStore.byId[hitl.runId] || run);
@@ -541,7 +617,18 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
-      const threadId = this.sessionId;
+      let threadId = this.sessionId;
+      if (!threadId) {
+        try {
+          const thread = await this.createNewThread(text.replace(/\s+/g, ' ').slice(0, 32));
+          if (!thread) return;
+          threadId = thread.thread_id;
+        } catch (error) {
+          const publicError = getPublicError(error);
+          alert(publicError.message);
+          return;
+        }
+      }
       const messages = this.ensureSessionMessages(threadId);
       const userMessage: Message = {
         text,
@@ -564,7 +651,7 @@ export const useChatStore = defineStore('chat', {
       this.mergeCachedSessionsIntoHistory();
 
       try {
-        const session = sessionStore.sessions.find((item) => item.session_id === threadId);
+        const session = sessionStore.sessions.find((item) => item.thread_id === threadId);
         const createPromise = runsStore.create({
           threadId,
           message: text,
@@ -591,7 +678,6 @@ export const useChatStore = defineStore('chat', {
         assistantMessage.isThinking = false;
         assistantMessage.status = 'failed';
         assistantMessage.text = appendPublicError(assistantMessage.text, publicError);
-        if (publicError.code === 'AUTHENTICATION_REQUIRED') authStore.handleLogout();
       } finally {
         this.mergeCachedSessionsIntoHistory();
       }
@@ -607,6 +693,7 @@ export const useChatStore = defineStore('chat', {
           runsStore.remove(run.runId);
         });
       delete this.messagesBySession[sessionId];
+      delete this.messagePagesBySession[sessionId];
     },
   },
 });

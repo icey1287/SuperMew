@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as authSession from '@/auth/session';
 import { connectRunEventStream } from '@/events/runEventStream';
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
 import {
@@ -62,9 +63,63 @@ function deferred<T>() {
 
 describe('durable runs store', () => {
   beforeEach(() => {
+    authSession.installAuthSession({
+      access_token: 'reset-access',
+      username: 'reset-user',
+      role: 'user',
+    });
+    authSession.clearAuthSession();
     setActivePinia(createPinia());
     vi.clearAllMocks();
     vi.mocked(createIdempotencyKey).mockImplementation((scope) => `${scope}_generated_key`);
+  });
+
+  it('uses the Pinia in-memory token when no explicit Run token is provided', async () => {
+    authSession.installAuthSession({
+      access_token: 'memory-token',
+      username: 'alice',
+      role: 'user',
+    });
+    vi.mocked(getRun).mockResolvedValue(runRecord('running'));
+    const store = useRunsStore();
+
+    await store.get('run_1');
+
+    expect(getRun).toHaveBeenCalledWith('run_1', 'memory-token');
+  });
+
+  it('refreshes once and reconnects an expired Run stream from the latest sequence', async () => {
+    authSession.installAuthSession({
+      access_token: 'expired-stream-token',
+      username: 'alice',
+      role: 'user',
+    });
+    const refresh = vi.spyOn(authSession, 'refreshAuthSession').mockResolvedValue({
+      access_token: 'fresh-stream-token',
+      username: 'alice',
+      role: 'user',
+    });
+    vi.mocked(connectRunEventStream)
+      .mockRejectedValueOnce({ response: { status: 401 } })
+      .mockImplementationOnce(async (options) => {
+        expect(options.token).toBe('fresh-stream-token');
+        expect(options.after).toBe(4);
+        options.onEvent(event(5, 'run.completed'));
+        return 5;
+      });
+    const store = useRunsStore();
+    const run = store.ensure('run_1', 'thread-1');
+    run.status = 'running';
+    run.lastSequence = 4;
+
+    await store.connect('run_1');
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(vi.mocked(connectRunEventStream).mock.calls.map(([options]) => options.token)).toEqual([
+      'expired-stream-token',
+      'fresh-stream-token',
+    ]);
+    expect(store.byId.run_1.status).toBe('completed');
   });
 
   it('reuses the same create idempotency key after an uncertain transport failure', async () => {

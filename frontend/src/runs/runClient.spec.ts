@@ -39,14 +39,14 @@ describe('run client', () => {
   it('creates a Run with an explicit Bearer token and exact durable payload', async () => {
     vi.mocked(api.post).mockResolvedValue({
       data: {
-        run: { id: 'run_1', thread_id: 'thread/one', status: 'pending' },
+        run: { id: 'run_1', thread_id: 'thread_one', status: 'pending' },
         created: true,
         thread_version: 2,
       },
     } as any);
 
     await createRun(
-      'thread/one',
+      'thread_one',
       {
         message: 'hello',
         idempotency_key: 'run_key',
@@ -58,7 +58,7 @@ describe('run client', () => {
     );
 
     expect(api.post).toHaveBeenCalledWith(
-      '/v1/threads/thread%2Fone/runs',
+      '/v1/threads/thread_one/runs',
       {
         message: 'hello',
         idempotency_key: 'run_key',
@@ -68,6 +68,24 @@ describe('run client', () => {
       },
       { headers: { Authorization: 'Bearer token-1' } }
     );
+  });
+
+  it('rejects an invalid Thread ID before issuing a Run request', async () => {
+    await expect(
+      createRun(
+        'thread/one',
+        {
+          message: 'hello',
+          idempotency_key: 'run_key',
+          multitask_strategy: 'reject',
+          on_disconnect: 'continue',
+          approved_tools: [],
+        },
+        'token-1'
+      )
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it('gets Run state and paged events through authenticated endpoints', async () => {

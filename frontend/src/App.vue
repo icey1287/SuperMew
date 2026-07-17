@@ -7,7 +7,21 @@
       <Sidebar :theme="theme" @toggle-theme="toggleTheme" />
 
       <main class="main-content">
-        <AuthPanel v-if="!authStore.isAuthenticated" />
+        <section
+          v-if="!authStore.authResolved"
+          class="auth-page auth-restore-page"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="auth-panel auth-restore-panel">
+            <span class="auth-mini-logo"><i class="fa-solid fa-cat"></i></span>
+            <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+            <h1>正在恢复登录状态</h1>
+            <p>正在安全连接你的私有知识空间…</p>
+          </div>
+        </section>
+
+        <AuthPanel v-else-if="!authStore.isAuthenticated" />
 
         <template v-else>
           <DocumentSettings v-if="chatStore.activeNav === 'settings'" />
@@ -67,20 +81,13 @@ watch(
 );
 
 const handleUnauthorized = () => {
-  authStore.handleLogout();
+  authStore.clearSession();
   alert('登录已过期，请重新登录');
 };
 
 onMounted(async () => {
   window.addEventListener('unauthorized', handleUnauthorized);
-
-  if (authStore.token) {
-    try {
-      await authStore.fetchMe();
-    } catch {
-      authStore.handleLogout();
-    }
-  }
+  await authStore.restoreSession();
 });
 
 onUnmounted(() => {

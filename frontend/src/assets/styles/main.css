@@ -735,6 +735,33 @@ html[data-theme='light'] .theme-toggle-moon {
   overflow: auto;
 }
 
+.auth-restore-page {
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  padding: 32px;
+}
+
+.auth-restore-panel {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.auth-restore-panel > i {
+  color: var(--mint);
+  font-size: 18px;
+}
+
+.auth-restore-panel h1 {
+  color: var(--text);
+}
+
+.auth-restore-panel p {
+  font-size: 10px;
+}
+
 .auth-showcase {
   position: relative;
   display: flex;
@@ -1115,6 +1142,40 @@ html[data-theme='light'] .status-dot {
   overflow-y: auto;
   padding: 26px clamp(20px, 4vw, 62px) 22px;
   scroll-behavior: smooth;
+}
+
+.older-messages-control {
+  display: flex;
+  justify-content: center;
+}
+
+.older-messages-control button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-soft);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease;
+}
+
+.older-messages-control button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--surface-strong);
+}
+
+.older-messages-control button:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 
 /* Welcome */

@@ -58,10 +58,10 @@
       <div class="sidebar-recents">
         <button
           v-for="session in recentSessions"
-          :key="session.session_id"
+          :key="session.thread_id"
           type="button"
-          :class="['recent-session', { active: session.session_id === chatStore.sessionId }]"
-          @click="onLoadSession(session.session_id)"
+          :class="['recent-session', { active: session.thread_id === chatStore.sessionId }]"
+          @click="onLoadSession(session.thread_id)"
         >
           <span class="recent-dot" aria-hidden="true"></span>
           <span class="recent-copy">
@@ -118,7 +118,7 @@ import ThemeToggle from '@/components/ThemeToggle.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
 import { useSessionStore } from '@/stores/sessions';
-import type { ChatSession } from '@/types/chat';
+import type { ThreadListItem } from '@/types/threads';
 
 defineProps<{
   theme: 'dark' | 'light';
@@ -165,7 +165,7 @@ watch(
 );
 
 const onNewChat = () => {
-  chatStore.handleNewChat();
+  void chatStore.handleNewChat();
 };
 
 const onHistory = async () => {
@@ -198,14 +198,14 @@ const onLoadSession = async (sessionId: string) => {
   }
 };
 
-const onLogout = () => {
+const onLogout = async () => {
   sessionStore.showHistorySidebar = false;
-  authStore.handleLogout();
+  await authStore.handleLogout();
 };
 
-const sessionStatusLabel = (session: ChatSession) => {
-  if (session.status === 'waiting_input') return '等待补充';
-  if (session.status === 'cancelling') return '终止中';
+const sessionStatusLabel = (session: ThreadListItem) => {
+  if (session.activeRunStatus === 'waiting_input') return '等待补充';
+  if (session.activeRunStatus === 'cancelling') return '终止中';
   if (session.isStreaming) return '生成中';
   return `${session.message_count} 条消息`;
 };

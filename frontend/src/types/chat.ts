@@ -171,13 +171,3 @@ export interface Message {
   ragSteps?: RagStep[];
   _groupedSteps?: GroupedRagStep[];
 }
-
-export interface ChatSession {
-  session_id: string;
-  title?: string;
-  message_count: number;
-  updated_at: string;
-  version?: number;
-  status?: string;
-  isStreaming?: boolean;
-}

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia';
+import { expireAuthSession, refreshAuthSession } from '@/auth/session';
 import {
   applyRunEvent,
   initialRunEventState,
@@ -8,6 +9,7 @@ import {
   type RuntimeRunEvent,
 } from '@/events/runEventReducer';
 import { connectRunEventStream } from '@/events/runEventStream';
+import { useAuthStore } from '@/stores/auth';
 import {
   cancelRun,
   createIdempotencyKey,
@@ -80,7 +82,7 @@ function lifecycleStatus(value: unknown): RunLifecycleStatus | null {
 
 function authToken(explicit?: string): string {
   if (explicit !== undefined) return explicit;
-  return typeof localStorage === 'undefined' ? '' : localStorage.getItem('accessToken') || '';
+  return useAuthStore().token;
 }
 
 export const useRunsStore = defineStore('runs', {
@@ -298,21 +300,47 @@ export const useRunsStore = defineStore('runs', {
       const controller = new AbortController();
       controllers.set(runId, controller);
       this.setTransport(runId, 'connecting');
+      let streamToken = authToken(token);
+      let authRetry = false;
 
       try {
-        await connectRunEventStream({
-          runId,
-          threadId: current.threadId,
-          token: authToken(token),
-          after: current.lastSequence,
-          signal: controller.signal,
-          onOpen: () => this.setTransport(runId, 'open'),
-          onReconnect: (attempt, _cursor, error) =>
-            this.setTransport(runId, 'reconnecting', attempt, error),
-          onEvent: (event) => this.apply(event),
-          pauseWhen: (event) => event.type === 'hitl.required',
-        });
-        return this.byId[runId];
+        while (true) {
+          try {
+            await connectRunEventStream({
+              runId,
+              threadId: current.threadId,
+              token: streamToken,
+              after: this.byId[runId]?.lastSequence ?? current.lastSequence,
+              signal: controller.signal,
+              onOpen: () => {
+                authRetry = false;
+                this.setTransport(runId, 'open');
+              },
+              onReconnect: (attempt, _cursor, error) =>
+                this.setTransport(runId, 'reconnecting', attempt, error),
+              onEvent: (event) => this.apply(event),
+              pauseWhen: (event) => event.type === 'hitl.required',
+            });
+            return this.byId[runId] || current;
+          } catch (error) {
+            const publicError = getPublicError(error);
+            if (publicError.code !== 'AUTHENTICATION_REQUIRED' || authRetry) {
+              if (publicError.code === 'AUTHENTICATION_REQUIRED') {
+                expireAuthSession(streamToken);
+              }
+              throw publicError;
+            }
+
+            authRetry = true;
+            try {
+              streamToken = (await refreshAuthSession()).access_token;
+              this.setTransport(runId, 'connecting');
+            } catch {
+              expireAuthSession(streamToken);
+              throw publicError;
+            }
+          }
+        }
       } catch (error) {
         this.setTransport(runId, 'closed', 0, error);
         throw getPublicError(error);

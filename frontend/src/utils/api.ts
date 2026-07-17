@@ -1,4 +1,5 @@
-import axios from 'axios';
+import axios, { AxiosHeaders, type InternalAxiosRequestConfig } from 'axios';
+import { expireAuthSession, getAuthSession, refreshAuthSession } from '@/auth/session';
 import { normalizePublicErrorInfo, type PublicErrorInfo } from '@/types/publicError';
 
 type UnknownRecord = Record<string, unknown>;
@@ -136,36 +137,150 @@ export async function getPublicErrorFromResponse(response: Response): Promise<Pu
 
 const api = axios.create({
   timeout: 60000,
+  withCredentials: true,
 });
 
-// Request interceptor to attach Bearer token
+type AuthRetryConfig = InternalAxiosRequestConfig & {
+  _authRetry?: boolean;
+  _authRequestUsername?: string;
+  _authExpectedAccessToken?: string;
+  _authExpectedUsername?: string;
+};
+
+const AUTH_LIFECYCLE_PATHS = new Set([
+  '/auth/login',
+  '/auth/register',
+  '/auth/refresh',
+  '/auth/logout',
+]);
+
+function requestPath(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    return new URL(url, 'http://supermew.local').pathname.replace(/\/+$/, '') || '/';
+  } catch {
+    return url.split('?')[0].replace(/\/+$/, '') || '/';
+  }
+}
+
+function isAuthLifecycleRequest(config: AuthRetryConfig | undefined): boolean {
+  return AUTH_LIFECYCLE_PATHS.has(requestPath(config?.url));
+}
+
+function installAuthorization(config: AuthRetryConfig, token: string): void {
+  config.headers = AxiosHeaders.from(config.headers);
+  config.headers.set('Authorization', `Bearer ${token}`);
+}
+
+function removeAuthorization(config: AuthRetryConfig): void {
+  config.headers = AxiosHeaders.from(config.headers);
+  config.headers.delete('Authorization');
+}
+
+function requestAccessToken(config: AuthRetryConfig): string | undefined {
+  const value = AxiosHeaders.from(config.headers).get('Authorization');
+  if (typeof value !== 'string') return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+  return match?.[1];
+}
+
+function authenticationSupersededError(): PublicRequestError {
+  return new PublicRequestError(
+    normalizePublicErrorInfo({ code: 'AUTHENTICATION_REQUIRED', retryable: false })
+  );
+}
+
+function requestMatchesSession(
+  config: AuthRetryConfig,
+  requestToken: string | undefined,
+  session: ReturnType<typeof getAuthSession>
+): boolean {
+  if (!requestToken) return session === null && config._authRequestUsername === undefined;
+  return Boolean(
+    session &&
+    session.access_token === requestToken &&
+    (!config._authRequestUsername || session.username === config._authRequestUsername)
+  );
+}
+
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('accessToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    const authConfig = config as AuthRetryConfig;
+    const session = getAuthSession();
+    if (authConfig._authExpectedAccessToken) {
+      if (
+        !session ||
+        session.access_token !== authConfig._authExpectedAccessToken ||
+        session.username !== authConfig._authExpectedUsername
+      ) {
+        throw authenticationSupersededError();
+      }
+      installAuthorization(authConfig, authConfig._authExpectedAccessToken);
+      authConfig._authRequestUsername = session.username;
+      return authConfig;
     }
-    return config;
+    if (session) {
+      installAuthorization(authConfig, session.access_token);
+      authConfig._authRequestUsername = session.username;
+    } else {
+      removeAuthorization(authConfig);
+      delete authConfig._authRequestUsername;
+    }
+    return authConfig;
   },
   (error) => {
     return Promise.reject(getPublicError(error));
   }
 );
 
-// Response interceptor to handle session expiration (401)
 api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
-  (error) => {
+  (response) => response,
+  async (error) => {
     const publicError = getPublicError(error);
-    if (publicError.code === 'AUTHENTICATION_REQUIRED') {
-      localStorage.removeItem('accessToken');
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('unauthorized'));
-      }
+    const config = error?.config as AuthRetryConfig | undefined;
+    if (
+      publicError.code !== 'AUTHENTICATION_REQUIRED' ||
+      !config ||
+      isAuthLifecycleRequest(config)
+    ) {
+      return Promise.reject(publicError);
     }
-    return Promise.reject(publicError);
+
+    const requestToken = requestAccessToken(config);
+    const sessionBeforeRefresh = getAuthSession();
+    if (!requestMatchesSession(config, requestToken, sessionBeforeRefresh)) {
+      return Promise.reject(publicError);
+    }
+
+    if (config._authRetry) {
+      expireAuthSession(requestToken);
+      return Promise.reject(publicError);
+    }
+
+    config._authRetry = true;
+    const expectedUsername = config._authRequestUsername;
+    try {
+      const session = await refreshAuthSession();
+      const activeSession = getAuthSession();
+      if (
+        !activeSession ||
+        activeSession.access_token !== session.access_token ||
+        activeSession.username !== session.username ||
+        (expectedUsername !== undefined && session.username !== expectedUsername)
+      ) {
+        return Promise.reject(publicError);
+      }
+      config._authExpectedAccessToken = session.access_token;
+      config._authExpectedUsername = session.username;
+      installAuthorization(config, session.access_token);
+      return api.request(config);
+    } catch {
+      const activeSession = getAuthSession();
+      if (requestToken && activeSession?.access_token === requestToken) {
+        expireAuthSession(requestToken);
+      }
+      return Promise.reject(publicError);
+    }
   }
 );
 

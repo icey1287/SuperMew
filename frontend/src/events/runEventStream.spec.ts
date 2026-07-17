@@ -83,6 +83,11 @@ describe('SseFrameDecoder', () => {
     expect(() => decoder.push('data: {"schema_version":1,"sequence":0}\n\n')).toThrowError(
       expect.objectContaining({ code: 'STREAM_PROTOCOL_ERROR' })
     );
+    expect(() =>
+      decoder.push(
+        `data: ${JSON.stringify(event(1, 'run.completed', { thread_id: 'thread/one' }))}\n\n`
+      )
+    ).toThrowError(expect.objectContaining({ code: 'STREAM_PROTOCOL_ERROR' }));
   });
 });
 

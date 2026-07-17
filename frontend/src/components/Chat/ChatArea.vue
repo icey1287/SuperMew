@@ -29,6 +29,22 @@
       <div class="chat-container" ref="chatContainerRef">
         <WelcomeScreen v-if="chatStore.messages.length === 0" />
 
+        <div v-if="chatStore.hasOlderMessages" class="older-messages-control">
+          <button
+            type="button"
+            :disabled="chatStore.isLoadingOlderMessages"
+            @click="loadOlderMessages"
+          >
+            <i
+              class="fa-solid"
+              :class="
+                chatStore.isLoadingOlderMessages ? 'fa-spinner fa-spin' : 'fa-clock-rotate-left'
+              "
+            ></i>
+            {{ chatStore.isLoadingOlderMessages ? '正在加载' : '加载更早消息' }}
+          </button>
+        </div>
+
         <MessageItem
           v-for="(msg, index) in chatStore.messages"
           :key="messageKey(msg, index)"
@@ -64,9 +80,10 @@ const chatStore = useChatStore();
 const sessionStore = useSessionStore();
 const chatContainerRef = ref<HTMLDivElement | null>(null);
 const messageItemRefs = ref<any[]>([]);
+const preservingOlderScroll = ref(false);
 
 const sessionTitle = computed(() => {
-  const session = sessionStore.sessions.find((item) => item.session_id === chatStore.sessionId);
+  const session = sessionStore.sessions.find((item) => item.thread_id === chatStore.sessionId);
   if (session?.title) return session.title;
   const firstUserMessage = chatStore.messages.find(
     (message) => message.isUser && message.text.trim()
@@ -77,11 +94,13 @@ const sessionTitle = computed(() => {
 });
 
 const generationStatus = computed(() => {
+  if (chatStore.isCreatingThread) return '正在创建对话';
   if (chatStore.currentTransportStatus === 'reconnecting') return '连接恢复中';
   if (chatStore.currentRunStatus === 'creating') return '正在创建运行';
   if (['queued', 'pending'].includes(chatStore.currentRunStatus || '')) return '运行已排队';
   if (chatStore.currentRunStatus === 'cancelling') return '正在终止运行';
   if (chatStore.currentRunStatus === 'running') return '喵喵正在生成';
+  if (chatStore.currentRunStatus === 'waiting_input') return '等待你的补充';
   if (chatStore.currentPendingHitl) return '等待你的补充';
   return '喵喵在线';
 });
@@ -128,9 +147,30 @@ const openHistory = async () => {
   }
 };
 
+const loadOlderMessages = async () => {
+  const container = chatContainerRef.value;
+  const threadId = chatStore.sessionId;
+  const previousHeight = container?.scrollHeight || 0;
+  const previousTop = container?.scrollTop || 0;
+  preservingOlderScroll.value = true;
+  try {
+    await chatStore.loadOlderMessages();
+    await nextTick();
+    if (container && chatStore.sessionId === threadId) {
+      container.scrollTop = previousTop + Math.max(container.scrollHeight - previousHeight, 0);
+    }
+  } catch (error: any) {
+    alert(error.message);
+  } finally {
+    preservingOlderScroll.value = false;
+  }
+};
+
 watch(
   () => chatStore.messages,
-  () => nextTick(scrollToBottom),
+  () => {
+    if (!preservingOlderScroll.value) nextTick(scrollToBottom);
+  },
   { deep: true }
 );
 

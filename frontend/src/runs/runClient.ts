@@ -1,4 +1,5 @@
 import api, { getPublicError } from '@/utils/api';
+import { requireThreadId } from '@/threads/threadId';
 import type {
   RunCreateRequest,
   RunCreateResponse,
@@ -36,18 +37,20 @@ async function publicRequest<T>(request: Promise<{ data: T }>): Promise<T> {
   }
 }
 
-export function createRun(
+export async function createRun(
   threadId: string,
   request: RunCreateRequest,
   token: string
 ): Promise<RunCreateResponse> {
-  return publicRequest(
+  const response = await publicRequest(
     api.post<RunCreateResponse>(
-      `/v1/threads/${encodeURIComponent(threadId)}/runs`,
+      `/v1/threads/${encodeURIComponent(requireThreadId(threadId))}/runs`,
       request,
       authorization(token)
     )
   );
+  requireThreadId(response.run.thread_id);
+  return response;
 }
 
 export function getRun(runId: string, token: string): Promise<RunRecord> {

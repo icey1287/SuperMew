@@ -30,19 +30,19 @@
 
         <article
           v-for="session in sessionStore.sessions"
-          :key="session.session_id"
-          :class="['history-item', { active: session.session_id === chatStore.sessionId }]"
+          :key="session.thread_id"
+          :class="['history-item', { active: session.thread_id === chatStore.sessionId }]"
         >
-          <button type="button" class="session-body" @click="onLoadSession(session.session_id)">
+          <button type="button" class="session-body" @click="onLoadSession(session.thread_id)">
             <span class="session-state-dot" aria-hidden="true"></span>
             <span class="session-info">
               <strong class="session-title">{{ session.title || '未命名会话' }}</strong>
               <span class="session-meta">
                 <span>{{ session.message_count }} 条消息</span>
-                <span v-if="session.status === 'waiting_input'" class="session-status"
+                <span v-if="session.activeRunStatus === 'waiting_input'" class="session-status"
                   >等待补充</span
                 >
-                <span v-else-if="session.status === 'cancelling'" class="session-status"
+                <span v-else-if="session.activeRunStatus === 'cancelling'" class="session-status"
                   >终止中</span
                 >
                 <span v-else-if="session.isStreaming" class="session-status">生成中</span>
@@ -55,7 +55,7 @@
             class="history-delete-btn"
             title="删除会话"
             aria-label="删除会话"
-            @click.stop="onDeleteSession(session.session_id)"
+            @click.stop="onDeleteSession(session.thread_id)"
           >
             <i class="fa-regular fa-trash-can"></i>
           </button>
@@ -104,13 +104,13 @@ const onLoadSession = async (sessionId: string) => {
 };
 
 const onDeleteSession = async (sessionId: string) => {
-  if (runsStore.activeForThread(sessionId)) {
+  if (runsStore.activeForThread(sessionId) || sessionStore.threadById(sessionId)?.isStreaming) {
     alert('该会话仍有活跃运行，请先终止或等待完成后再删除');
     return;
   }
 
   const sessionLabel =
-    sessionStore.sessions.find((session) => session.session_id === sessionId)?.title || sessionId;
+    sessionStore.sessions.find((session) => session.thread_id === sessionId)?.title || sessionId;
   if (!confirm('确定要删除会话“' + sessionLabel + '”吗？')) {
     return;
   }
