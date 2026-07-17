@@ -228,6 +228,66 @@ test('silently restores an HttpOnly refresh session without rendering the login 
   expect(await page.evaluate(() => Object.keys(localStorage))).toEqual(['supermew-theme']);
 });
 
+test('returns from history to the chat draft without creating an empty Thread', async ({
+  page,
+}) => {
+  let createThreadCalls = 0;
+  await mockCapabilityCatalog(page);
+  await page.route('**/auth/refresh', async (route) => {
+    await route.fulfill({
+      json: { access_token: 'restored-token', username: 'restored-user', role: 'user' },
+    });
+  });
+  await page.route('**/v1/threads', async (route) => {
+    if (route.request().method() === 'POST') {
+      createThreadCalls += 1;
+      await route.fulfill({
+        status: 201,
+        json: {
+          thread_id: 'thread-unexpected-empty',
+          title: '新对话',
+          message_count: 0,
+          version: 0,
+          thread_status: 'active',
+          active_run_id: null,
+          active_run_status: null,
+          created_at: '2026-07-17T00:00:00Z',
+          updated_at: '2026-07-17T00:00:00Z',
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        threads: [
+          {
+            thread_id: 'thread-existing',
+            title: '已有对话',
+            message_count: 2,
+            version: 2,
+            thread_status: 'active',
+            active_run_id: null,
+            active_run_status: null,
+            created_at: '2026-07-16T00:00:00Z',
+            updated_at: '2026-07-17T00:00:00Z',
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '历史对话', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '历史对话', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '历史对话' })).toBeVisible();
+
+  await page.getByRole('button', { name: '智能对话', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: '历史对话' })).toBeHidden();
+  await expect(page.getByPlaceholder(/和喵喵说点什么/)).toBeVisible();
+  expect(createThreadCalls).toBe(0);
+});
+
 test('keeps a failed logout locally revoked across a page reload', async ({ page }) => {
   let refreshCalls = 0;
   let logoutCalls = 0;

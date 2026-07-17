@@ -567,16 +567,15 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async handleNewChat() {
+    handleNewChat() {
       this.userInput = '';
+      this.threadId = '';
+      this.messages = [];
+      this.activeNav = 'newChat';
+      delete this.messagesByThread[''];
+      delete this.messagePagesByThread[''];
       useCapabilityStore().setActiveThread(null);
-      this.setViewedThread('', []);
       useThreadStore().showHistorySidebar = false;
-      try {
-        await this.createNewThread();
-      } catch (error) {
-        alert(getPublicError(error).message);
-      }
     },
 
     async handleClearChat() {
@@ -597,8 +596,7 @@ export const useChatStore = defineStore('chat', {
       try {
         await useThreadStore().deleteThread(threadId);
         this.removeThreadState(threadId);
-        this.setViewedThread('', []);
-        await this.createNewThread();
+        this.handleNewChat();
       } catch (error) {
         alert(getPublicError(error).message);
       }

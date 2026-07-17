@@ -286,6 +286,21 @@ describe('durable chat projection', () => {
     await sending;
   });
 
+  it('returns from history to a local draft without creating an empty Thread', async () => {
+    const { chatStore, threadStore } = setupStores('thread-1');
+    chatStore.activeNav = 'history';
+    threadStore.showHistorySidebar = true;
+
+    await chatStore.handleNewChat();
+
+    expect(createThread).not.toHaveBeenCalled();
+    expect(threadStore.threads.map((thread) => thread.thread_id)).toEqual(['thread-1']);
+    expect(chatStore.threadId).toBe('');
+    expect(chatStore.messages).toEqual([]);
+    expect(chatStore.activeNav).toBe('newChat');
+    expect(threadStore.showHistorySidebar).toBe(false);
+  });
+
   it('keeps the user-facing prompt clean while activating Web Research for the Run', async () => {
     const streams = installControlledStreams();
     vi.mocked(createRun).mockResolvedValue(createResponse('run_1', 'thread-1'));
@@ -403,12 +418,11 @@ describe('durable chat projection', () => {
     expect(alert).toHaveBeenCalledWith('Thread 服务暂不可用');
   });
 
-  it('authoritatively deletes the current Thread before creating a replacement', async () => {
+  it('authoritatively deletes the current Thread before returning to a local draft', async () => {
     vi.mocked(deleteThread).mockResolvedValue({
       thread_id: 'thread-1',
       message: '成功删除 Thread',
     });
-    vi.mocked(createThread).mockResolvedValue(threadDetail('thread-replacement'));
     const { chatStore, threadStore } = setupStores();
     chatStore.messagesByThread['thread-1'] = [{ text: '旧消息', isUser: true }];
     chatStore.messages = chatStore.messagesByThread['thread-1'];
@@ -416,10 +430,11 @@ describe('durable chat projection', () => {
     await chatStore.handleClearChat();
 
     expect(deleteThread).toHaveBeenCalledWith('thread-1');
-    expect(createThread).toHaveBeenCalledWith({});
-    expect(chatStore.threadId).toBe('thread-replacement');
+    expect(createThread).not.toHaveBeenCalled();
+    expect(chatStore.threadId).toBe('');
+    expect(chatStore.messages).toEqual([]);
     expect(chatStore.messagesByThread['thread-1']).toBeUndefined();
-    expect(threadStore.threads.map((thread) => thread.thread_id)).toEqual(['thread-replacement']);
+    expect(threadStore.threads).toEqual([]);
   });
 
   it('keeps the current Thread intact when authoritative deletion reports an active Run', async () => {
