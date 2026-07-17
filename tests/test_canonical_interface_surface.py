@@ -25,6 +25,7 @@ def test_application_exposes_only_canonical_public_interfaces() -> None:
         "/documents/upload/jobs/{job_id}",
         "/health/live",
         "/health/ready",
+        "/v1/capabilities",
         "/v1/runs/{run_id}",
         "/v1/runs/{run_id}/cancel",
         "/v1/runs/{run_id}/events",

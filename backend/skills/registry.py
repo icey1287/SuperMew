@@ -278,6 +278,20 @@ class SkillSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillControlPlaneSummary:
+    """Secret-free Skill projection for authenticated control-plane callers."""
+
+    name: str
+    version: str
+    description: str
+    activation: str
+    available: bool
+    availability_reason: Literal["permission_required", "not_configured"] | None
+    required_roles: tuple[str, ...]
+    tool_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ActivatedSkill:
     """The only view that exposes frozen skill instructions and tool scope."""
 
@@ -654,6 +668,38 @@ class SkillRegistry:
                     name=record.manifest.name,
                     version=record.manifest.version,
                     description=record.manifest.description,
+                )
+            )
+        return tuple(summaries)
+
+    def control_plane_catalog(
+        self,
+        access: SkillAccess,
+    ) -> tuple[SkillControlPlaneSummary, ...]:
+        """Return every Skill with a stable, secret-free availability decision."""
+
+        summaries: list[SkillControlPlaneSummary] = []
+        for name in self.names:
+            manifest = self._records[name].manifest
+            missing_roles = not set(manifest.required_roles) <= access.roles
+            missing_configuration = not (
+                set(manifest.required_secrets) <= access.available_secrets
+            )
+            reason: Literal["permission_required", "not_configured"] | None = None
+            if missing_roles:
+                reason = "permission_required"
+            elif missing_configuration:
+                reason = "not_configured"
+            summaries.append(
+                SkillControlPlaneSummary(
+                    name=manifest.name,
+                    version=manifest.version,
+                    description=manifest.description,
+                    activation=f"/{manifest.name}",
+                    available=reason is None,
+                    availability_reason=reason,
+                    required_roles=manifest.required_roles,
+                    tool_names=manifest.allowed_tools,
                 )
             )
         return tuple(summaries)

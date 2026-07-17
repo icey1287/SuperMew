@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -128,6 +129,43 @@ def test_catalog_and_activation_enforce_roles_and_secret_names(tmp_path: Path) -
     assert [item.name for item in registry.catalog(access)] == ["analysis"]
     assert registry.activate("analysis", access, "router").name == "analysis"
     assert "DATABASE_DSN" not in repr(access)
+
+
+def test_control_plane_catalog_explains_availability_without_secret_details(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "skills"
+    root.mkdir()
+    _write_skill(
+        root,
+        required_roles=("analyst",),
+        required_secrets=("DATABASE_DSN",),
+    )
+    registry = SkillRegistry.load(root, {"query_data"})
+
+    denied = registry.control_plane_catalog(SkillAccess())[0]
+    unconfigured = registry.control_plane_catalog(
+        SkillAccess(roles=frozenset({"analyst"}))
+    )[0]
+    available = registry.control_plane_catalog(
+        SkillAccess(
+            roles=frozenset({"analyst"}),
+            available_secrets=frozenset({"DATABASE_DSN"}),
+        )
+    )[0]
+
+    assert denied.availability_reason == "permission_required"
+    assert unconfigured.availability_reason == "not_configured"
+    assert available.available is True
+    assert available.availability_reason is None
+    assert available.required_roles == ("analyst",)
+    assert available.tool_names == ("query_data",)
+    assert available.activation == "/analysis"
+    projection = asdict(available)
+    assert "required_secrets" not in projection
+    assert "content" not in projection
+    assert "content_hash" not in projection
+    assert "DATABASE_DSN" not in str(projection)
 
 
 def test_activation_requires_matching_immutable_pin(tmp_path: Path) -> None:
