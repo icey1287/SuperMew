@@ -830,6 +830,7 @@ describe('durable chat projection', () => {
     expect(chatStore.messages[1]).toMatchObject({
       id: 12,
       runId: 'run_1',
+      text: '',
       isHitlRequest: true,
       hitlOptions: ['丹瑾', '丹恒'],
     });
@@ -847,6 +848,11 @@ describe('durable chat projection', () => {
     resumedConnection?.options.onEvent(
       event('run_1', 'thread-1', 5, 'hitl.resumed', { answer: '丹瑾' })
     );
+    expect(chatStore.messages[1]).toMatchObject({
+      text: '',
+      hitlResumeText: '丹瑾',
+      isHitlRequest: false,
+    });
     resumedConnection?.options.onEvent(
       event('run_1', 'thread-1', 6, 'message.completed', {
         content: '丹瑾是湮灭属性。',

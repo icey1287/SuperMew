@@ -46,12 +46,6 @@ function appendPublicError(text: string, error: PublicRequestError): string {
   return text.trim() ? `${text}\n\n${rendered}` : rendered;
 }
 
-function formatHitlText(hitl: HitlRequest): string {
-  const options = hitl.options || [];
-  if (!options.length) return hitl.prompt;
-  return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
-}
-
 function publicMessageContent(message: ThreadMessage): string {
   const skillName = message.skill_name?.trim();
   if (!skillName || message.role !== 'user') return message.content;
@@ -361,7 +355,6 @@ export const useChatStore = defineStore('chat', {
             retrieval_status: run.pendingHitl.retrievalStatus || undefined,
             original_question: run.pendingHitl.originalQuestion || undefined,
           };
-          assistant.text = formatHitlText(hitl);
           assistant.isThinking = false;
           assistant.hitlPrompt = hitl.prompt;
           assistant.hitlOptions = hitl.options || [];
