@@ -76,7 +76,13 @@
         </div>
 
         <div v-else-if="filteredDocuments.length === 0" class="empty-documents">
-          <span class="empty-icon"><i class="fa-regular fa-folder-open"></i></span>
+          <img
+            v-if="!searchQuery"
+            :src="emptyKnowledge"
+            class="empty-illustration empty-knowledge-illustration"
+            alt=""
+          />
+          <span v-else class="empty-icon"><i class="fa-solid fa-magnifying-glass"></i></span>
           <h3>{{ searchQuery ? '没有匹配的文档' : '知识库还是空的' }}</h3>
           <p>{{ searchQuery ? '换一个关键词试试。' : '从右侧上传第一份资料，让喵喵开始学习。' }}</p>
         </div>
@@ -96,6 +102,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import UploadSection from './UploadSection.vue';
 import DocumentItem from './DocumentItem.vue';
 import { useDocumentStore } from '@/stores/documents';
+import emptyKnowledge from '@/assets/images/empty-knowledge.webp';
 
 const documentStore = useDocumentStore();
 const searchQuery = ref('');

@@ -14,7 +14,9 @@
           aria-live="polite"
         >
           <div class="auth-panel auth-restore-panel">
-            <span class="auth-mini-logo"><i class="fa-solid fa-cat"></i></span>
+            <span class="auth-mini-logo" aria-hidden="true">
+              <img :src="superMewMark" class="brand-mark-image" alt="" />
+            </span>
             <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
             <h1>正在恢复登录状态</h1>
             <p>正在安全连接你的私有知识空间…</p>
@@ -52,6 +54,7 @@ import { useRunsStore } from '@/stores/runs';
 import { useCapabilityStore } from '@/stores/capabilities';
 import { useModelStore } from '@/stores/models';
 import { useEvaluationStore } from '@/stores/evaluations';
+import superMewMark from '@/assets/images/supermew-mark.png';
 
 const HistorySidebar = defineAsyncComponent(() => import('@/components/HistorySidebar.vue'));
 const ChatArea = defineAsyncComponent(() => import('@/components/Chat/ChatArea.vue'));

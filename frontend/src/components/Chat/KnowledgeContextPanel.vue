@@ -12,7 +12,7 @@
     </div>
 
     <div v-if="!latestMessage" class="context-empty">
-      <span class="context-empty-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+      <img :src="emptyEvidence" class="context-empty-illustration" alt="" />
       <h3>等待一次提问</h3>
       <p>检索步骤、证据置信度和引用来源会实时出现在这里。</p>
     </div>
@@ -85,6 +85,7 @@ import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
 import ArtifactShelf from '@/components/Artifacts/ArtifactShelf.vue';
 import type { RunTimelineItem } from '@/events/runEventReducer';
 import type { RetrievedChunk } from '@/types/chat';
+import emptyEvidence from '@/assets/images/empty-evidence.webp';
 
 interface RunStepView {
   key: string;

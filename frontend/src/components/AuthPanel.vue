@@ -25,7 +25,9 @@
 
     <div class="auth-panel">
       <div class="auth-panel-heading">
-        <span class="auth-mini-logo"><i class="fa-solid fa-cat"></i></span>
+        <span class="auth-mini-logo" aria-hidden="true">
+          <img :src="superMewMark" class="brand-mark-image" alt="" />
+        </span>
         <div>
           <span class="auth-eyebrow">{{
             authStore.authMode === 'login' ? 'Welcome back' : 'Create account'
@@ -126,6 +128,7 @@
 
 <script setup lang="ts">
 import { useAuthStore } from '@/stores/auth';
+import superMewMark from '@/assets/images/supermew-mark.png';
 
 const authStore = useAuthStore();
 

@@ -2,7 +2,7 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <div class="logo-icon" aria-hidden="true">
-        <i class="fa-solid fa-cat"></i>
+        <img :src="superMewMark" class="brand-mark-image" alt="" />
       </div>
       <div class="brand-copy">
         <h1>喵喵助手</h1>
@@ -168,6 +168,7 @@ import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type { ThreadListItem } from '@/types/threads';
+import superMewMark from '@/assets/images/supermew-mark.png';
 
 defineProps<{
   theme: 'dark' | 'light';

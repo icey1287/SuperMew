@@ -27,7 +27,7 @@
 
       <div class="history-list">
         <div v-if="threadStore.threads.length === 0" class="empty-history">
-          <span class="empty-icon"><i class="fa-regular fa-comments"></i></span>
+          <img :src="emptyHistory" class="empty-illustration empty-history-illustration" alt="" />
           <h3>暂无历史记录</h3>
           <p>开始一段新对话后，喵喵会在这里替你保存。</p>
         </div>
@@ -80,6 +80,7 @@
 import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
 import { useRunsStore } from '@/stores/runs';
+import emptyHistory from '@/assets/images/empty-history.webp';
 
 const chatStore = useChatStore();
 const threadStore = useThreadStore();

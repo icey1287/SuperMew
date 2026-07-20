@@ -1,8 +1,6 @@
 <template>
   <section class="welcome-screen">
-    <div class="welcome-avatar" aria-hidden="true">
-      <i class="fa-solid fa-cat"></i>
-    </div>
+    <img :src="superMewMascot" class="welcome-avatar" alt="" aria-hidden="true" />
     <span class="welcome-eyebrow"><i class="fa-solid fa-sparkles"></i> Mew is ready</span>
     <h2>你好，我是喵喵。</h2>
     <p>我会在回答时检索你的知识库、展示处理过程，并把每个关键结论链接回原始证据。</p>
@@ -43,6 +41,7 @@
 import { computed } from 'vue';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type { CapabilitySkill } from '@/types/capabilities';
+import superMewMascot from '@/assets/images/supermew-mascot.webp';
 
 const capabilityStore = useCapabilityStore();
 const featuredNames = ['knowledge-base', 'web-research', 'sql-assistant', 'sandbox'];

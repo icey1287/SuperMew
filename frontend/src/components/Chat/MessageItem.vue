@@ -4,7 +4,7 @@
     :class="['message', msg.isUser ? 'user-message' : 'bot-message']"
   >
     <div v-if="!msg.isUser" class="message-avatar" aria-hidden="true">
-      <i class="fa-solid fa-cat"></i>
+      <img :src="superMewMark" class="brand-mark-image" alt="" />
     </div>
 
     <div class="message-column">
@@ -90,6 +90,7 @@ import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
 import type { Message } from '@/types/chat';
 import { useChatStore } from '@/stores/chat';
 import { getPublicError } from '@/utils/api';
+import superMewMark from '@/assets/images/supermew-mark.png';
 
 const props = defineProps<{
   msg: Message;
