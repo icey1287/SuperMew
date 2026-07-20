@@ -79,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
 import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
 import ArtifactShelf from '@/components/Artifacts/ArtifactShelf.vue';
@@ -98,6 +98,18 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
+const currentTime = ref(Date.now());
+let durationTimer: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  durationTimer = setInterval(() => {
+    currentTime.value = Date.now();
+  }, 250);
+});
+
+onUnmounted(() => {
+  if (durationTimer !== null) clearInterval(durationTimer);
+});
 
 const latestMessageIndex = computed(() => {
   for (let index = chatStore.messages.length - 1; index >= 0; index -= 1) {
@@ -223,11 +235,22 @@ const confidenceDescription = computed(() => {
 });
 
 const totalDuration = computed(() => {
-  const total = (latestMessage.value?.ragSteps || []).reduce(
-    (sum, step) => sum + Number(step.elapsed_ms || 0),
-    0
-  );
-  return total > 0 ? formatMilliseconds(total) : '';
+  const recordedDuration = latestMessage.value?.runActiveDurationMs;
+  if (recordedDuration !== undefined) {
+    const activeStartedAt = latestMessage.value?.runActiveStartedAt;
+    const activeStartedTimestamp = activeStartedAt ? Date.parse(activeStartedAt) : Number.NaN;
+    const activeElapsed = Number.isFinite(activeStartedTimestamp)
+      ? Math.max(currentTime.value - activeStartedTimestamp, 0)
+      : 0;
+    const total = Math.max(recordedDuration, 0) + activeElapsed;
+    return total > 0 ? formatMilliseconds(total) : '';
+  }
+
+  const elapsed = (latestMessage.value?.ragSteps || []).reduce((latest, step) => {
+    const sample = Number(step.elapsed_ms);
+    return Number.isFinite(sample) ? Math.max(latest, sample) : latest;
+  }, 0);
+  return elapsed > 0 ? formatMilliseconds(elapsed) : '';
 });
 
 const formatMilliseconds = (milliseconds: number) => {

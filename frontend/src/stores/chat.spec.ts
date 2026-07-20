@@ -806,10 +806,16 @@ describe('durable chat projection', () => {
       })
     );
     streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
-    streams.emit('run_1', event('run_1', 'thread-1', 3, 'run.waiting_input'));
     streams.emit(
       'run_1',
-      event('run_1', 'thread-1', 4, 'hitl.required', {
+      event('run_1', 'thread-1', 3, 'message.delta', {
+        content: '请补充角色名\n\n可选方向：\n- 丹瑾\n- 丹恒',
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 4, 'run.waiting_input'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 5, 'hitl.required', {
         hitl_token: 'hitl_1',
         checkpoint_id: 'checkpoint_1',
         prompt: '请补充角色名',
@@ -818,7 +824,7 @@ describe('durable chat projection', () => {
         retrieval_status: 'needs_clarification',
       })
     );
-    streams.finish('run_1', 4);
+    streams.finish('run_1', 5);
     await firstTurn;
 
     expect(chatStore.messages).toHaveLength(2);
@@ -846,7 +852,7 @@ describe('durable chat projection', () => {
     );
 
     resumedConnection?.options.onEvent(
-      event('run_1', 'thread-1', 5, 'hitl.resumed', { answer: '丹瑾' })
+      event('run_1', 'thread-1', 6, 'hitl.resumed', { answer: '丹瑾' })
     );
     expect(chatStore.messages[1]).toMatchObject({
       text: '',
@@ -854,12 +860,12 @@ describe('durable chat projection', () => {
       isHitlRequest: false,
     });
     resumedConnection?.options.onEvent(
-      event('run_1', 'thread-1', 6, 'message.completed', {
+      event('run_1', 'thread-1', 7, 'message.completed', {
         content: '丹瑾是湮灭属性。',
       })
     );
-    resumedConnection?.options.onEvent(event('run_1', 'thread-1', 7, 'run.completed'));
-    resumedConnection?.result.resolve(7);
+    resumedConnection?.options.onEvent(event('run_1', 'thread-1', 8, 'run.completed'));
+    resumedConnection?.result.resolve(8);
     await resumed;
 
     expect(chatStore.messages).toHaveLength(2);

@@ -163,6 +163,8 @@ export interface Message {
   isUser: boolean;
   isThinking?: boolean;
   thinkingStartedAt?: number;
+  runActiveDurationMs?: number;
+  runActiveStartedAt?: string | null;
   isHitlRequest?: boolean;
   isHitlAnswer?: boolean;
   hitlPrompt?: string;

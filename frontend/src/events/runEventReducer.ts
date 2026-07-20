@@ -74,6 +74,8 @@ export interface RunEventState {
   lastSequence: number;
   terminal: boolean;
   terminalSequence: number | null;
+  activeDurationMs: number;
+  activeStartedAt: string | null;
   hasGap: boolean;
   userMessageId: number | null;
   assistantMessageId: number | null;
@@ -213,6 +215,20 @@ function lifecycleStatus(value: unknown): RunLifecycleStatus {
   return 'pending';
 }
 
+function eventTimestamp(value: string): number | null {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function finishActiveInterval(state: RunEventState, endedAt: string): void {
+  const started = state.activeStartedAt ? eventTimestamp(state.activeStartedAt) : null;
+  const ended = eventTimestamp(endedAt);
+  if (started !== null && ended !== null && ended >= started) {
+    state.activeDurationMs += ended - started;
+  }
+  state.activeStartedAt = null;
+}
+
 function eventError(data: UnknownRecord, defaults: Partial<PublicErrorInfo>): PublicErrorInfo {
   return normalizePublicErrorInfo(data, defaults);
 }
@@ -244,6 +260,8 @@ export function initialRunEventState(runId: string, threadId: string): RunEventS
     lastSequence: 0,
     terminal: false,
     terminalSequence: null,
+    activeDurationMs: 0,
+    activeStartedAt: null,
     hasGap: false,
     userMessageId: null,
     assistantMessageId: null,
@@ -304,6 +322,7 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
     case 'run.started':
       next.status = 'running';
       next.error = null;
+      if (next.activeStartedAt === null) next.activeStartedAt = event.timestamp;
       appendTimelineItem(
         next,
         baseTimelineItem(event, data, {
@@ -315,9 +334,11 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       );
       break;
     case 'run.waiting_input':
+      finishActiveInterval(next, event.timestamp);
       next.status = 'waiting_input';
       break;
     case 'run.completed':
+      finishActiveInterval(next, event.timestamp);
       next.status = 'completed';
       next.terminal = true;
       next.terminalSequence = event.sequence;
@@ -334,6 +355,7 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       );
       break;
     case 'run.failed':
+      finishActiveInterval(next, event.timestamp);
       next.status = 'failed';
       next.terminal = true;
       next.terminalSequence = event.sequence;
@@ -352,6 +374,7 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       });
       break;
     case 'run.cancelled':
+      finishActiveInterval(next, event.timestamp);
       next.status = 'cancelled';
       next.terminal = true;
       next.terminalSequence = event.sequence;
@@ -382,12 +405,15 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       next.ragTrace = asRecord(data.rag_trace);
       break;
     case 'hitl.required':
+      next.messageText = '';
+      next.messageStatus = 'waiting_input';
       next.pendingHitl = hitlState(data);
       next.status = 'waiting_input';
       break;
     case 'hitl.resumed':
       next.pendingHitl = null;
       next.lastResumeAnswer = safeString(data.answer);
+      next.messageStatus = 'streaming';
       next.status = 'running';
       break;
     case 'usage.updated':

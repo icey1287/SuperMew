@@ -343,6 +343,8 @@ export const useChatStore = defineStore('chat', {
         assistant.isThinking = BUSY_RUN_STATUSES.has(run.status) && !run.messageText;
         assistant.isHitlRequest = Boolean(run.pendingHitl);
         assistant.hitlResumeText = run.lastResumeAnswer || assistant.hitlResumeText;
+        assistant.runActiveDurationMs = run.activeDurationMs;
+        assistant.runActiveStartedAt = run.activeStartedAt;
 
         if (run.pendingHitl) {
           const hitl: HitlRequest = {
@@ -355,6 +357,7 @@ export const useChatStore = defineStore('chat', {
             retrieval_status: run.pendingHitl.retrievalStatus || undefined,
             original_question: run.pendingHitl.originalQuestion || undefined,
           };
+          assistant.text = '';
           assistant.isThinking = false;
           assistant.hitlPrompt = hitl.prompt;
           assistant.hitlOptions = hitl.options || [];

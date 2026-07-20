@@ -127,6 +127,45 @@ describe('run event reducer', () => {
     expect(state.lastResumeAnswer).toBe('丹瑾');
   });
 
+  it('adds active execution intervals across HITL without counting human wait time', () => {
+    let state = initialRunEventState('run_1', 'thread-1');
+    state = applyRunEvent(
+      state,
+      event(1, 'run.created', {}, { timestamp: '2026-07-14T00:00:00Z' })
+    );
+    state = applyRunEvent(
+      state,
+      event(2, 'run.started', {}, { timestamp: '2026-07-14T00:00:01Z' })
+    );
+    state = applyRunEvent(
+      state,
+      event(3, 'run.waiting_input', {}, { timestamp: '2026-07-14T00:00:21Z' })
+    );
+
+    expect(state.activeDurationMs).toBe(20_000);
+    expect(state.activeStartedAt).toBeNull();
+
+    state = applyRunEvent(
+      state,
+      event(4, 'hitl.required', { prompt: '请补充角色名' }, { timestamp: '2026-07-14T00:00:21Z' })
+    );
+    state = applyRunEvent(
+      state,
+      event(5, 'hitl.resumed', { answer: '丹瑾' }, { timestamp: '2026-07-14T00:00:51Z' })
+    );
+    state = applyRunEvent(
+      state,
+      event(6, 'run.started', {}, { timestamp: '2026-07-14T00:00:52Z' })
+    );
+    state = applyRunEvent(
+      state,
+      event(7, 'run.completed', {}, { timestamp: '2026-07-14T00:01:02Z' })
+    );
+
+    expect(state.activeDurationMs).toBe(30_000);
+    expect(state.activeStartedAt).toBeNull();
+  });
+
   it('records progress, cancellation requests, tool failures and warnings', () => {
     let state = initialRunEventState('run_1', 'thread-1');
     state = applyRunEvent(
