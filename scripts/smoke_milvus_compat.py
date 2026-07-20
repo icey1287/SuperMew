@@ -90,10 +90,9 @@ def main() -> int:
         )
         if not isinstance(inserted, Mapping) or inserted.get("insert_count") != 3:
             raise AssertionError(f"unexpected insert result: {inserted!r}")
-        with store.session() as client:
-            client.flush(collection_name=collection)
-            client.load_collection(collection_name=collection)
-
+        # Publication verifies immediately after the final insert. The exact
+        # version query must therefore provide its own strong visibility
+        # guarantee instead of depending on an out-of-band flush.
         verification = store.verify_version(
             tenant_id="default",
             knowledge_base_id="kb-smoke",
@@ -104,6 +103,10 @@ def main() -> int:
         )
         if not verification.exact:
             raise AssertionError(verification)
+
+        with store.session() as client:
+            client.flush(collection_name=collection)
+            client.load_collection(collection_name=collection)
 
         retrieval_filter = and_filter(
             version_scope_filter(

@@ -392,7 +392,11 @@ class MilvusStore:
         return self._run(_query)
 
     def query_all(
-        self, filter_expr: str = "", output_fields: list[str] | None = None
+        self,
+        filter_expr: str = "",
+        output_fields: list[str] | None = None,
+        *,
+        consistency_level: str | None = None,
     ) -> list:
         """分页拉取；单次 session 内完成，避免每页新建连接。"""
         fields = output_fields or ["filename", "file_type"]
@@ -402,12 +406,17 @@ class MilvusStore:
             out: list = []
             offset = 0
             while True:
+                query_kwargs = {
+                    "collection_name": self.collection_name,
+                    "filter": expr,
+                    "output_fields": fields,
+                    "limit": QUERY_MAX_LIMIT,
+                    "offset": offset,
+                }
+                if consistency_level is not None:
+                    query_kwargs["consistency_level"] = consistency_level
                 batch = client.query(
-                    collection_name=self.collection_name,
-                    filter=expr,
-                    output_fields=fields,
-                    limit=QUERY_MAX_LIMIT,
-                    offset=offset,
+                    **query_kwargs,
                 )
                 if not batch:
                     break
@@ -518,7 +527,11 @@ class MilvusStore:
             document_version_ids=[document_version_id],
             index_version=index_version,
         )
-        rows = self.query_all(expression, output_fields=["chunk_id"])
+        rows = self.query_all(
+            expression,
+            output_fields=["chunk_id"],
+            consistency_level="Strong",
+        )
         chunk_ids: list[str] = []
         for row in rows:
             if not isinstance(row, Mapping):

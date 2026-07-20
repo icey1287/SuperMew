@@ -464,6 +464,23 @@ def test_running_job_resume_never_moves_durable_progress_backwards(tmp_path):
     assert min(durable_progress) >= 72
 
 
+def test_retry_after_verify_never_caps_vector_progress_below_high_water(tmp_path):
+    build = _build(status=IndexJobStatus.RUNNING)
+    build.job.progress = 85
+    catalog = FakeCatalog(build)
+    publication = _publication(tmp_path, catalog=catalog)
+
+    publication.run("job-1")
+
+    vector_progress = [
+        update["progress"]
+        for update in catalog.updates
+        if update["current_step"] == "vector_store"
+    ]
+    assert vector_progress
+    assert min(vector_progress) >= 85
+
+
 def test_completed_job_short_circuits_without_touching_candidate_storage(tmp_path):
     catalog = FakeCatalog(_build(status=IndexJobStatus.COMPLETED))
     parent = FakeParentStore()

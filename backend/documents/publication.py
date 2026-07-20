@@ -590,17 +590,15 @@ class DocumentPublication:
 
             def on_vector_progress(processed: int, total: int) -> None:
                 local_percent = round(processed * 100 / total) if total else 100
-                global_progress = max(
-                    progress_floor,
+                stage_progress = min(
                     46 + round(local_percent * 0.34),
+                    _STEP_GLOBAL_PROGRESS["vector_store"],
                 )
                 self._step(
                     job_id=job_id,
                     publication_fence=fence,
                     step="vector_store",
-                    global_progress=min(
-                        global_progress, _STEP_GLOBAL_PROGRESS["vector_store"]
-                    ),
+                    global_progress=max(progress_floor, stage_progress),
                     step_percent=local_percent,
                     message=f"正在写入候选向量：{processed} / {total}",
                     callback=progress,

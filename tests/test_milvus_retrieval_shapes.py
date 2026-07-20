@@ -268,9 +268,14 @@ class MilvusVersionPrimitiveTests(unittest.TestCase):
     def test_query_version_chunk_ids_uses_safe_exact_scope(self):
         captured = {}
 
-        def query_all(filter_expr="", output_fields=None):
+        def query_all(
+            filter_expr="",
+            output_fields=None,
+            consistency_level=None,
+        ):
             captured["filter"] = filter_expr
             captured["fields"] = output_fields
+            captured["consistency_level"] = consistency_level
             return [{"chunk_id": "chunk-1"}, {"chunk_id": "chunk-2"}]
 
         self.store.query_all = query_all
@@ -285,6 +290,7 @@ class MilvusVersionPrimitiveTests(unittest.TestCase):
 
         self.assertEqual(["chunk-1", "chunk-2"], chunk_ids)
         self.assertEqual(["chunk_id"], captured["fields"])
+        self.assertEqual("Strong", captured["consistency_level"])
         self.assertIn('tenant_id == "tenant\\" or id >= 0"', captured["filter"])
         self.assertIn('document_version_id in ["version-1"]', captured["filter"])
 
