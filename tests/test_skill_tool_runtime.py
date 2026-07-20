@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -19,6 +20,7 @@ from backend.core.settings import AgentSettings, RunSettings
 from backend.core.errors import AppError, ErrorCode
 from backend.skills import SkillAccess, SkillPin, SkillRegistry
 from backend.tools.catalog import build_default_tool_registry
+from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA
 from backend.tools.registry import ToolDescriptor, ToolExposure, ToolRegistry
 
 
@@ -118,6 +120,7 @@ def _descriptor(
     *,
     argument: str,
     group: str = "runtime-test",
+    output_schema: dict | None = None,
 ) -> ToolDescriptor:
     return ToolDescriptor(
         name=name,
@@ -130,7 +133,7 @@ def _descriptor(
             "required": [argument],
             "additionalProperties": False,
         },
-        output_schema={"type": "string"},
+        output_schema=output_schema or {"type": "string"},
         timeout=2.0,
         max_concurrency=4,
         idempotent=True,
@@ -157,6 +160,7 @@ def _registry_with_deferred_sql(calls: list[str]) -> ToolRegistry:
             "Activate an authorized skill.",
             argument="name",
             group="registry-control",
+            output_schema=TOOL_RESULT_V1_SCHEMA,
         ),
         _control_placeholder("describe_skill"),
         exposure=ToolExposure.CONTROL,
@@ -167,6 +171,7 @@ def _registry_with_deferred_sql(calls: list[str]) -> ToolRegistry:
             "Reveal authorized deferred SQL schemas.",
             argument="query",
             group="registry-control",
+            output_schema=TOOL_RESULT_V1_SCHEMA,
         ),
         _control_placeholder("tool_search"),
         exposure=ToolExposure.CONTROL,
@@ -799,9 +804,77 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
     assert result.content == "SQL completed"
     assert model.bound_tool_names[0] == ["tool_search"]
     assert set(model.bound_tool_names[1]) == {"tool_search", "analysis_query"}
+    search_results = [
+        message
+        for message in model.received_messages[1]
+        if isinstance(message, ToolMessage) and message.name == "tool_search"
+    ]
+    assert len(search_results) == 1
+    search_payload = json.loads(str(search_results[0].content))
+    assert search_payload["data"] == {
+        "revealed_tools": ["analysis_query"],
+        "count": 1,
+        "schemas_available": True,
+    }
+    assert "input_schema" not in str(search_results[0].content)
     assert sql_calls == ["select count(*) from orders"]
     assert runtime.context.tool_session.is_allowed("analysis_query")
     assert "tool.denied" not in {event["stage"] for event in result.runtime_trace}
+
+
+async def test_describe_skill_returns_only_activation_acknowledgement():
+    model = ScriptedChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "describe_skill",
+                        "args": {"name": "knowledge-base"},
+                        "id": "call-describe-skill",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="Skill activated"),
+        ]
+    )
+    registry = build_default_tool_registry()
+    factory = AgentRuntimeFactory(
+        settings=_settings(),
+        models=_FixedModels(model),
+        tools=registry,
+        skills=_load_project_skills(registry),
+        secret_names_provider=lambda _registry: frozenset(),
+    )
+    request_context = RunRequestContext.for_sync(
+        user_id="alice",
+        thread_id="describe-skill-ack",
+    )
+    runtime = factory.create(
+        request_context,
+        allowed_tools=factory.tool_ceiling,
+    )
+    try:
+        result = await runtime.ainvoke(
+            AgentRuntimeInput(history=[], user_text="Use the knowledge-base skill")
+        )
+    finally:
+        request_context.close()
+
+    assert result.content == "Skill activated"
+    tool_results = [
+        message
+        for message in model.received_messages[1]
+        if isinstance(message, ToolMessage) and message.name == "describe_skill"
+    ]
+    assert len(tool_results) == 1
+    payload = json.loads(str(tool_results[0].content))
+    assert payload["data"]["activated"] is True
+    assert "instructions" not in payload["data"]
+    next_message_text = "\n".join(_message_texts(model.received_messages[1]))
+    assert next_message_text.count("# Knowledge Base") == 1
+    assert '<skill_catalog state="omitted" reason="active-skill" />' in next_message_text
 
 
 async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(

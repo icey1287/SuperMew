@@ -3,6 +3,7 @@ import re
 
 from langchain_core.tools import tool
 
+from backend.rag.evidence import agent_evidence_character_budget, pack_evidence
 from backend.runs.request_context import RunRequestContext
 
 
@@ -75,14 +76,17 @@ def _render_rag_result(
     if not docs:
         return "No relevant documents found in the knowledge base."
 
-    formatted = []
-    for i, result in enumerate(docs, 1):
-        source = result.get("filename", "Unknown")
-        page = result.get("page_number", "N/A")
-        text = result.get("text", "")
-        formatted.append(f"[{i}] {source} (Page {page}):\n{text}")
-
-    chunks = "Retrieved Chunks:\n" + "\n\n---\n\n".join(formatted)
+    evidence = pack_evidence(
+        docs,
+        maximum_characters=agent_evidence_character_budget(),
+    )
+    budget_notice = ""
+    if evidence.omitted_count or evidence.truncated_count:
+        budget_notice = (
+            "\nEVIDENCE_CONTEXT_NOTICE: Only the shown highest-ranked chunks fit the "
+            "answer context. Use only these chunks."
+        )
+    chunks = "Retrieved Chunks:\n" + evidence.text + budget_notice
     if (
         outcome == "INSUFFICIENT_EVIDENCE"
         or status in {"partial", "insufficient_evidence"}

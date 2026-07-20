@@ -27,11 +27,13 @@ from backend.providers import (
     provider_executor,
 )
 from backend.rag.pipeline import resume_rag_from_hitl, run_rag_graph
+from backend.rag.evidence import pack_evidence, rag_evidence_character_budget
 from backend.runs.request_context import RunRequestContext
 
 
-_MAX_ANSWER_CONTEXT_CHARACTERS = 24_000
-_MAX_JUDGE_EVIDENCE_CHARACTERS = 18_000
+_RAG_EVIDENCE_CHARACTER_BUDGET = rag_evidence_character_budget()
+_MAX_ANSWER_CONTEXT_CHARACTERS = min(24_000, _RAG_EVIDENCE_CHARACTER_BUDGET)
+_MAX_JUDGE_EVIDENCE_CHARACTERS = min(18_000, _RAG_EVIDENCE_CHARACTER_BUDGET)
 
 
 class RagJudgeDecision(RagJudgeMetrics):
@@ -283,19 +285,11 @@ class RagEvaluationRuntime:
         *,
         maximum: int,
     ) -> str:
-        chunks: list[str] = []
-        used = 0
-        for index, document in enumerate(documents, 1):
-            source = str(document.get("filename") or "Unknown")[:240]
-            page = str(document.get("page_number") or "N/A")[:40]
-            text = str(document.get("text") or "")[:4000]
-            chunk = f"[{index}] {source} (Page {page}):\n{text}"
-            remaining = maximum - used
-            if remaining <= 0:
-                break
-            chunks.append(chunk[:remaining])
-            used += len(chunks[-1])
-        return "\n\n---\n\n".join(chunks)
+        return pack_evidence(
+            documents,
+            maximum_characters=maximum,
+            max_document_characters=4_000,
+        ).text
 
     @staticmethod
     def _retrieved_identities(

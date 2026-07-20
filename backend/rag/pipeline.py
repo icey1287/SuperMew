@@ -27,6 +27,7 @@ from backend.rag.runtime_context import (
     register_rag_runtime_context,
 )
 from backend.rag.outcomes import outcome_for_status
+from backend.rag.evidence import pack_evidence, rag_evidence_character_budget
 from backend.providers import (
     ProviderCallContext,
     ProviderError,
@@ -180,15 +181,10 @@ class RAGState(TypedDict):
 
 
 def _format_docs(docs: List[dict]) -> str:
-    if not docs:
-        return ""
-    chunks = []
-    for i, doc in enumerate(docs, 1):
-        source = doc.get("filename", "Unknown")
-        page = doc.get("page_number", "N/A")
-        text = doc.get("text", "")
-        chunks.append(f"[{i}] {source} (Page {page}):\n{text}")
-    return "\n\n---\n\n".join(chunks)
+    return pack_evidence(
+        docs,
+        maximum_characters=rag_evidence_character_budget(),
+    ).text
 
 
 def _copy_jsonable_doc(doc: dict) -> dict:

@@ -366,7 +366,7 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertIn(active_context, dynamic_text)
         self.assertIn("…[memory omitted by context budget]", dynamic_text)
         self.assertIn(
-            '<skill_catalog state="omitted" reason="context-budget" />',
+            '<skill_catalog state="omitted" reason="active-skill" />',
             dynamic_text,
         )
         self.assertNotIn("[truncated by context budget]", dynamic_text)

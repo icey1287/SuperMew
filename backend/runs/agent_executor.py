@@ -26,6 +26,7 @@ from backend.rag.checkpoint_runner import (
     ResumeAccessState,
     checkpointed_rag_runner,
 )
+from backend.rag.evidence import agent_evidence_character_budget, pack_evidence
 from backend.rag.outcomes import (
     partial_evidence_instruction,
     retrieval_user_message,
@@ -192,13 +193,10 @@ def _resume_answer_prompt(result: dict, answer: str) -> str | None:
     docs = list(result.get("docs") or [])
     if not docs:
         return None
-    chunks = []
-    for index, item in enumerate(docs, 1):
-        chunks.append(
-            f"[{index}] {item.get('filename', 'Unknown')} "
-            f"(Page {item.get('page_number', 'N/A')}):\n"
-            f"{item.get('text', '')}"
-        )
+    evidence = pack_evidence(
+        docs,
+        maximum_characters=agent_evidence_character_budget(),
+    )
     original_question = result.get("original_question") or result.get("question") or ""
     evidence_instruction = partial_evidence_instruction(result)
     return (
@@ -207,7 +205,7 @@ def _resume_answer_prompt(result: dict, answer: str) -> str | None:
         f"证据约束：{evidence_instruction or '检索证据覆盖完整。'}\n\n"
         f"原始问题：\n{original_question}\n\n"
         f"用户补充：\n{answer}\n\n"
-        "检索片段：\n" + "\n\n---\n\n".join(chunks)
+        "检索片段：\n" + evidence.text
     )
 
 

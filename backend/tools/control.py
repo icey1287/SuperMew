@@ -1,30 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 from langchain_core.tools import tool
 
 from backend.skills import SkillActivationSession, SkillRegistryError
 from backend.tools.contracts import ToolResultV1, new_tool_failure, new_tool_success
-from backend.tools.registry import ToolDescriptor, ToolSession
-
-
-def _descriptor_payload(descriptor: ToolDescriptor) -> dict[str, Any]:
-    return {
-        "name": descriptor.name,
-        "description": descriptor.description,
-        "group": descriptor.group,
-        "version": descriptor.version,
-        "input_schema": dict(descriptor.input_schema),
-        "output_schema": dict(descriptor.output_schema),
-        "timeout": descriptor.timeout,
-        "max_concurrency": descriptor.max_concurrency,
-        "idempotent": descriptor.idempotent,
-        "requires_approval": descriptor.requires_approval,
-        "network_policy": descriptor.network_policy,
-        "result_size_limit": descriptor.result_size_limit,
-    }
+from backend.tools.registry import ToolSession
 
 
 def make_control_tool_overrides(holder: Mapping[str, object]) -> dict[str, object]:
@@ -41,7 +23,7 @@ def make_control_tool_overrides(holder: Mapping[str, object]) -> dict[str, objec
 
     @tool("describe_skill")
     def describe_skill(name: str) -> ToolResultV1:
-        """Activate one available Skill and load its full instructions."""
+        """Activate one available Skill for subsequent model calls."""
 
         try:
             skill_session, tool_session = _sessions()
@@ -53,9 +35,8 @@ def make_control_tool_overrides(holder: Mapping[str, object]) -> dict[str, objec
                 data={
                     "name": activated.name,
                     "version": activated.version,
-                    "description": activated.description,
                     "content_hash": activated.pin.content_hash,
-                    "instructions": activated.instructions,
+                    "activated": True,
                     "allowed_tools": allowed,
                 },
                 observability_metadata={
@@ -74,15 +55,16 @@ def make_control_tool_overrides(holder: Mapping[str, object]) -> dict[str, objec
 
     @tool("tool_search")
     def tool_search(query: str, limit: int = 5) -> ToolResultV1:
-        """Search authorized deferred tools and reveal matching schemas."""
+        """Reveal authorized deferred tools for subsequent model calls."""
 
         _, tool_session = _sessions()
         safe_limit = max(1, min(int(limit), 8))
         descriptors = tool_session.search(query, limit=safe_limit)
         result = new_tool_success(
             data={
-                "tools": [_descriptor_payload(item) for item in descriptors],
+                "revealed_tools": [item.name for item in descriptors],
                 "count": len(descriptors),
+                "schemas_available": True,
             },
             observability_metadata={"revealed_count": len(descriptors)},
         )

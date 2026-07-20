@@ -181,8 +181,13 @@ class AgentRuntimeContext:
         skill_catalog = ""
         active_skill = ""
         if self.skill_session is not None:
-            if include_skill_catalog:
+            has_active_skill = self.skill_session.active is not None
+            if include_skill_catalog and not has_active_skill:
                 skill_catalog = self.skill_session.catalog_context()
+            elif has_active_skill:
+                skill_catalog = (
+                    '<skill_catalog state="omitted" reason="active-skill" />'
+                )
             else:
                 skill_catalog = (
                     '<skill_catalog state="omitted" reason="context-budget" />'

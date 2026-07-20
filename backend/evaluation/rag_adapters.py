@@ -282,6 +282,7 @@ def rag_source_fingerprint(root: str | Path) -> str:
         "backend/providers/embedding.py",
         "backend/providers/rerank.py",
         "backend/providers/runtime.py",
+        "backend/rag/evidence.py",
         "backend/rag/outcomes.py",
         "backend/rag/pipeline.py",
         "backend/rag/reranking.py",
