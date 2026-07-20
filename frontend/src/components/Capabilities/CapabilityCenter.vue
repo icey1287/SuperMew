@@ -455,7 +455,7 @@ const rolesLabel = (roles: string[]) =>
 
 .capability-eyebrow {
   color: var(--mint);
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 780;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -470,7 +470,7 @@ const rolesLabel = (roles: string[]) =>
 .capability-center-header p {
   margin-top: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-small);
   line-height: 1.6;
 }
 
@@ -512,7 +512,7 @@ const rolesLabel = (roles: string[]) =>
   outline: 0;
   color: var(--text);
   background: transparent;
-  font-size: 10px;
+  font-size: var(--font-ui);
 }
 
 .capability-search kbd {
@@ -521,7 +521,7 @@ const rolesLabel = (roles: string[]) =>
   border-radius: 6px;
   color: var(--muted);
   background: var(--surface-soft);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .capability-tabs {
@@ -538,7 +538,7 @@ const rolesLabel = (roles: string[]) =>
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .capability-tabs button {
@@ -568,7 +568,7 @@ const rolesLabel = (roles: string[]) =>
   margin-left: auto;
   color: var(--muted-strong);
   font-family: 'SFMono-Regular', Consolas, monospace;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .capability-content {
@@ -658,19 +658,19 @@ const rolesLabel = (roles: string[]) =>
 .skill-title-row > div > span {
   color: var(--muted);
   font-family: 'SFMono-Regular', Consolas, monospace;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .skill-title-row h3 {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .skill-main > p,
 .tool-card > p {
   margin-top: 8px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
   line-height: 1.65;
 }
 
@@ -678,7 +678,7 @@ const rolesLabel = (roles: string[]) =>
   flex: none;
   padding: 3px 6px;
   border-radius: 999px;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .availability-badge.is-available {
@@ -706,7 +706,7 @@ const rolesLabel = (roles: string[]) =>
   color: var(--text-soft);
   background: var(--surface-soft);
   font-family: 'SFMono-Regular', Consolas, monospace;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .skill-tags .is-warning {
@@ -718,7 +718,7 @@ const rolesLabel = (roles: string[]) =>
   padding-top: 8px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .skill-card > button,
@@ -729,7 +729,7 @@ const rolesLabel = (roles: string[]) =>
   color: var(--mint);
   background: rgba(168, 246, 209, 0.06);
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 680;
 }
 
@@ -751,7 +751,7 @@ const rolesLabel = (roles: string[]) =>
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  font-size: 11px;
+  font-size: var(--font-body);
 }
 
 .tool-card-heading code,
@@ -764,13 +764,13 @@ const rolesLabel = (roles: string[]) =>
 
 .tool-card-heading code {
   color: var(--lilac);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .tool-card-heading small {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .availability-dot {
@@ -804,7 +804,7 @@ const rolesLabel = (roles: string[]) =>
   border-radius: 8px;
   color: var(--text-soft);
   background: var(--surface-soft);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .tool-policy-grid strong {
@@ -833,12 +833,12 @@ const rolesLabel = (roles: string[]) =>
 
 .capability-state strong {
   color: var(--text-soft);
-  font-size: 12px;
+  font-size: var(--font-body);
 }
 
 .capability-state p {
   max-width: 380px;
-  font-size: 8px;
+  font-size: var(--font-caption);
   line-height: 1.6;
 }
 

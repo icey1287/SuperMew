@@ -184,7 +184,7 @@ const loadInspector = async (event: Event) => {
   gap: 9px;
   color: var(--text-soft);
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
   list-style: none;
 }
 
@@ -194,7 +194,7 @@ const loadInspector = async (event: Event) => {
 
 .message-run-inspector summary small {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .message-run-inspector details[open] summary {
@@ -206,7 +206,7 @@ const loadInspector = async (event: Event) => {
   border: 1px dashed var(--line);
   border-radius: 10px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .message-inspector-state.is-error {

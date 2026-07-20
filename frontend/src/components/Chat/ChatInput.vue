@@ -377,7 +377,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   border-radius: 9px;
   color: var(--mint);
   background: rgba(168, 246, 209, 0.07);
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .mode-trigger-copy {
@@ -395,13 +395,13 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
 
 .mode-trigger-copy strong {
   color: var(--text-soft);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .mode-trigger-copy small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mode-trigger kbd {
@@ -409,11 +409,11 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   border: 1px solid var(--line);
   border-radius: 5px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mode-trigger > .fa-chevron-down {
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mode-approval-dot {
@@ -425,7 +425,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   border-radius: 999px;
   color: var(--warning);
   background: var(--warning-soft);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mode-center-link {
@@ -435,7 +435,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .mode-center-link:hover:not(:disabled) {
@@ -453,7 +453,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   border-radius: 10px;
   color: var(--muted);
   background: rgba(168, 246, 209, 0.04);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .mode-notice.is-error {
@@ -493,7 +493,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   border-radius: 8px;
   color: var(--lilac);
   background: rgba(200, 185, 255, 0.07);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .mode-composer-heading > div {
@@ -508,13 +508,13 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
 
 .mode-composer-heading strong {
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .mode-composer-heading small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
   line-height: 1.5;
 }
 
@@ -524,7 +524,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--mint);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mode-quick-prompts,
@@ -542,7 +542,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
 .sandbox-language > span {
   margin-right: 3px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mode-quick-prompts button,
@@ -553,7 +553,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   color: var(--text-soft);
   background: var(--surface);
   cursor: pointer;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .sandbox-language button.active {
@@ -565,7 +565,7 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
 .sandbox-language small {
   margin-left: auto;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .chat-input-textarea.is-code-input {

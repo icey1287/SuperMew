@@ -102,7 +102,7 @@ const guardrailClass = (decision: string) => [
   border-radius: 8px;
   color: var(--muted);
   background: var(--surface-strong);
-  font-size: 8px;
+  font-size: var(--font-micro);
 }
 
 .execution-node.is-running {
@@ -137,7 +137,7 @@ const guardrailClass = (decision: string) => [
 
 .execution-heading strong {
   color: var(--text-soft);
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 680;
 }
 
@@ -145,7 +145,7 @@ const guardrailClass = (decision: string) => [
 .execution-copy > p,
 .execution-meta {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .execution-copy > p {
@@ -169,7 +169,7 @@ const guardrailClass = (decision: string) => [
   border-radius: 5px;
   color: var(--lilac);
   background: var(--surface-soft);
-  font-size: 7px;
+  font-size: var(--font-micro);
   text-overflow: ellipsis;
 }
 
@@ -203,7 +203,7 @@ const guardrailClass = (decision: string) => [
   border: 1px dashed var(--line);
   border-radius: 11px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
   line-height: 1.5;
 }
 </style>

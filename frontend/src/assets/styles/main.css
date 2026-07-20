@@ -40,12 +40,12 @@
   --radius-lg: 18px;
   --radius-md: 13px;
   --radius-sm: 9px;
-  --font-micro: 10px;
-  --font-caption: 11px;
-  --font-small: 12px;
-  --font-ui: 13px;
-  --font-body: 14px;
-  --font-title-sm: 15px;
+  --font-micro: 11px;
+  --font-caption: 12px;
+  --font-small: 13px;
+  --font-ui: 14px;
+  --font-body: 15px;
+  --font-title-sm: 17px;
   color: var(--text);
   background: var(--page-bg);
 }
@@ -3387,7 +3387,8 @@ html[data-theme='light'] .btn-primary {
 
 .brand-copy span,
 .sidebar-section-label,
-.nav-count {
+.nav-count,
+.nav-shortcut {
   font-size: var(--font-micro);
 }
 

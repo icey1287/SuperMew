@@ -652,7 +652,7 @@ onMounted(refresh);
 .section-heading p {
   margin-top: 7px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-body);
   line-height: 1.55;
 }
 
@@ -671,7 +671,7 @@ onMounted(refresh);
   padding: 0 14px;
   border-radius: 11px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-body);
   font-weight: 720;
 }
 
@@ -703,7 +703,7 @@ html[data-theme='light'] .primary-button {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 11px;
-  font-size: 11px;
+  font-size: var(--font-body);
 }
 
 .workspace-alert span {
@@ -776,13 +776,13 @@ html[data-theme='light'] .primary-button {
 
 .control-summary small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .control-summary strong {
   margin-top: 5px;
   overflow: hidden;
-  font-size: 14px;
+  font-size: 17px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -790,7 +790,7 @@ html[data-theme='light'] .primary-button {
 .control-summary p {
   margin-top: 4px;
   color: var(--muted-strong);
-  font-size: 8px;
+  font-size: var(--font-caption);
   line-height: 1.45;
 }
 
@@ -819,7 +819,7 @@ html[data-theme='light'] .primary-button {
 
 .section-kicker {
   color: var(--mint);
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 780;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -827,7 +827,7 @@ html[data-theme='light'] .primary-button {
 
 .section-heading h2 {
   margin-top: 4px;
-  font-size: 15px;
+  font-size: 18px;
 }
 
 .snapshot-note {
@@ -839,7 +839,7 @@ html[data-theme='light'] .primary-button {
   border-radius: 999px;
   color: var(--lilac);
   background: rgba(200, 185, 255, 0.07);
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 680;
 }
 
@@ -895,20 +895,20 @@ html[data-theme='light'] .primary-button {
 
 .assignment-card-head small {
   color: var(--muted-strong);
-  font-size: 7px;
+  font-size: var(--font-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .assignment-card-head h3 {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--font-body);
 }
 
 .assignment-state {
   padding: 4px 6px;
   border-radius: 999px;
-  font-size: 7px;
+  font-size: var(--font-micro);
   font-weight: 720;
 }
 
@@ -926,7 +926,7 @@ html[data-theme='light'] .primary-button {
   min-height: 38px;
   margin-top: 11px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-small);
   line-height: 1.55;
 }
 
@@ -939,7 +939,7 @@ html[data-theme='light'] .primary-button {
 
 .assignment-select > span {
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 650;
 }
 
@@ -953,7 +953,7 @@ html[data-theme='light'] .primary-button {
   color: var(--text);
   background: var(--surface-strong);
   appearance: none;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .assignment-select > i {
@@ -961,7 +961,7 @@ html[data-theme='light'] .primary-button {
   right: 11px;
   bottom: 14px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
   pointer-events: none;
 }
 
@@ -983,7 +983,7 @@ html[data-theme='light'] .primary-button {
   border-radius: 7px;
   color: var(--muted);
   background: var(--surface);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .profiles-heading {
@@ -1009,7 +1009,7 @@ html[data-theme='light'] .primary-button {
   outline: 0;
   color: var(--text);
   background: transparent;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .profile-table-wrap {
@@ -1027,7 +1027,7 @@ html[data-theme='light'] .primary-button {
   padding: 9px 10px;
   border-bottom: 1px solid var(--line);
   color: var(--muted-strong);
-  font-size: 7px;
+  font-size: var(--font-micro);
   font-weight: 760;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1037,7 +1037,7 @@ html[data-theme='light'] .primary-button {
   padding: 11px 10px;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .profile-table tbody tr:last-child td {
@@ -1058,7 +1058,7 @@ html[data-theme='light'] .primary-button {
   border-radius: 9px;
   color: #171622;
   background: linear-gradient(135deg, var(--mint), var(--lilac));
-  font-size: 10px;
+  font-size: var(--font-ui);
   font-weight: 820;
 }
 
@@ -1071,7 +1071,7 @@ html[data-theme='light'] .primary-button {
 
 .profile-identity strong,
 .model-name {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .profile-identity small,
@@ -1079,7 +1079,7 @@ html[data-theme='light'] .primary-button {
 .muted-cell {
   margin-top: 3px;
   color: var(--muted-strong);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .endpoint-label {
@@ -1111,7 +1111,7 @@ html[data-theme='light'] .primary-button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .profile-status i {
@@ -1173,11 +1173,11 @@ html[data-theme='light'] .primary-button {
 
 .empty-state strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-body);
 }
 
 .empty-state p {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .empty-state button {
@@ -1187,7 +1187,7 @@ html[data-theme='light'] .primary-button {
   color: var(--mint-ink);
   background: var(--mint);
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 720;
 }
 
@@ -1230,7 +1230,7 @@ html[data-theme='light'] .primary-button {
 .model-modal header p {
   margin-top: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .model-modal form {
@@ -1255,7 +1255,7 @@ html[data-theme='light'] .primary-button {
 .form-field > span,
 .capability-fieldset legend {
   color: var(--text-soft);
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 680;
 }
 
@@ -1269,7 +1269,7 @@ html[data-theme='light'] .primary-button {
   outline: 0;
   color: var(--text);
   background: var(--surface);
-  font-size: 10px;
+  font-size: var(--font-ui);
 }
 
 .form-field input:focus,
@@ -1279,7 +1279,7 @@ html[data-theme='light'] .primary-button {
 
 .form-field small {
   color: var(--muted-strong);
-  font-size: 7px;
+  font-size: var(--font-micro);
   line-height: 1.45;
 }
 
@@ -1304,13 +1304,13 @@ html[data-theme='light'] .primary-button {
 }
 
 .secret-boundary strong {
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .secret-boundary span {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
   line-height: 1.35;
 }
 
@@ -1350,13 +1350,13 @@ html[data-theme='light'] .primary-button {
 }
 
 .capability-fieldset strong {
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .capability-fieldset small {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
   line-height: 1.35;
 }
 
@@ -1367,7 +1367,7 @@ html[data-theme='light'] .primary-button {
   border-radius: 9px;
   color: var(--danger);
   background: var(--danger-soft);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .model-modal footer {
@@ -1397,7 +1397,7 @@ html[data-theme='light'] .primary-button {
 .confirm-modal p {
   margin-top: 9px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-ui);
   line-height: 1.65;
 }
 

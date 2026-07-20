@@ -1381,7 +1381,7 @@ onUnmounted(() => {
   max-width: 760px;
   margin-top: 7px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-body);
   line-height: 1.55;
 }
 
@@ -1401,7 +1401,7 @@ onUnmounted(() => {
   padding: 0 14px;
   border-radius: 11px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-body);
   font-weight: 720;
 }
 
@@ -1436,7 +1436,7 @@ html[data-theme='light'] .run-button {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 11px;
-  font-size: 11px;
+  font-size: var(--font-body);
 }
 
 .workspace-alert span {
@@ -1509,7 +1509,7 @@ html[data-theme='light'] .run-button {
 
 .overview-grid small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .overview-grid strong {
@@ -1520,7 +1520,7 @@ html[data-theme='light'] .run-button {
 .overview-grid p {
   margin-top: 4px;
   color: var(--muted-strong);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .launch-panel,
@@ -1542,7 +1542,7 @@ html[data-theme='light'] .run-button {
 
 .section-kicker {
   color: var(--mint);
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 780;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -1551,13 +1551,13 @@ html[data-theme='light'] .run-button {
 .launch-copy h2,
 .job-browser-head h2 {
   margin-top: 4px;
-  font-size: 15px;
+  font-size: 18px;
 }
 
 .launch-copy p {
   margin-top: 7px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-small);
   line-height: 1.55;
 }
 
@@ -1575,7 +1575,7 @@ html[data-theme='light'] .run-button {
 
 .launch-form label > span {
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 650;
 }
 
@@ -1589,7 +1589,7 @@ html[data-theme='light'] .run-button {
   outline: 0;
   color: var(--text);
   background: var(--surface-strong);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .run-button {
@@ -1607,11 +1607,11 @@ html[data-theme='light'] .run-button {
   justify-content: space-between;
   gap: 10px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .runtime-check-head strong {
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .is-ready,
@@ -1651,7 +1651,7 @@ html[data-theme='light'] .run-button {
   border-radius: 8px;
   color: var(--mint);
   background: rgba(168, 246, 209, 0.07);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .runtime-role-icon.is-fast {
@@ -1682,28 +1682,28 @@ html[data-theme='light'] .run-button {
 
 .runtime-model-grid small {
   color: var(--muted);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .runtime-model-grid strong {
   margin-top: 2px;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .runtime-model-grid p {
   margin-top: 2px;
   color: var(--muted-strong);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .runtime-model-grid article > i {
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .secret-note {
   margin-top: 7px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
   line-height: 1.4;
 }
 
@@ -1735,7 +1735,7 @@ html[data-theme='light'] .run-button {
   border-radius: 8px;
   color: var(--muted);
   background: var(--surface-soft);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .job-filters {
@@ -1755,7 +1755,7 @@ html[data-theme='light'] .run-button {
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .job-filters button.active {
@@ -1803,12 +1803,12 @@ html[data-theme='light'] .run-button {
 .job-card-meta small {
   color: var(--muted-strong);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .job-card > strong {
   overflow: hidden;
-  font-size: 9px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1834,7 +1834,7 @@ html[data-theme='light'] .run-button {
 
 .job-progress-row small,
 .job-card-meta strong {
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .status-pill {
@@ -1844,7 +1844,7 @@ html[data-theme='light'] .run-button {
   gap: 4px;
   padding: 4px 6px;
   border-radius: 999px;
-  font-size: 7px;
+  font-size: var(--font-micro);
   font-weight: 720;
 }
 
@@ -1883,11 +1883,11 @@ html[data-theme='light'] .run-button {
 
 .job-empty strong {
   color: var(--text);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .job-empty p {
-  font-size: 7px;
+  font-size: var(--font-micro);
   line-height: 1.4;
 }
 
@@ -1920,11 +1920,11 @@ html[data-theme='light'] .run-button {
 
 .experiment-empty h2 {
   color: var(--text);
-  font-size: 14px;
+  font-size: 18px;
 }
 
 .experiment-empty p {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .experiment-header {
@@ -1941,18 +1941,18 @@ html[data-theme='light'] .run-button {
 
 .experiment-title-row code {
   color: var(--muted-strong);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .experiment-header h2 {
   margin-top: 8px;
-  font-size: 17px;
+  font-size: 20px;
 }
 
 .experiment-header p {
   margin-top: 5px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .experiment-actions {
@@ -1983,7 +1983,7 @@ html[data-theme='light'] .run-button {
   justify-content: space-between;
   gap: 10px;
   color: var(--success);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .live-progress > div span {
@@ -2012,7 +2012,7 @@ html[data-theme='light'] .run-button {
 .live-progress p {
   margin-top: 6px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .job-model-snapshot {
@@ -2041,19 +2041,19 @@ html[data-theme='light'] .run-button {
 
 .job-model-snapshot small {
   color: var(--muted);
-  font-size: 6px;
+  font-size: var(--font-micro);
   text-transform: uppercase;
 }
 
 .job-model-snapshot strong {
   margin-top: 3px;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .job-model-snapshot span {
   margin-top: 3px;
   color: var(--muted-strong);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .experiment-tabs {
@@ -2073,7 +2073,7 @@ html[data-theme='light'] .run-button {
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 680;
 }
 
@@ -2086,7 +2086,7 @@ html[data-theme='light'] .run-button {
   padding: 2px 5px;
   border-radius: 999px;
   background: var(--surface-hover);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .report-view,
@@ -2133,20 +2133,20 @@ html[data-theme='light'] .run-button {
 }
 
 .report-verdict small {
-  font-size: 7px;
+  font-size: var(--font-micro);
   text-transform: uppercase;
 }
 
 .report-verdict strong {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .report-verdict p,
 .report-verdict time {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .metric-grid {
@@ -2173,18 +2173,18 @@ html[data-theme='light'] .run-button {
 
 .metric-grid article > span {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .metric-grid article > strong {
   margin-top: 6px;
-  font-size: 17px;
+  font-size: 20px;
 }
 
 .metric-grid article > small {
   margin-top: 3px;
   color: var(--muted-strong);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .metric-grid article > i {
@@ -2242,7 +2242,7 @@ html[data-theme='light'] .run-button {
 
 .card-heading h3 {
   margin-top: 3px;
-  font-size: 11px;
+  font-size: var(--font-body);
 }
 
 .card-heading select {
@@ -2252,7 +2252,7 @@ html[data-theme='light'] .run-button {
 
 .card-heading > span {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .trend-chart {
@@ -2267,7 +2267,7 @@ html[data-theme='light'] .run-button {
   flex-direction: column;
   padding: 2px 7px 15px 0;
   color: var(--muted-strong);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .trend-chart svg {
@@ -2304,7 +2304,7 @@ html[data-theme='light'] .run-button {
   gap: 3px;
   color: var(--muted-strong);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 5px;
+  font-size: var(--font-micro);
 }
 
 .gate-list {
@@ -2332,7 +2332,7 @@ html[data-theme='light'] .run-button {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 7px;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .gate-icon.is-passed {
@@ -2361,21 +2361,21 @@ html[data-theme='light'] .run-button {
 }
 
 .gate-list strong {
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .gate-list p {
   margin-top: 2px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 6px;
+  font-size: var(--font-micro);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .gate-list article > small {
   color: var(--text-soft);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .mini-empty {
@@ -2385,7 +2385,7 @@ html[data-theme='light'] .run-button {
   align-content: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .unavailable-metrics {
@@ -2398,7 +2398,7 @@ html[data-theme='light'] .run-button {
   gap: 10px;
   color: var(--muted);
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
   list-style: none;
 }
 
@@ -2425,7 +2425,7 @@ html[data-theme='light'] .run-button {
   padding: 7px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .unavailable-metrics strong {
@@ -2451,20 +2451,20 @@ html[data-theme='light'] .run-button {
 .terminal-state h3,
 .case-empty strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-body);
 }
 
 .terminal-state p,
 .case-empty p {
   max-width: 500px;
-  font-size: 8px;
+  font-size: var(--font-caption);
   line-height: 1.5;
 }
 
 .terminal-state small {
   color: var(--danger);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .case-toolbar {
@@ -2493,12 +2493,12 @@ html[data-theme='light'] .run-button {
   outline: 0;
   color: var(--text);
   background: transparent;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .case-toolbar > span {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .case-empty {
@@ -2524,7 +2524,7 @@ html[data-theme='light'] .run-button {
   padding: 8px 7px;
   border-bottom: 1px solid var(--line);
   color: var(--muted-strong);
-  font-size: 6px;
+  font-size: var(--font-micro);
   font-weight: 760;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2534,7 +2534,7 @@ html[data-theme='light'] .run-button {
   padding: 9px 7px;
   border-bottom: 1px solid var(--line);
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: var(--font-caption);
   vertical-align: middle;
 }
 
@@ -2550,13 +2550,13 @@ html[data-theme='light'] .run-button {
 
 .case-table td:first-child strong {
   color: var(--text);
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .case-table td:first-child small {
   margin-top: 2px;
   color: var(--muted-strong);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .question-cell {
@@ -2572,7 +2572,7 @@ html[data-theme='light'] .run-button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .case-status.is-completed {
@@ -2622,7 +2622,7 @@ html[data-theme='light'] .run-button {
   display: block;
   margin-bottom: 5px;
   color: var(--mint);
-  font-size: 6px;
+  font-size: var(--font-micro);
   font-weight: 760;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -2630,7 +2630,7 @@ html[data-theme='light'] .run-button {
 
 .case-details section > p {
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: var(--font-caption);
   line-height: 1.65;
   white-space: pre-wrap;
 }
@@ -2669,7 +2669,7 @@ html[data-theme='light'] .run-button {
 .detail-metrics small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 5px;
+  font-size: var(--font-micro);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2677,7 +2677,7 @@ html[data-theme='light'] .run-button {
 .detail-metrics strong {
   margin-top: 4px;
   color: var(--text);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .execution-facts {
@@ -2695,14 +2695,14 @@ html[data-theme='light'] .run-button {
 
 .execution-facts dt {
   color: var(--muted);
-  font-size: 5px;
+  font-size: var(--font-micro);
 }
 
 .execution-facts dd {
   margin-top: 3px;
   overflow: hidden;
   color: var(--text);
-  font-size: 7px;
+  font-size: var(--font-micro);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2730,7 +2730,7 @@ html[data-theme='light'] .run-button {
   border-radius: 7px;
   color: var(--lilac);
   background: rgba(200, 185, 255, 0.07);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .identity-list dl {
@@ -2753,7 +2753,7 @@ html[data-theme='light'] .run-button {
 
 .identity-list dt {
   color: var(--muted);
-  font-size: 5px;
+  font-size: var(--font-micro);
 }
 
 .identity-list dd {
@@ -2761,12 +2761,12 @@ html[data-theme='light'] .run-button {
   margin-top: 2px;
   color: var(--text-soft);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .identity-empty {
   color: var(--muted) !important;
-  font-size: 7px !important;
+  font-size: var(--font-micro) !important;
 }
 
 .modal-backdrop {
@@ -2806,7 +2806,7 @@ html[data-theme='light'] .run-button {
 .dataset-modal header p {
   margin-top: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .dataset-modal header > button {
@@ -2854,14 +2854,14 @@ html[data-theme='light'] .run-button {
 }
 
 .file-picker strong {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .file-picker small {
   margin-top: 3px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2880,7 +2880,7 @@ html[data-theme='light'] .run-button {
   color: var(--text-soft);
   background: var(--surface);
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 .dataset-editor {
@@ -2891,7 +2891,7 @@ html[data-theme='light'] .run-button {
 
 .dataset-editor > span {
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: var(--font-caption);
   font-weight: 680;
 }
 
@@ -2906,7 +2906,7 @@ html[data-theme='light'] .run-button {
   color: var(--text);
   background: #0d101a;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   line-height: 1.55;
 }
 
@@ -2940,14 +2940,14 @@ html[data-theme='light'] .dataset-editor textarea {
 }
 
 .dataset-preview strong {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .dataset-preview p,
 .dataset-preview small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 6px;
+  font-size: var(--font-micro);
 }
 
 .dataset-preview > div:not(:nth-child(2)) {
@@ -2963,7 +2963,7 @@ html[data-theme='light'] .dataset-editor textarea {
   border-radius: 9px;
   color: var(--danger);
   background: var(--danger-soft);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .dataset-modal footer {
@@ -2975,7 +2975,7 @@ html[data-theme='light'] .dataset-editor textarea {
 
 .dataset-modal footer > span {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .dataset-modal footer > div {

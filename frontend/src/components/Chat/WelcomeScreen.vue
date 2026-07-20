@@ -128,7 +128,7 @@ const unavailableLabel = (skill: CapabilitySkill) =>
   border-radius: 9px;
   color: var(--mint);
   background: rgba(168, 246, 209, 0.07);
-  font-size: 11px;
+  font-size: var(--font-small);
 }
 
 .welcome-mode-grid strong,
@@ -141,11 +141,11 @@ const unavailableLabel = (skill: CapabilitySkill) =>
 
 .welcome-mode-grid strong {
   color: inherit;
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .welcome-mode-grid small {
-  font-size: 7px;
+  font-size: var(--font-micro);
 }
 
 .welcome-center-link {
@@ -159,7 +159,7 @@ const unavailableLabel = (skill: CapabilitySkill) =>
   color: var(--lilac);
   background: transparent;
   cursor: pointer;
-  font-size: 8px;
+  font-size: var(--font-caption);
 }
 
 @media (max-width: 720px) {
