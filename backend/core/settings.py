@@ -83,6 +83,16 @@ class RagSettings(_EnvSettings):
         ge=512,
         validation_alias="RAG_MAX_CONTEXT_TOKENS",
     )
+    grader_evidence_characters: int = Field(
+        default=4800,
+        ge=512,
+        validation_alias="RAG_GRADER_EVIDENCE_CHARACTERS",
+    )
+    grader_max_document_characters: int = Field(
+        default=1200,
+        ge=128,
+        validation_alias="RAG_GRADER_MAX_DOCUMENT_CHARACTERS",
+    )
 
 
 class EmbeddingSettings(_EnvSettings):

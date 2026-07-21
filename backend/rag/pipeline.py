@@ -27,7 +27,13 @@ from backend.rag.runtime_context import (
     register_rag_runtime_context,
 )
 from backend.rag.outcomes import outcome_for_status
-from backend.rag.evidence import pack_evidence, rag_evidence_character_budget
+from backend.rag.evidence import (
+    EvidencePack,
+    grader_evidence_character_budget,
+    grader_max_document_character_budget,
+    pack_evidence,
+    rag_evidence_character_budget,
+)
 from backend.providers import (
     ProviderCallContext,
     ProviderError,
@@ -185,6 +191,14 @@ def _format_docs(docs: List[dict]) -> str:
         docs,
         maximum_characters=rag_evidence_character_budget(),
     ).text
+
+
+def _pack_grader_docs(docs: List[dict]) -> EvidencePack:
+    return pack_evidence(
+        docs,
+        maximum_characters=grader_evidence_character_budget(),
+        max_document_characters=grader_max_document_character_budget(),
+    )
 
 
 def _copy_jsonable_doc(doc: dict) -> dict:
@@ -593,6 +607,7 @@ def _grade_update(grade: EvidenceGrade, route: str) -> dict:
 def grade_documents_node(state: RAGState) -> RAGState:
     _emit(state, "📊", "正在评估证据质量...")
     docs = state.get("docs") or []
+    grader_evidence = None
     if not docs:
         grade = _grade_for_no_docs()
     else:
@@ -605,8 +620,11 @@ def grade_documents_node(state: RAGState) -> RAGState:
             grader,
         )
         question = state["question"]
-        context = state.get("context", "")
-        prompt = EVIDENCE_GRADE_PROMPT.format(question=question, context=context)
+        grader_evidence = _pack_grader_docs(docs)
+        prompt = EVIDENCE_GRADE_PROMPT.format(
+            question=question,
+            context=grader_evidence.text,
+        )
         grade = _invoke_structured_model(
             state,
             model=grader,
@@ -620,6 +638,19 @@ def grade_documents_node(state: RAGState) -> RAGState:
     grade_update = _grade_update(grade, route)
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update(grade_update)
+    rag_trace.update(
+        {
+            "grader_evidence_characters": (
+                grader_evidence.characters if grader_evidence is not None else 0
+            ),
+            "grader_evidence_omitted_count": (
+                grader_evidence.omitted_count if grader_evidence is not None else 0
+            ),
+            "grader_evidence_truncated_count": (
+                grader_evidence.truncated_count if grader_evidence is not None else 0
+            ),
+        }
+    )
 
     if route == "answer":
         if grade.answerability == "partial":

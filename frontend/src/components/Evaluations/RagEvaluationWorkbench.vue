@@ -411,6 +411,19 @@
                       <line x1="0" y1="8" x2="100" y2="8"></line>
                       <line x1="0" y1="25" x2="100" y2="25"></line>
                       <line x1="0" y1="42" x2="100" y2="42"></line>
+                      <line
+                        v-for="reference in visibleTrendReferences"
+                        :key="reference.key"
+                        :class="['trend-reference', `is-${reference.key}`]"
+                        x1="0"
+                        :y1="reference.y"
+                        x2="100"
+                        :y2="reference.y"
+                      >
+                        <title>
+                          {{ reference.label }}：{{ formatMetric(trendMetric, reference.value) }}
+                        </title>
+                      </line>
                       <polyline :points="trendPolyline"></polyline>
                       <circle
                         v-for="point in trendChartPoints"
@@ -427,6 +440,14 @@
                     <div class="trend-labels">
                       <span v-for="entry in trendEntries" :key="entry.job.id">
                         {{ shortJobId(entry.job.id) }}
+                      </span>
+                    </div>
+                    <div v-if="trendReferences.length" class="trend-legend">
+                      <span v-for="reference in trendReferences" :key="reference.key">
+                        <i :class="`is-${reference.key}`"></i>
+                        {{ reference.label }}
+                        {{ formatMetric(trendMetric, reference.value) }}
+                        <em v-if="!reference.visible">图外</em>
                       </span>
                     </div>
                   </div>
@@ -452,13 +473,16 @@
                       <span :class="['gate-icon', `is-${gate.status}`]">
                         <i :class="gateStatusIcon(gate.status)"></i>
                       </span>
-                      <div>
+                      <div class="gate-copy">
                         <strong>{{ gate.name }}</strong>
                         <p>{{ gate.detail || gate.metric || '门禁已执行' }}</p>
                       </div>
-                      <small v-if="gate.actual !== null && gate.actual !== undefined">
-                        {{ formatMetric(gate.metric || '', gate.actual) }}
-                      </small>
+                      <div v-if="gate.metric" class="gate-facts">
+                        <span v-for="fact in gateValueFacts(gate)" :key="fact.key">
+                          <small>{{ fact.label }}</small>
+                          <strong>{{ formatMetric(gate.metric, fact.value) }}</strong>
+                        </span>
+                      </div>
                     </article>
                   </div>
                   <div v-else class="mini-empty">
@@ -801,6 +825,8 @@ import type {
   RagEvaluationJobStatus,
   RagGateResult,
 } from '@/types/evaluations';
+import { normalizeRagEvaluationDataset } from '@/evaluations/datasetValidation';
+import { gateValueFacts, metricTrendDomain, trendPosition } from '@/evaluations/reportPresentation';
 import { getPublicError } from '@/utils/api';
 
 type JobFilter = 'all' | 'active' | 'succeeded' | 'failed';
@@ -853,11 +879,16 @@ const metricLabels: Record<string, string> = {
   outcome_accuracy: 'Outcome accuracy',
   hitl_accuracy: 'HITL accuracy',
   provider_failure_rate: 'Provider failure',
+  case_pass_rate: 'Case pass rate',
   duration_ms: 'Latency',
   latency_p50_ms: 'Latency p50',
   latency_p95_ms: 'Latency p95',
   recall_at_5: 'Recall@5',
   recall_at_10: 'Recall@10',
+  hit_at_5: 'Hit@5',
+  hit_at_10: 'Hit@10',
+  rewrite_coverage_rate: 'Rewrite coverage',
+  gold_chunk_coverage: 'Gold chunk coverage',
   precision_at_5: 'Precision@5',
   precision_at_10: 'Precision@10',
   document_recall_at_5: 'Document recall@5',
@@ -865,6 +896,13 @@ const metricLabels: Record<string, string> = {
 };
 
 const preferredHeadlineMetrics = [
+  'case_pass_rate',
+  'hit_at_5',
+  'hit_at_10',
+  'rewrite_coverage_rate',
+  'gold_chunk_coverage',
+  'latency_p95_ms',
+  'provider_failure_rate',
   'answer_correctness',
   'groundedness',
   'answer_relevance',
@@ -872,7 +910,6 @@ const preferredHeadlineMetrics = [
   'context_relevance',
   'unsupported_claim_rate',
   'conflict_disclosure_rate',
-  'recall_at_5',
 ];
 
 const activeStatuses = new Set<RagEvaluationJobStatus>(['queued', 'running', 'cancelling']);
@@ -992,17 +1029,46 @@ const trendEntries = computed(() => {
     )
     .slice(-8);
 });
-const trendMin = computed(() => Math.min(...trendEntries.value.map((entry) => entry.value), 0));
-const trendMax = computed(() => Math.max(...trendEntries.value.map((entry) => entry.value), 1));
+const trendGate = computed(() =>
+  selectedJob.value?.report?.gates.find((gate) => gate.metric === trendMetric.value)
+);
+const trendReferenceFacts = computed(() =>
+  trendGate.value
+    ? gateValueFacts(trendGate.value).filter((fact) => fact.key !== 'actual' && fact.value !== null)
+    : []
+);
+const trendDomain = computed(() =>
+  metricTrendDomain(
+    trendMetric.value,
+    trendEntries.value.map((entry) => entry.value),
+    trendReferenceFacts.value.map((fact) => fact.value)
+  )
+);
+const trendMin = computed(() => trendDomain.value.min);
+const trendMax = computed(() => trendDomain.value.max);
+const trendReferences = computed(() =>
+  trendReferenceFacts.value.map((fact) => {
+    const value = fact.value as number;
+    const visible = value >= trendMin.value && value <= trendMax.value;
+    return {
+      ...fact,
+      value,
+      visible,
+      y: trendPosition(value, trendDomain.value),
+    };
+  })
+);
+const visibleTrendReferences = computed(() =>
+  trendReferences.value.filter((reference) => reference.visible)
+);
 const trendChartPoints = computed(() => {
   const entries = trendEntries.value;
-  const span = trendMax.value - trendMin.value || 1;
   return entries.map((entry, index) => ({
     jobId: entry.job.id,
     label: shortJobId(entry.job.id),
     value: entry.value,
     x: entries.length === 1 ? 50 : (index / (entries.length - 1)) * 100,
-    y: 42 - ((entry.value - trendMin.value) / span) * 34,
+    y: trendPosition(entry.value, trendDomain.value),
   }));
 });
 const trendPolyline = computed(() =>
@@ -1210,37 +1276,12 @@ const closeDatasetImport = () => {
   importError.value = '';
 };
 
-const normalizeDataset = (value: unknown): RagEvaluationDataset => {
-  if (!value || typeof value !== 'object') throw new Error('Dataset JSON 必须是对象');
-  const container = value as Record<string, unknown>;
-  const raw =
-    container.dataset && typeof container.dataset === 'object' ? container.dataset : container;
-  const dataset = raw as Partial<RagEvaluationDataset>;
-  if (dataset.schema_version !== 1) throw new Error('schema_version 必须为 1');
-  if (typeof dataset.name !== 'string' || !dataset.name.trim())
-    throw new Error('Dataset name 不能为空');
-  if (!Array.isArray(dataset.cases) || !dataset.cases.length)
-    throw new Error('Dataset 至少需要一个 Case');
-  dataset.cases.forEach((item, index) => {
-    if (!item || typeof item !== 'object') throw new Error(`Case ${index + 1} 必须是对象`);
-    if (typeof item.id !== 'string' || !item.id.trim())
-      throw new Error(`Case ${index + 1} 缺少 id`);
-    if (typeof item.question !== 'string' || !item.question.trim()) {
-      throw new Error(`Case ${item.id || index + 1} 缺少 question`);
-    }
-    if (!item.expected || typeof item.expected !== 'object') {
-      throw new Error(`Case ${item.id || index + 1} 缺少 expected`);
-    }
-  });
-  return raw as RagEvaluationDataset;
-};
-
 const parseDatasetText = () => {
   datasetPreview.value = null;
   importError.value = '';
   if (!datasetText.value.trim()) return;
   try {
-    datasetPreview.value = normalizeDataset(JSON.parse(datasetText.value));
+    datasetPreview.value = normalizeRagEvaluationDataset(JSON.parse(datasetText.value));
   } catch (error) {
     importError.value = error instanceof Error ? error.message : 'Dataset JSON 无效';
   }
@@ -2285,6 +2326,31 @@ html[data-theme='light'] .run-button {
   stroke-width: 0.4;
 }
 
+.trend-chart line.trend-reference {
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.85;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-chart line.trend-reference.is-threshold,
+.trend-legend i.is-threshold {
+  stroke: var(--warning);
+  background: var(--warning);
+}
+
+.trend-chart line.trend-reference.is-baseline,
+.trend-legend i.is-baseline {
+  stroke: var(--mint);
+  background: var(--mint);
+}
+
+.trend-chart line.trend-reference.is-baseline_threshold,
+.trend-legend i.is-baseline_threshold {
+  stroke: var(--lilac);
+  background: var(--lilac);
+}
+
 .trend-chart polyline {
   fill: none;
   stroke: var(--mint);
@@ -2311,17 +2377,44 @@ html[data-theme='light'] .run-button {
   font-size: var(--font-micro);
 }
 
+.trend-legend {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: var(--muted-strong);
+  font-size: var(--font-micro);
+}
+
+.trend-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trend-legend i {
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+}
+
+.trend-legend em {
+  color: var(--warning);
+  font-style: normal;
+}
+
 .gate-list {
   display: grid;
   gap: 5px;
-  max-height: 175px;
+  max-height: 250px;
   margin-top: 10px;
   overflow-y: auto;
 }
 
 .gate-list article {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 7px;
   border: 1px solid var(--line);
@@ -2354,7 +2447,7 @@ html[data-theme='light'] .run-button {
   background: var(--surface-hover);
 }
 
-.gate-list article > div {
+.gate-copy {
   min-width: 0;
   flex: 1;
 }
@@ -2377,9 +2470,29 @@ html[data-theme='light'] .run-button {
   white-space: nowrap;
 }
 
-.gate-list article > small {
+.gate-facts {
+  display: grid;
+  min-width: 166px;
+  grid-template-columns: repeat(2, minmax(72px, 1fr));
+  gap: 5px;
+}
+
+.gate-facts span {
+  display: grid;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.gate-facts small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.gate-facts strong {
   color: var(--text-soft);
-  font-size: var(--font-micro);
+  font-variant-numeric: tabular-nums;
 }
 
 .mini-empty {

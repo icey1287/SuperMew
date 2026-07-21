@@ -76,6 +76,19 @@ class RagTraceSchemaTests(unittest.TestCase):
         self.assertNotIn("raw_filter", trace["retrieval_target_results"][0])
         self.assertEqual(0, trace["retrieval_target_results"][1]["hit_count"])
 
+    def test_grader_evidence_budget_trace_survives_normalization(self):
+        trace = normalize_rag_trace(
+            {
+                "grader_evidence_characters": 1532,
+                "grader_evidence_omitted_count": 4,
+                "grader_evidence_truncated_count": 3,
+            }
+        )
+
+        self.assertEqual(1532, trace["grader_evidence_characters"])
+        self.assertEqual(4, trace["grader_evidence_omitted_count"])
+        self.assertEqual(3, trace["grader_evidence_truncated_count"])
+
     def test_retrieved_chunk_keeps_versioned_manifest_identity(self):
         trace = normalize_rag_trace(
             {

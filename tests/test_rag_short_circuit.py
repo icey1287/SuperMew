@@ -340,6 +340,52 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual(1, calls["retrieve"])
         self.assertEqual(0, calls["step_back"])
 
+    def test_grader_uses_compact_evidence_without_shrinking_answer_context(self):
+        captured_prompts = []
+        documents = [
+            _doc(
+                f"evidence-{index}-" + (chr(97 + index) * 1400),
+                chunk_id=f"chunk-{index}",
+            )
+            for index in range(8)
+        ]
+
+        def retrieve(query, top_k=5):
+            return {"docs": documents, "meta": _meta(len(documents))}
+
+        def grade(schema, prompt):
+            captured_prompts.append(prompt)
+            return {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 0.93,
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline.grader_evidence_character_budget = lambda: 1600
+        pipeline.grader_max_document_character_budget = lambda: 500
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
+        )
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph("covered compact grader question", ctx)
+        finally:
+            ctx.close()
+
+        trace = result.get("rag_trace", {})
+        self.assertGreater(len(result.get("context", "")), 8000)
+        self.assertLessEqual(trace["grader_evidence_characters"], 1600)
+        self.assertGreater(trace["grader_evidence_omitted_count"], 0)
+        self.assertGreater(trace["grader_evidence_truncated_count"], 0)
+        self.assertLess(len(captured_prompts[0]), 3500)
+        self.assertIn("evidence-0", captured_prompts[0])
+        self.assertNotIn("evidence-7", captured_prompts[0])
+
     def test_weak_evidence_rewrites_once_then_clarifies(self):
         calls = {"retrieve": [], "step_back": 0}
 

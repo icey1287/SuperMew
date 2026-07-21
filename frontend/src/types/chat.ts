@@ -43,6 +43,9 @@ export interface RagTraceFields {
   evidence_ambiguity?: string;
   evidence_confidence?: number | null;
   evidence_reason?: string;
+  grader_evidence_characters?: number;
+  grader_evidence_omitted_count?: number;
+  grader_evidence_truncated_count?: number;
   missing_slots?: string[];
   hitl_prompt?: string;
   hitl_options?: string[];

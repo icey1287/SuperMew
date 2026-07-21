@@ -107,11 +107,16 @@ def test_strict_schema_rejects_unknown_fields_and_duplicate_cases():
     with pytest.raises(ValidationError):
         RagEvalDataset.model_validate(payload)
 
-    with pytest.raises(ValidationError, match="case ids must be unique"):
+    with pytest.raises(ValidationError) as error:
         RagEvalDataset(
             name="duplicate_cases",
             cases=(_answer_case(), _answer_case()),
         )
+
+    message = str(error.value)
+    assert "case ids must be unique" in message
+    assert "case-1" in message
+    assert "positions 1, 2" in message
 
 
 def test_observations_must_be_unique_and_cover_every_case():
@@ -168,12 +173,16 @@ def test_ranking_rewrite_route_outcome_hitl_and_latency_metrics_are_exact():
     assert report.metrics["ndcg_at_3"].value == pytest.approx(expected_ndcg)
     assert report.metrics["gold_chunk_coverage"].value == 1.0
     assert report.metrics["document_recall_at_3"].value == 1.0
+    assert report.metrics["hit_at_3"].value == 1.0
+    assert report.metrics["hit_at_3"].eligible_cases == 1
     assert report.metrics["complexity_accuracy"].value == 1.0
     assert report.metrics["route_accuracy"].value == 1.0
     assert report.metrics["outcome_accuracy"].value == 1.0
     assert report.metrics["hitl_accuracy"].value == 1.0
     assert report.metrics["rewrite_recall_delta_at_3"].value == 1.0
     assert report.metrics["rewrite_improvement_rate_at_3"].value == 1.0
+    assert report.metrics["rewrite_coverage_rate"].value == 1.0
+    assert report.metrics["rewrite_coverage_rate"].eligible_cases == 1
     assert report.metrics["provider_failure_rate"].value == 0.0
     assert report.metrics["latency_mean_ms"].value == 10.0
     assert report.metrics["latency_p50_ms"].value == 10.0
@@ -182,6 +191,34 @@ def test_ranking_rewrite_route_outcome_hitl_and_latency_metrics_are_exact():
     assert report.slices["single_fact"].metrics["recall_at_3"].value == 1.0
     assert report.metadata == {"profile": "offline"}
     assert report.unavailable_metrics["citation_precision"]
+
+
+def test_hit_at_k_and_rewrite_coverage_aggregate_over_all_eligible_cases():
+    cases = (
+        _answer_case(case_id="case-1"),
+        _answer_case(case_id="case-2"),
+    )
+    observations = (
+        _answer_observation(case_id="case-1"),
+        _answer_observation(
+            case_id="case-2",
+            chunk_ids=("x", "y", "z"),
+            rewrite_performed=False,
+        ),
+    )
+
+    report = evaluate_rag(
+        RagEvalDataset(name="aggregate_coverage", cases=cases),
+        observations,
+        RagEvalGatePolicy(k_values=(1, 3)),
+    )
+
+    assert report.metrics["hit_at_1"].value == 0.5
+    assert report.metrics["hit_at_1"].eligible_cases == 2
+    assert report.metrics["hit_at_3"].value == 0.5
+    assert report.metrics["hit_at_3"].eligible_cases == 2
+    assert report.metrics["rewrite_coverage_rate"].value == 0.5
+    assert report.metrics["rewrite_coverage_rate"].eligible_cases == 2
 
 
 def test_evaluator_judge_metrics_are_aggregated_and_become_available():

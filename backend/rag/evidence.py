@@ -36,6 +36,20 @@ def agent_evidence_character_budget(settings: AppSettings | None = None) -> int:
     return min(rag_evidence_character_budget(effective), evidence_budget)
 
 
+def grader_evidence_character_budget(settings: AppSettings | None = None) -> int:
+    """Use a compact evidence projection for routing and answerability grading."""
+
+    effective = settings or get_settings()
+    return max(int(effective.rag.grader_evidence_characters), 1)
+
+
+def grader_max_document_character_budget(
+    settings: AppSettings | None = None,
+) -> int:
+    effective = settings or get_settings()
+    return max(int(effective.rag.grader_max_document_characters), 1)
+
+
 def _document_parts(
     document: Mapping[str, Any],
     *,
@@ -124,6 +138,8 @@ def pack_evidence(
 __all__ = [
     "EvidencePack",
     "agent_evidence_character_budget",
+    "grader_evidence_character_budget",
+    "grader_max_document_character_budget",
     "pack_evidence",
     "rag_evidence_character_budget",
 ]

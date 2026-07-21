@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from backend.rag.evidence import (
     agent_evidence_character_budget,
+    grader_evidence_character_budget,
+    grader_max_document_character_budget,
     pack_evidence,
 )
 from backend.tools.knowledge import _render_rag_result
@@ -58,6 +60,19 @@ def test_agent_evidence_budget_reserves_room_for_prompt_and_history():
     )
 
     assert agent_evidence_character_budget(settings) == 4_976
+
+
+def test_grader_evidence_budget_is_independent_from_answer_context():
+    settings = SimpleNamespace(
+        rag=SimpleNamespace(
+            max_context_tokens=12_000,
+            grader_evidence_characters=4_800,
+            grader_max_document_characters=1_200,
+        )
+    )
+
+    assert grader_evidence_character_budget(settings) == 4_800
+    assert grader_max_document_character_budget(settings) == 1_200
 
 
 def test_knowledge_tool_result_is_bounded_before_entering_agent_history():

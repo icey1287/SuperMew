@@ -709,9 +709,30 @@ def _canonical_json(value: Any) -> str:
 
 
 def _require_unique(values: Iterable[Any], label: str) -> None:
-    materialized = list(values)
-    if len(materialized) != len(set(materialized)):
-        raise ValueError(f"{label} must be unique")
+    positions_by_value: dict[Any, list[int]] = {}
+    for position, value in enumerate(values, start=1):
+        positions_by_value.setdefault(value, []).append(position)
+    duplicates = [
+        (value, positions)
+        for value, positions in positions_by_value.items()
+        if len(positions) > 1
+    ]
+    if not duplicates:
+        return
+
+    normalized_label = label.casefold()
+    reveal_value = any(
+        marker in normalized_label
+        for marker in (" id", "ids", "rank", "tag", "name", "hash", "gate")
+    )
+    details = []
+    for value, positions in duplicates:
+        position_text = ", ".join(str(position) for position in positions)
+        if reveal_value:
+            details.append(f"duplicate {value!r} at positions {position_text}")
+        else:
+            details.append(f"duplicate value at positions {position_text}")
+    raise ValueError(f"{label} must be unique; " + "; ".join(details))
 
 
 def _normalize_name(value: str | None) -> str | None:
@@ -880,15 +901,17 @@ def _score_case(
             )
             for metric_name, value in ranking.items():
                 metrics[f"{metric_name}_at_{k}"] = value
+            metrics[f"hit_at_{k}"] = float(ranking["recall"] > 0)
         largest_k = max(k_values)
         checks[f"retrieval_hit_at_{largest_k}"] = bool(
-            metrics[f"recall_at_{largest_k}"]
+            metrics[f"hit_at_{largest_k}"]
         )
     else:
         metrics["gold_chunk_coverage"] = None
         for k in k_values:
             for metric_name in ("recall", "precision", "mrr", "ndcg"):
                 metrics[f"{metric_name}_at_{k}"] = None
+            metrics[f"hit_at_{k}"] = None
         checks[f"retrieval_hit_at_{max(k_values)}"] = None
 
     if case.gold_documents:
@@ -1042,6 +1065,14 @@ def _aggregate_metrics(
     aggregated["case_pass_rate"] = RagMetricResult(
         value=_mean([float(case.passed) for case in cases]),
         eligible_cases=len(cases),
+    )
+    rewrite_coverage_values = [
+        float(observation.rewrite_performed)
+        for observation in observations.values()
+    ]
+    aggregated["rewrite_coverage_rate"] = RagMetricResult(
+        value=_mean(rewrite_coverage_values),
+        eligible_cases=len(rewrite_coverage_values),
     )
 
     largest_k = max(k_values)
