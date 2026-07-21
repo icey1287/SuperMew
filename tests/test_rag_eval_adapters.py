@@ -13,6 +13,7 @@ from backend.evaluation.rag import (
     RagEvalDataset,
     RagEvalObservationBundle,
     RagExpectedBehavior,
+    RagProviderErrorStage,
 )
 from backend.evaluation.rag_adapters import (
     LiveRagEvalAdapter,
@@ -180,6 +181,60 @@ def test_projection_scores_initial_hitl_and_final_resolution_separately():
     assert observation.outcome.value == "INSUFFICIENT_EVIDENCE"
     assert observation.hitl_final_outcome.value == "ANSWERABLE"
     assert observation.retrieved_chunks[0].canonical_name == "orion.html"
+
+
+def test_projection_uses_retrieval_status_to_stabilize_hitl_route():
+    case = _case(hitl="scope_select", answers=("V2.1",))
+    initial = {
+        "route": "clarify",
+        "retrieval_status": "needs_scope_selection",
+        "retrieval_outcome": "INSUFFICIENT_EVIDENCE",
+        "hitl_resume_state": {"checkpoint_thread_id": "thread"},
+        "rag_trace": {
+            "route": "clarify",
+            "retrieval_status": "needs_scope_selection",
+        },
+    }
+    final = {
+        "route": "answer",
+        "retrieval_outcome": "ANSWERABLE",
+        "docs": [
+            {
+                "chunk_id": "orion.html::p0::l3::0",
+                "filename": "orion.html",
+                "text": "resolved evidence",
+            }
+        ],
+    }
+
+    observation = observation_from_rag_results(
+        case,
+        initial=initial,
+        final=final,
+        duration_ms=20,
+    )
+
+    assert observation.route.value == "scope_select"
+    assert observation.hitl.value == "scope_select"
+
+
+def test_projection_records_retrieval_stage_for_provider_failure_trace():
+    case = _case()
+    result = {
+        "route": "insufficient_evidence",
+        "retrieval_outcome": "INSUFFICIENT_EVIDENCE",
+        "rag_trace": {"provider_error_code": "VECTOR_STORE_TIMEOUT"},
+    }
+
+    observation = observation_from_rag_results(
+        case,
+        initial=result,
+        final=result,
+        duration_ms=20,
+    )
+
+    assert observation.provider_error_code == "VECTOR_STORE_TIMEOUT"
+    assert observation.provider_error_stage is RagProviderErrorStage.RETRIEVAL
 
 
 def test_hitl_no_knowledge_does_not_count_as_a_successful_resolution():

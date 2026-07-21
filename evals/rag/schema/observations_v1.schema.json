@@ -69,6 +69,17 @@
           "title": "Initial Retrieved Chunks",
           "type": "array"
         },
+        "judge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagJudgeMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "outcome": {
           "anyOf": [
             {
@@ -92,6 +103,17 @@
           ],
           "default": null,
           "title": "Provider Error Code"
+        },
+        "provider_error_stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagProviderErrorStage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "retrieved_chunks": {
           "default": [],
@@ -142,6 +164,64 @@
       "title": "RagHitlKind",
       "type": "string"
     },
+    "RagJudgeMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "answer_correctness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Answer Correctness",
+          "type": "number"
+        },
+        "answer_relevance": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Answer Relevance",
+          "type": "number"
+        },
+        "completeness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Completeness",
+          "type": "number"
+        },
+        "conflict_disclosure_rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Conflict Disclosure Rate",
+          "type": "number"
+        },
+        "context_relevance": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Context Relevance",
+          "type": "number"
+        },
+        "groundedness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Groundedness",
+          "type": "number"
+        },
+        "unsupported_claim_rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Unsupported Claim Rate",
+          "type": "number"
+        }
+      },
+      "required": [
+        "answer_correctness",
+        "groundedness",
+        "answer_relevance",
+        "completeness",
+        "context_relevance",
+        "unsupported_claim_rate",
+        "conflict_disclosure_rate"
+      ],
+      "title": "RagJudgeMetrics",
+      "type": "object"
+    },
     "RagOutcome": {
       "enum": [
         "ANSWERABLE",
@@ -149,6 +229,15 @@
         "INSUFFICIENT_EVIDENCE"
       ],
       "title": "RagOutcome",
+      "type": "string"
+    },
+    "RagProviderErrorStage": {
+      "enum": [
+        "retrieval",
+        "generation",
+        "judge"
+      ],
+      "title": "RagProviderErrorStage",
       "type": "string"
     },
     "RagRetrievedChunk": {

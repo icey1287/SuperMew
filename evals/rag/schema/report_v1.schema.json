@@ -66,6 +66,30 @@
           "title": "Passed",
           "type": "boolean"
         },
+        "provider_error_code": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Error Code"
+        },
+        "provider_error_stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagProviderErrorStage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "provider_failed": {
           "title": "Provider Failed",
           "type": "boolean"
@@ -133,6 +157,18 @@
           ],
           "default": null,
           "title": "Baseline"
+        },
+        "baseline_threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Threshold"
         },
         "detail": {
           "default": "",
@@ -205,6 +241,15 @@
       ],
       "title": "RagMetricResult",
       "type": "object"
+    },
+    "RagProviderErrorStage": {
+      "enum": [
+        "retrieval",
+        "generation",
+        "judge"
+      ],
+      "title": "RagProviderErrorStage",
+      "type": "string"
     }
   },
   "additionalProperties": false,

@@ -20,9 +20,11 @@ from backend.evaluation import (
     RagHitlKind,
     RagJudgeMetrics,
     RagMetricGate,
+    RagProviderErrorStage,
     RagRetrievedChunk,
     dataset_fingerprint,
     evaluate_rag,
+    evaluate_rag_partial,
     load_rag_eval_dataset,
     load_rag_eval_gates,
     load_rag_eval_observations,
@@ -130,6 +132,26 @@ def test_observations_must_be_unique_and_cover_every_case():
         )
 
 
+def test_partial_report_can_preserve_a_crash_before_the_first_observation():
+    dataset = _dataset(_answer_case())
+
+    report = evaluate_rag_partial(
+        dataset,
+        [],
+        RagEvalGatePolicy(k_values=(3,)),
+        metadata={"failure": {"code": "INTERNAL_ERROR", "stage": "worker"}},
+    )
+
+    assert report.case_count == 1
+    assert report.observation_count == 0
+    assert report.cases == ()
+    assert report.passed is False
+    assert report.metadata["partial_report"] is True
+    gate_status = {gate.name: gate.status.value for gate in report.gates}
+    assert gate_status["observation_coverage"] == "failed"
+    assert gate_status["job_execution"] == "failed"
+
+
 def test_ranking_rewrite_route_outcome_hitl_and_latency_metrics_are_exact():
     dataset = _dataset(_answer_case())
     report = evaluate_rag(
@@ -190,6 +212,64 @@ def test_evaluator_judge_metrics_are_aggregated_and_become_available():
     assert "groundedness" not in report.unavailable_metrics
     assert report.cases[0].checks["judge_groundedness"] is True
     assert report.cases[0].passed is True
+
+
+def test_context_relevance_is_not_applicable_to_no_knowledge_without_context():
+    case = RagEvalCase(
+        id="no-knowledge",
+        question="知识库之外的问题",
+        expected=RagExpectedBehavior(
+            route="no_knowledge",
+            outcome="NO_KNOWLEDGE",
+            acceptable_abstention=True,
+        ),
+    )
+    observation = RagEvalObservation(
+        case_id=case.id,
+        route="no_knowledge",
+        outcome="NO_KNOWLEDGE",
+        duration_ms=1,
+        judge=RagJudgeMetrics(
+            answer_correctness=1,
+            groundedness=1,
+            answer_relevance=1,
+            completeness=1,
+            context_relevance=0,
+            unsupported_claim_rate=0,
+            conflict_disclosure_rate=1,
+        ),
+    )
+
+    report = evaluate_rag(
+        RagEvalDataset(name="no_knowledge", cases=(case,)),
+        [observation],
+        RagEvalGatePolicy(k_values=(5,)),
+    )
+
+    assert report.cases[0].checks["judge_context_relevance"] is None
+    assert report.cases[0].metrics["context_relevance"] is None
+    assert report.metrics["context_relevance"].eligible_cases == 0
+    assert report.cases[0].passed is True
+
+
+def test_versioned_retrieved_chunk_id_matches_stable_gold_chunk_id():
+    dataset = _dataset(_answer_case())
+    observation = _answer_observation(
+        chunk_ids=(
+            "docver_019f8::a",
+            "docver_019f8::x",
+            "docver_019f8::b",
+        )
+    )
+
+    report = evaluate_rag(
+        dataset,
+        [observation],
+        RagEvalGatePolicy(k_values=(3,)),
+    )
+
+    assert report.metrics["recall_at_3"].value == 1
+    assert report.metrics["gold_chunk_coverage"].value == 1
 
 
 def test_hitl_resolution_provider_failure_and_latency_percentiles():
@@ -338,6 +418,49 @@ def test_critical_and_per_metric_regressions_fail_gates():
     assert gate_status["metric:recall_at_3"] == "failed"
     assert gate_status["metric:provider_failure_rate"] == "failed"
     assert "case-1:route" in candidate.gates[0].detail
+
+
+def test_absolute_gate_threshold_is_not_overwritten_by_baseline_threshold():
+    dataset = _dataset(_answer_case())
+    gates = RagEvalGatePolicy(
+        k_values=(3,),
+        metric_gates=(
+            RagMetricGate(
+                metric="latency_p95_ms",
+                direction=MetricDirection.LOWER_IS_BETTER,
+                maximum=1,
+                max_regression=0,
+            ),
+        ),
+    )
+    baseline = evaluate_rag(
+        dataset,
+        [_answer_observation(duration_ms=35_890)],
+        gates,
+    )
+
+    candidate = evaluate_rag(
+        dataset,
+        [_answer_observation(duration_ms=10)],
+        gates,
+        baseline=baseline,
+    )
+
+    gate = next(item for item in candidate.gates if item.metric == "latency_p95_ms")
+    assert gate.status is GateStatus.FAILED
+    assert gate.threshold == 1
+    assert gate.baseline_threshold == 35_890
+
+
+def test_provider_error_stage_is_part_of_observation_contract():
+    observation = RagEvalObservation(
+        case_id="failed",
+        provider_error_code="MODEL_TIMEOUT",
+        provider_error_stage=RagProviderErrorStage.GENERATION,
+        duration_ms=1,
+    )
+
+    assert observation.model_dump(mode="json")["provider_error_stage"] == "generation"
 
 
 def test_load_helpers_and_renderers_are_deterministic_and_redacted(tmp_path):

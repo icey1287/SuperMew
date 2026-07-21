@@ -7,7 +7,7 @@ from backend.evaluation.contracts import (
     RagEvaluationJobRecord,
     RagEvaluationJobStatus,
 )
-from backend.evaluation.rag import RagEvalDataset, RagEvalGatePolicy
+from backend.evaluation.rag import RagEvalDataset, RagEvalGatePolicy, RagMetricGate
 from backend.evaluation.repository import (
     RagEvaluationRepository,
     rag_evaluation_repository,
@@ -19,6 +19,7 @@ DEFAULT_RAG_EVALUATION_GATES = RagEvalGatePolicy(
     k_values=(5, 10),
     critical_no_regression=True,
     required_provenance="live_rag",
+    metric_gates=(RagMetricGate(metric="case_pass_rate", minimum=0.95),),
 )
 
 

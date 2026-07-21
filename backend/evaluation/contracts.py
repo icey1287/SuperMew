@@ -110,6 +110,7 @@ class RagEvaluationCaseRecord(EvaluationContract):
     checks: dict[str, bool | None] = Field(default_factory=dict)
     retrieved_identities: tuple[dict, ...] = ()
     provider_error_code: str | None = None
+    provider_error_stage: str | None = None
     duration_ms: int | None = Field(default=None, ge=0)
     error_code: str | None = None
     error: dict | None = None

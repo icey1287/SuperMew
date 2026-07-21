@@ -645,6 +645,10 @@
                                   <dt>Provider</dt>
                                   <dd>{{ caseResult.provider_error_code || 'healthy' }}</dd>
                                 </div>
+                                <div>
+                                  <dt>Provider stage</dt>
+                                  <dd>{{ caseResult.provider_error_stage || '—' }}</dd>
+                                </div>
                               </dl>
                             </section>
                           </div>

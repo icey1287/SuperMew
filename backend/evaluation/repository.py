@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -32,14 +33,17 @@ from backend.evaluation.rag import (
     RagEvalDataset,
     RagEvalGatePolicy,
     RagEvalObservation,
+    RagEvalObservationBundle,
     RagEvalReport,
     dataset_fingerprint,
+    evaluate_rag_partial,
 )
 from backend.infra.database import SessionLocal
 from backend.model_control import ModelCatalogSnapshot
 
 
 SessionFactory = Callable[[], Session]
+logger = logging.getLogger(__name__)
 
 
 class RagEvaluationRepository:
@@ -185,6 +189,7 @@ class RagEvaluationRepository:
             checks=dict(row.checks_json or {}),
             retrieved_identities=tuple(row.retrieved_identity_json or ()),
             provider_error_code=row.provider_error_code,
+            provider_error_stage=row.provider_error_stage,
             duration_ms=row.duration_ms,
             error_code=row.error_code,
             error=public_error.contract() if public_error else None,
@@ -525,6 +530,37 @@ class RagEvaluationRepository:
                         self._cancel_locked(db, job)
                         continue
                     if job.attempts >= job.max_attempts:
+                        dataset = db.get(RagEvaluationDatasetRow, job.dataset_id)
+                        case_rows = (
+                            db.query(RagEvaluationCaseRow)
+                            .filter(RagEvaluationCaseRow.job_id == job.id)
+                            .order_by(RagEvaluationCaseRow.position.asc())
+                            .all()
+                        )
+                        if dataset is not None:
+                            try:
+                                report = self._orphaned_partial_report(
+                                    job=job,
+                                    dataset=dataset,
+                                    cases=case_rows,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "RAG evaluation orphan partial report failed job_id=%s",
+                                    job.id,
+                                )
+                            else:
+                                report_cases = {
+                                    item.case_id: item for item in report.cases
+                                }
+                                for case_row in case_rows:
+                                    scored = report_cases.get(case_row.case_id)
+                                    if scored is None:
+                                        continue
+                                    case_row.metrics_json = scored.metrics
+                                    case_row.checks_json = scored.checks
+                                    case_row.updated_at = current
+                                job.report_json = report.model_dump(mode="json")
                         job.status = RagEvaluationJobStatus.FAILED.value
                         job.error_code = "RAG_EVALUATION_ORPHANED"
                         job.error_detail_redacted = None
@@ -570,6 +606,40 @@ class RagEvaluationRepository:
             return tuple(recovered)
         finally:
             db.close()
+
+    @staticmethod
+    def _orphaned_partial_report(
+        *,
+        job: RagEvaluationJobRow,
+        dataset: RagEvaluationDatasetRow,
+        cases: list[RagEvaluationCaseRow],
+    ) -> RagEvalReport:
+        parsed_dataset = RagEvalDataset.model_validate(dataset.payload_json)
+        policy = RagEvalGatePolicy.model_validate(job.gate_policy_json)
+        observations = tuple(
+            RagEvalObservation.model_validate(case.observation_json)
+            for case in cases
+            if case.observation_json is not None
+        )
+        return evaluate_rag_partial(
+            parsed_dataset,
+            RagEvalObservationBundle(
+                dataset_fingerprint=dataset.fingerprint,
+                observations=observations,
+            ),
+            policy,
+            metadata={
+                "adapter": "persistent_rag_evaluation_worker",
+                "provenance": "live_rag",
+                "job_id": job.id,
+                "model_catalog_hash": job.model_catalog_hash,
+                "completed_case_count": len(observations),
+                "failure": {
+                    "code": "RAG_EVALUATION_ORPHANED",
+                    "stage": "lease_recovery",
+                },
+            },
+        )
 
     def claim_next(
         self,
@@ -751,6 +821,11 @@ class RagEvaluationRepository:
                 case.judge_json = judge
                 case.retrieved_identity_json = retrieved_identities
                 case.provider_error_code = observation.provider_error_code
+                case.provider_error_stage = (
+                    observation.provider_error_stage.value
+                    if observation.provider_error_stage is not None
+                    else None
+                )
                 case.duration_ms = max(int(duration_ms), 0)
                 case.finished_at = now
                 case.updated_at = now
@@ -768,6 +843,7 @@ class RagEvaluationRepository:
         error_code: str,
         error_detail_redacted: str,
         case_id: str | None = None,
+        report: RagEvalReport | None = None,
     ) -> None:
         db = self._session_factory()
         try:
@@ -783,6 +859,21 @@ class RagEvaluationRepository:
                 job.status = RagEvaluationJobStatus.FAILED.value
                 job.error_code = error_code
                 job.error_detail_redacted = error_detail_redacted
+                if report is not None:
+                    report_cases = {item.case_id: item for item in report.cases}
+                    completed_rows = (
+                        db.query(RagEvaluationCaseRow)
+                        .filter(RagEvaluationCaseRow.job_id == job_id)
+                        .all()
+                    )
+                    for completed_case in completed_rows:
+                        scored = report_cases.get(completed_case.case_id)
+                        if scored is None:
+                            continue
+                        completed_case.metrics_json = scored.metrics
+                        completed_case.checks_json = scored.checks
+                        completed_case.updated_at = now
+                    job.report_json = report.model_dump(mode="json")
                 job.finished_at = now
                 job.owner_worker_id = None
                 job.lease_expires_at = None

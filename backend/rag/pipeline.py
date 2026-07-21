@@ -484,6 +484,33 @@ def _grade_for_no_docs() -> EvidenceGrade:
     )
 
 
+_SCOPE_SELECTION_HINTS = (
+    "版本",
+    "型号",
+    "方案",
+    "套餐",
+    "范围",
+    "选项",
+    "环境",
+    "区域",
+    "地区",
+    "version",
+    "model",
+    "plan",
+    "tier",
+    "scope",
+    "option",
+    "environment",
+    "region",
+)
+
+
+def _question_requests_scope_selection(state: RAGState) -> bool:
+    question = str(state.get("original_question") or state.get("question") or "")
+    normalized = question.casefold()
+    return any(hint in normalized for hint in _SCOPE_SELECTION_HINTS)
+
+
 def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     docs = state.get("docs") or []
     rewrite_count = int(state.get("rewrite_count") or 0)
@@ -493,9 +520,21 @@ def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     if not docs or grade.relevance == "none":
         return "no_knowledge"
 
-    if grade.ambiguity == "missing_slot":
-        return "clarify"
+    selectable_options = tuple(
+        dict.fromkeys(option.strip() for option in grade.hitl_options if option.strip())
+    )
     if grade.ambiguity == "multiple_candidates":
+        return "scope_select"
+    if grade.ambiguity == "missing_slot" or grade.missing_slots:
+        if len(selectable_options) >= 2 and _question_requests_scope_selection(state):
+            return "scope_select"
+        return "clarify"
+
+    if grade.route == "scope_select" or (
+        grade.route == "clarify"
+        and len(selectable_options) >= 2
+        and _question_requests_scope_selection(state)
+    ):
         return "scope_select"
 
     answer_is_supported = (

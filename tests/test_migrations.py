@@ -50,6 +50,13 @@ class MigrationTests(unittest.TestCase):
                     {column["name"] for column in inspector.get_columns("threads")}
                 )
             )
+            self.assertIn(
+                "provider_error_stage",
+                {
+                    column["name"]
+                    for column in inspector.get_columns("rag_evaluation_cases")
+                },
+            )
             self.assertTrue(
                 {
                     "dataset_id",

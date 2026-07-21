@@ -94,6 +94,7 @@ export interface RagGateResult {
   actual?: number | null;
   baseline?: number | null;
   threshold?: number | null;
+  baseline_threshold?: number | null;
   detail: string;
 }
 
@@ -103,6 +104,8 @@ export interface RagReportCase {
   metrics: Record<string, number | null>;
   checks: Record<string, boolean | null>;
   provider_failed: boolean;
+  provider_error_code?: string | null;
+  provider_error_stage?: 'retrieval' | 'generation' | 'judge' | null;
   gold_chunk_count: number;
   matched_gold_chunk_count: number;
   passed: boolean;
@@ -170,6 +173,7 @@ export interface RagEvaluationObservation {
   hitl?: string;
   rewrite_performed?: boolean;
   provider_error_code?: string | null;
+  provider_error_stage?: 'retrieval' | 'generation' | 'judge' | null;
   duration_ms: number;
   judge?: RagJudgeMetrics | null;
 }
@@ -189,6 +193,7 @@ export interface RagEvaluationCaseResult {
   checks: Record<string, boolean | null>;
   retrieved_identities: Array<Record<string, unknown>>;
   provider_error_code: string | null;
+  provider_error_stage?: 'retrieval' | 'generation' | 'judge' | null;
   duration_ms: number | null;
   error_code: string | null;
   error: Record<string, unknown> | null;

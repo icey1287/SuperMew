@@ -7,13 +7,19 @@ from threading import Event, Thread
 from uuid import uuid4
 
 from backend.core.errors import (
+    PublicError,
     public_error_from_exception,
     serialize_public_error,
 )
 from backend.core.settings import AppSettings, get_settings
 from backend.env import PROJECT_ROOT
 from backend.evaluation.contracts import ClaimedRagEvaluationJob
-from backend.evaluation.rag import RagEvalObservationBundle, evaluate_rag
+from backend.evaluation.rag import (
+    RagEvalObservationBundle,
+    RagEvalReport,
+    evaluate_rag,
+    evaluate_rag_partial,
+)
 from backend.evaluation.rag_adapters import rag_source_fingerprint
 from backend.evaluation.repository import (
     RagEvaluationRepository,
@@ -80,6 +86,14 @@ class RagEvaluationWorker:
                 )
                 return True
             public_error = public_error_from_exception(exc)
+            partial_report = None
+            try:
+                partial_report = self._partial_report(claimed, public_error)
+            except Exception:
+                logger.exception(
+                    "RAG evaluation partial report could not be built job_id=%s",
+                    claimed.job.id,
+                )
             try:
                 self.repository.fail_job(
                     job_id=claimed.job.id,
@@ -88,6 +102,7 @@ class RagEvaluationWorker:
                     error_code=str(public_error.code),
                     error_detail_redacted=serialize_public_error(public_error),
                     case_id=self._active_case_id,
+                    report=partial_report,
                 )
             except Exception:
                 logger.exception(
@@ -238,6 +253,36 @@ class RagEvaluationWorker:
             "rag_source_fingerprint": rag_source_fingerprint(PROJECT_ROOT),
             "judge_schema_version": 1,
         }
+
+    def _partial_report(
+        self,
+        claimed: ClaimedRagEvaluationJob,
+        error: PublicError,
+    ) -> RagEvalReport:
+        observations = tuple(
+            case.observation
+            for case in self.repository.list_cases(claimed.job.id)
+            if case.observation is not None
+        )
+        metadata = self._report_metadata(claimed)
+        metadata.update(
+            {
+                "completed_case_count": len(observations),
+                "failure": {
+                    "code": str(error.code),
+                    "stage": error.stage or "worker",
+                },
+            }
+        )
+        return evaluate_rag_partial(
+            claimed.dataset.dataset,
+            RagEvalObservationBundle(
+                dataset_fingerprint=claimed.dataset.fingerprint,
+                observations=observations,
+            ),
+            claimed.job.gate_policy,
+            metadata=metadata,
+        )
 
     def run_forever(self, stop_event: Event) -> None:
         self.repository.worker_heartbeat(

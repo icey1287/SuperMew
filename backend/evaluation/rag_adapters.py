@@ -18,6 +18,7 @@ from backend.evaluation.rag import (
     RagEvalObservationBundle,
     RagHitlKind,
     RagOutcome,
+    RagProviderErrorStage,
     RagRetrievedChunk,
     RagRoute,
     dataset_fingerprint,
@@ -157,6 +158,7 @@ class LiveRagEvalAdapter:
                             route=RagRoute.PROVIDER_FAILED,
                             outcome=RagOutcome.INSUFFICIENT_EVIDENCE,
                             provider_error_code=exc.code.value,
+                            provider_error_stage=RagProviderErrorStage.RETRIEVAL,
                             duration_ms=max(
                                 (self._clock() - started_at) * 1000,
                                 0.0,
@@ -247,6 +249,9 @@ def observation_from_rag_results(
         ),
         rewrite_performed=_rewrite_performed(initial_trace, final_trace),
         provider_error_code=provider_error_code,
+        provider_error_stage=(
+            RagProviderErrorStage.RETRIEVAL if provider_error_code is not None else None
+        ),
         duration_ms=max(float(duration_ms), 0.0),
         retrieved_chunks=final_chunks,
         initial_retrieved_chunks=_chunks_from_trace(
@@ -450,7 +455,37 @@ def _route(
     result: Mapping[str, Any],
     trace: Mapping[str, Any],
 ) -> RagRoute | None:
+    retrieval_status = _first_text(
+        result.get("retrieval_status"),
+        trace.get("retrieval_status"),
+    )
+    hitl_status_routes = {
+        "needs_clarification": RagRoute.CLARIFY,
+        "needs_scope_selection": RagRoute.SCOPE_SELECT,
+    }
+    if retrieval_status in hitl_status_routes:
+        return hitl_status_routes[retrieval_status]
+
+    if retrieval_status is None:
+        ambiguity = _first_text(
+            result.get("evidence_ambiguity"),
+            trace.get("evidence_ambiguity"),
+        )
+        if ambiguity == "missing_slot":
+            return RagRoute.CLARIFY
+        if ambiguity == "multiple_candidates":
+            return RagRoute.SCOPE_SELECT
+
     value = _first_text(result.get("route"), trace.get("route"))
+    if value is None:
+        options = result.get("hitl_options")
+        if not isinstance(options, Sequence) or isinstance(options, (str, bytes)):
+            options = trace.get("hitl_options")
+        selectable_options = {
+            str(option).strip() for option in options or () if str(option).strip()
+        }
+        if len(selectable_options) >= 2:
+            return RagRoute.SCOPE_SELECT
     if value is None:
         return None
     try:

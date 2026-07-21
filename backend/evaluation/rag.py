@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import unicodedata
 from enum import StrEnum
 from pathlib import Path
@@ -75,6 +76,12 @@ class RagHitlKind(StrEnum):
     NONE = "none"
     CLARIFY = "clarify"
     SCOPE_SELECT = "scope_select"
+
+
+class RagProviderErrorStage(StrEnum):
+    RETRIEVAL = "retrieval"
+    GENERATION = "generation"
+    JUDGE = "judge"
 
 
 class MetricDirection(StrEnum):
@@ -254,6 +261,7 @@ class RagEvalObservation(StrictEvalModel):
     hitl_final_outcome: RagOutcome | None = None
     rewrite_performed: bool = False
     provider_error_code: ProviderCode | None = None
+    provider_error_stage: RagProviderErrorStage | None = None
     duration_ms: float = Field(ge=0, allow_inf_nan=False)
     judge: RagJudgeMetrics | None = None
     retrieved_chunks: tuple[RagRetrievedChunk, ...] = ()
@@ -282,6 +290,8 @@ class RagEvalObservation(StrictEvalModel):
             raise ValueError("HITL resolution observation requires HITL")
         if self.hitl is RagHitlKind.NONE and self.hitl_final_outcome is not None:
             raise ValueError("HITL final outcome observation requires HITL")
+        if self.provider_error_stage is not None and self.provider_error_code is None:
+            raise ValueError("provider error stage requires provider error code")
         return self
 
 
@@ -356,6 +366,8 @@ class RagEvalCaseResult(StrictEvalModel):
     metrics: dict[str, float | None]
     checks: dict[str, bool | None]
     provider_failed: bool
+    provider_error_code: ProviderCode | None = None
+    provider_error_stage: RagProviderErrorStage | None = None
     gold_chunk_count: int = Field(ge=0)
     matched_gold_chunk_count: int = Field(ge=0)
     passed: bool
@@ -379,6 +391,7 @@ class RagGateResult(StrictEvalModel):
     actual: float | None = Field(default=None, allow_inf_nan=False)
     baseline: float | None = Field(default=None, allow_inf_nan=False)
     threshold: float | None = Field(default=None, allow_inf_nan=False)
+    baseline_threshold: float | None = Field(default=None, allow_inf_nan=False)
     detail: str = ""
 
 
@@ -457,6 +470,55 @@ def evaluate_rag(
     baseline: RagEvalReport | None = None,
     metadata: dict[str, JsonValue] | None = None,
 ) -> RagEvalReport:
+    return _evaluate_rag(
+        dataset,
+        observations,
+        gates,
+        baseline=baseline,
+        metadata=metadata,
+        allow_partial=False,
+    )
+
+
+def evaluate_rag_partial(
+    dataset: RagEvalDataset,
+    observations: Sequence[RagEvalObservation] | RagEvalObservationBundle,
+    gates: RagEvalGatePolicy,
+    metadata: dict[str, JsonValue] | None = None,
+) -> RagEvalReport:
+    resolved_metadata = dict(metadata or {})
+    resolved_metadata["partial_report"] = True
+    report = _evaluate_rag(
+        dataset,
+        observations,
+        gates,
+        metadata=resolved_metadata,
+        allow_partial=True,
+    )
+    return report.model_copy(
+        update={
+            "gates": (
+                *report.gates,
+                RagGateResult(
+                    name="job_execution",
+                    status=GateStatus.FAILED,
+                    detail="job failed before successful finalization",
+                ),
+            ),
+            "passed": False,
+        }
+    )
+
+
+def _evaluate_rag(
+    dataset: RagEvalDataset,
+    observations: Sequence[RagEvalObservation] | RagEvalObservationBundle,
+    gates: RagEvalGatePolicy,
+    baseline: RagEvalReport | None = None,
+    metadata: dict[str, JsonValue] | None = None,
+    *,
+    allow_partial: bool,
+) -> RagEvalReport:
     fingerprint = dataset_fingerprint(dataset)
     observation_values: Sequence[RagEvalObservation]
     if isinstance(observations, RagEvalObservationBundle):
@@ -475,16 +537,16 @@ def evaluate_rag(
 
     case_index = {case.id: case for case in dataset.cases}
     observation_index = _index_observations(observation_values)
-    if set(case_index) != set(observation_index):
-        missing = sorted(set(case_index) - set(observation_index))
-        unknown = sorted(set(observation_index) - set(case_index))
+    missing = sorted(set(case_index) - set(observation_index))
+    unknown = sorted(set(observation_index) - set(case_index))
+    if unknown or (missing and not allow_partial):
         raise ObservationCoverageError(
             f"observations must cover the dataset exactly; missing={missing}, unknown={unknown}"
         )
 
     case_results = tuple(
         _score_case(case_index[case_id], observation_index[case_id], gates.k_values)
-        for case_id in sorted(case_index)
+        for case_id in sorted(observation_index)
     )
     metrics = _aggregate_metrics(case_results, observation_index, gates.k_values)
     slices = _aggregate_tag_slices(
@@ -503,13 +565,24 @@ def evaluate_rag(
             )
 
     resolved_metadata = metadata or {}
-    gate_results = _evaluate_gates(
-        policy=gates,
-        metrics=metrics,
-        cases=case_results,
-        baseline=baseline,
-        baseline_cases=baseline_cases,
-        metadata=resolved_metadata,
+    gate_results: list[RagGateResult] = []
+    if missing:
+        gate_results.append(
+            RagGateResult(
+                name="observation_coverage",
+                status=GateStatus.FAILED,
+                detail="missing observations: " + ", ".join(missing),
+            )
+        )
+    gate_results.extend(
+        _evaluate_gates(
+            policy=gates,
+            metrics=metrics,
+            cases=case_results,
+            baseline=baseline,
+            baseline_cases=baseline_cases,
+            metadata=resolved_metadata,
+        )
     )
     passed = all(result.status is not GateStatus.FAILED for result in gate_results)
     unavailable_metrics = dict(_UNAVAILABLE_METRICS)
@@ -647,9 +720,23 @@ def _normalize_name(value: str | None) -> str | None:
     return unicodedata.normalize("NFC", " ".join(value.split()))
 
 
+_DOCUMENT_VERSION_PREFIX = re.compile(r"^docver_[A-Za-z0-9_-]+::")
+
+
+def _normalize_chunk_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = unicodedata.normalize("NFC", value.strip())
+    return _DOCUMENT_VERSION_PREFIX.sub("", normalized, count=1)
+
+
 def _chunk_matches(gold: RagGoldChunk, retrieved: RagRetrievedChunk) -> bool:
     return bool(
-        (gold.chunk_id is not None and gold.chunk_id == retrieved.chunk_id)
+        (
+            gold.chunk_id is not None
+            and _normalize_chunk_id(gold.chunk_id)
+            == _normalize_chunk_id(retrieved.chunk_id)
+        )
         or (
             gold.content_sha256 is not None
             and gold.content_sha256 == retrieved.content_sha256
@@ -849,6 +936,13 @@ def _score_case(
         "conflict_disclosure_rate": (0.5, True),
     }
     for metric_name, (threshold, higher_is_better) in judge_thresholds.items():
+        if metric_name == "context_relevance" and (
+            observation.outcome is RagOutcome.NO_KNOWLEDGE
+            or not observation.retrieved_chunks
+        ):
+            metrics[metric_name] = None
+            checks[f"judge_{metric_name}"] = None
+            continue
         value = getattr(judge, metric_name) if judge is not None else None
         metrics[metric_name] = _round(value) if value is not None else None
         if value is None:
@@ -868,6 +962,8 @@ def _score_case(
         metrics={key: metrics[key] for key in sorted(metrics)},
         checks={key: checks[key] for key in sorted(checks)},
         provider_failed=observation.provider_error_code is not None,
+        provider_error_code=observation.provider_error_code,
+        provider_error_stage=observation.provider_error_stage,
         gold_chunk_count=len(case.gold_chunks),
         matched_gold_chunk_count=matched_all,
         passed=passed,
@@ -934,6 +1030,15 @@ def _aggregate_metrics(
     aggregated["provider_failure_rate"] = RagMetricResult(
         value=_mean(failure_values), eligible_cases=len(failure_values)
     )
+    for stage in RagProviderErrorStage:
+        stage_values = [
+            float(observation.provider_error_stage is stage)
+            for observation in observations.values()
+        ]
+        aggregated[f"{stage.value}_provider_failure_rate"] = RagMetricResult(
+            value=_mean(stage_values),
+            eligible_cases=len(stage_values),
+        )
     aggregated["case_pass_rate"] = RagMetricResult(
         value=_mean([float(case.passed) for case in cases]),
         eligible_cases=len(cases),
@@ -974,7 +1079,15 @@ def _aggregate_tag_slices(
     tags = sorted({tag for case in dataset.cases for tag in case.tags})
     slices: dict[str, RagEvalSliceResult] = {}
     for tag in tags:
-        case_ids = tuple(sorted(case.id for case in dataset.cases if tag in case.tags))
+        case_ids = tuple(
+            sorted(
+                case.id
+                for case in dataset.cases
+                if tag in case.tags and case.id in case_results
+            )
+        )
+        if not case_ids:
+            continue
         tagged_cases = tuple(case_results[case_id] for case_id in case_ids)
         tagged_observations = {case_id: observations[case_id] for case_id in case_ids}
         metrics = _aggregate_metrics(
@@ -1080,7 +1193,14 @@ def _evaluate_metric_gate(
     baseline_value = baseline.value if baseline is not None else None
     failures: list[str] = []
     evaluated = False
-    threshold: float | None = None
+    threshold = (
+        gate.minimum
+        if gate.direction is MetricDirection.HIGHER_IS_BETTER
+        else gate.maximum
+    )
+    if threshold is None:
+        threshold = gate.maximum if gate.minimum is None else gate.minimum
+    baseline_threshold: float | None = None
 
     if actual is None:
         status = GateStatus.FAILED if gate.required else GateStatus.SKIPPED
@@ -1093,12 +1213,10 @@ def _evaluate_metric_gate(
 
     if gate.minimum is not None:
         evaluated = True
-        threshold = gate.minimum
         if actual < gate.minimum:
             failures.append(f"below minimum {gate.minimum}")
     if gate.maximum is not None:
         evaluated = True
-        threshold = gate.maximum
         if actual > gate.maximum:
             failures.append(f"above maximum {gate.maximum}")
 
@@ -1117,18 +1235,20 @@ def _evaluate_metric_gate(
                 f"{baseline.eligible_cases} to {current.eligible_cases}"
             )
         elif gate.direction is MetricDirection.HIGHER_IS_BETTER:
-            threshold = _round(baseline_value - gate.max_regression)
-            if actual < threshold:
+            baseline_threshold = _round(baseline_value - gate.max_regression)
+            if actual < baseline_threshold:
                 failures.append(
                     f"regressed more than {gate.max_regression} from baseline"
                 )
         else:
-            threshold = _round(baseline_value + gate.max_regression)
-            if actual > threshold:
+            baseline_threshold = _round(baseline_value + gate.max_regression)
+            if actual > baseline_threshold:
                 failures.append(
                     f"regressed more than {gate.max_regression} from baseline"
                 )
 
+    if threshold is None:
+        threshold = baseline_threshold
     status = (
         GateStatus.FAILED
         if failures
@@ -1141,6 +1261,7 @@ def _evaluate_metric_gate(
         actual=actual,
         baseline=baseline_value,
         threshold=threshold,
+        baseline_threshold=baseline_threshold,
         detail="; ".join(failures) if failures else "gate satisfied",
     )
 
@@ -1207,10 +1328,12 @@ __all__ = [
     "RagMetricGate",
     "RagMetricResult",
     "RagOutcome",
+    "RagProviderErrorStage",
     "RagRetrievedChunk",
     "RagRoute",
     "dataset_fingerprint",
     "evaluate_rag",
+    "evaluate_rag_partial",
     "load_rag_eval_dataset",
     "load_rag_eval_gates",
     "load_rag_eval_observations",

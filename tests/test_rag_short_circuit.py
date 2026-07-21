@@ -99,6 +99,11 @@ def load_pipeline(
         REPO_ROOT / "backend" / "rag" / "outcomes.py",
     )
     outcomes_module = importlib.util.module_from_spec(outcomes_spec)
+    evidence_spec = importlib.util.spec_from_file_location(
+        "backend.rag.evidence",
+        REPO_ROOT / "backend" / "rag" / "evidence.py",
+    )
+    evidence_module = importlib.util.module_from_spec(evidence_spec)
 
     with patch.dict(
         sys.modules,
@@ -107,10 +112,12 @@ def load_pipeline(
             "backend.rag.utils": fake_utils,
             "backend.rag.runtime_context": runtime_module,
             "backend.rag.outcomes": outcomes_module,
+            "backend.rag.evidence": evidence_module,
         },
     ):
         runtime_spec.loader.exec_module(runtime_module)
         outcomes_spec.loader.exec_module(outcomes_module)
+        evidence_spec.loader.exec_module(evidence_module)
         spec.loader.exec_module(module)
 
     return module
@@ -528,6 +535,7 @@ class RagShortCircuitTests(unittest.TestCase):
         resume_state = result.get("hitl_resume_state")
         self.assertIsInstance(resume_state, dict)
         self.assertEqual("这个角色的属性是什么？", resume_state.get("question"))
+        self.assertEqual("clarify", result.get("route"))
         self.assertEqual("needs_clarification", resume_state.get("retrieval_status"))
         self.assertEqual(
             {
@@ -547,6 +555,43 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertTrue(resume_state["checkpoint_thread_id"].startswith("rag_"))
         self.assertTrue(resume_state["checkpoint_id"])
         self.assertTrue(resume_state["interrupt_id"])
+
+    def test_explicit_version_question_with_options_uses_scope_select(self):
+        def retrieve(query, top_k=5):
+            return {
+                "docs": [_doc("Orion V2 和 V2.1 都有版本记录", "candidate")],
+                "meta": _meta(1),
+            }
+
+        def grade(schema, prompt):
+            return {
+                "relevance": "strong",
+                "answerability": "partial",
+                "ambiguity": "missing_slot",
+                "route": "clarify",
+                "confidence": 0.8,
+                "missing_slots": ["版本"],
+                "hitl_prompt": "请选择版本",
+                "hitl_options": ["V2", "V2.1"],
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
+        )
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph(
+                "Orion 的额定载荷是多少？请按我正在使用的版本回答。",
+                ctx,
+            )
+        finally:
+            ctx.close()
+
+        self.assertEqual("scope_select", result.get("route"))
+        self.assertEqual("needs_scope_selection", result.get("retrieval_status"))
 
     def test_complex_sub_agents_keep_partial_docs_without_rewrite(self):
         calls = {"retrieve": [], "step_back": 0}

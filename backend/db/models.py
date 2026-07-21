@@ -537,6 +537,7 @@ class RagEvaluationCaseRecord(Base):
         JSON, default=list, nullable=False
     )
     provider_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_error_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
