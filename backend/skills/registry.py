@@ -320,6 +320,26 @@ class _SkillRecord:
     pin: SkillPin
 
 
+@dataclass(frozen=True, slots=True)
+class SkillDefinition:
+    """Validated in-memory Skill source used by the persistent control plane."""
+
+    manifest: SkillManifest
+    instructions: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest, SkillManifest):
+            raise TypeError("manifest must be a SkillManifest")
+        if not isinstance(self.instructions, str) or not self.instructions.strip():
+            raise ValueError("instructions must be non-empty UTF-8 text")
+        try:
+            encoded = self.instructions.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("instructions must be valid UTF-8 text") from None
+        if b"\x00" in encoded:
+            raise ValueError("instructions cannot contain NUL bytes")
+
+
 def _canonical_manifest(manifest: SkillManifest) -> bytes:
     payload = manifest.model_dump(mode="json")
     return json.dumps(
@@ -642,6 +662,73 @@ class SkillRegistry:
             known_tools=known_tool_set,
         )
 
+    @classmethod
+    def from_definitions(
+        cls,
+        definitions: Iterable[SkillDefinition],
+        known_tools: Iterable[str],
+        *,
+        root: str | Path = "<database>",
+        max_content_bytes: int = 262_144,
+    ) -> SkillRegistry:
+        if max_content_bytes <= 0:
+            raise SkillRegistryError("max_content_bytes must be positive")
+        normalized_tools = _normalize_unique_values(
+            tuple(known_tools),
+            label="known_tools",
+            pattern=_TOOL_NAME,
+            max_length=128,
+        )
+        known_tool_set = frozenset(normalized_tools)
+        records: dict[str, _SkillRecord] = {}
+        for raw_definition in definitions:
+            if not isinstance(raw_definition, SkillDefinition):
+                raise SkillRegistryError("definitions must contain SkillDefinition values")
+            manifest = SkillManifest.model_validate(
+                raw_definition.manifest.model_dump(mode="json")
+            )
+            if manifest.name in records:
+                raise SkillRegistryError(f"duplicate skill name: {manifest.name}")
+            unknown_tools = set(manifest.allowed_tools) - known_tool_set
+            if unknown_tools:
+                unknown = ", ".join(sorted(unknown_tools))
+                raise SkillRegistryError(
+                    f"skill {manifest.name!r} references unknown tools: {unknown}"
+                )
+            try:
+                content_bytes = raw_definition.instructions.encode("utf-8")
+            except UnicodeEncodeError:
+                raise SkillRegistryError(
+                    f"skill entrypoint is not valid UTF-8: {manifest.name}"
+                ) from None
+            if not content_bytes or len(content_bytes) > max_content_bytes:
+                raise SkillRegistryError(
+                    f"skill entrypoint exceeds {max_content_bytes} bytes: {manifest.name}"
+                )
+            if b"\x00" in content_bytes:
+                raise SkillRegistryError(
+                    f"NUL bytes are not allowed in skill entrypoint: {manifest.name}"
+                )
+            digest = hashlib.sha256(
+                _canonical_manifest(manifest) + b"\x00" + content_bytes
+            ).hexdigest()
+            pin = SkillPin(
+                name=manifest.name,
+                version=manifest.version,
+                content_hash=digest,
+            )
+            records[manifest.name] = _SkillRecord(
+                manifest=manifest,
+                content_bytes=content_bytes,
+                content=raw_definition.instructions,
+                pin=pin,
+            )
+        return cls(
+            root=Path(root),
+            records=records,
+            known_tools=known_tool_set,
+        )
+
     @property
     def root(self) -> Path:
         return self._root
@@ -656,6 +743,17 @@ class SkillRegistry:
 
     def contains(self, name: str) -> bool:
         return name in self._records
+
+    def definitions(self) -> tuple[SkillDefinition, ...]:
+        return tuple(
+            SkillDefinition(
+                manifest=SkillManifest.model_validate(
+                    record.manifest.model_dump(mode="json")
+                ),
+                instructions=record.content,
+            )
+            for record in self._records.values()
+        )
 
     def catalog(self, access: SkillAccess) -> tuple[SkillSummary, ...]:
         summaries: list[SkillSummary] = []

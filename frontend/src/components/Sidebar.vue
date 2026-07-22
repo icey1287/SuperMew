@@ -75,6 +75,16 @@
       <button
         v-if="authStore.isAdmin"
         type="button"
+        :class="['nav-btn', { active: chatStore.activeNav === 'capabilities-admin' }]"
+        aria-label="Skill 与 Tool 管理"
+        @click="onCapabilitiesAdmin"
+      >
+        <i class="fa-solid fa-puzzle-piece"></i>
+        <span>Skill / Tool</span>
+      </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
         :class="['nav-btn', { active: chatStore.activeNav === 'evaluations' }]"
         aria-label="RAG 评估"
         @click="onEvaluations"
@@ -247,6 +257,16 @@ const onModels = () => {
     return;
   }
   chatStore.activeNav = 'models';
+  threadStore.showHistorySidebar = false;
+};
+
+const onCapabilitiesAdmin = () => {
+  if (!authStore.isAdmin) {
+    alert('仅管理员可访问 Skill 与 Tool 管理');
+    return;
+  }
+  capabilityStore.closeCenter();
+  chatStore.activeNav = 'capabilities-admin';
   threadStore.showHistorySidebar = false;
 };
 

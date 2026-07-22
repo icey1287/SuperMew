@@ -7,5 +7,5 @@ allowed_tools:
   - web_search
 required_roles: []
 required_secrets:
-  - BRAVE_SEARCH_API_KEY
+  - WEB_RESEARCH_RUNTIME
 entrypoint: SKILL.md

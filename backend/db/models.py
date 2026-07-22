@@ -407,6 +407,150 @@ class ModelAssignment(Base):
     updated_by = relationship("User", foreign_keys=[updated_by_user_id])
 
 
+class CapabilityState(Base):
+    __tablename__ = "capability_state"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    web_research_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class CapabilitySkillProfile(Base):
+    __tablename__ = "capability_skill_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('builtin', 'custom')",
+            name="ck_capability_skill_source",
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_tools_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    required_roles_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    required_secrets_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class CapabilityHttpToolProfile(Base):
+    __tablename__ = "capability_http_tool_profiles"
+    __table_args__ = (
+        CheckConstraint("method IN ('GET', 'POST')", name="ck_capability_http_tool_method"),
+        CheckConstraint(
+            "timeout_seconds > 0 AND timeout_seconds <= 120",
+            name="ck_capability_http_tool_timeout",
+        ),
+        CheckConstraint(
+            "max_response_bytes >= 1024 AND max_response_bytes <= 8388608",
+            name="ck_capability_http_tool_response_bytes",
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(String(1000), nullable=False)
+    group: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(2048), nullable=False)
+    method: Mapped[str] = mapped_column(String(8), nullable=False)
+    input_schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    static_headers_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    secret_headers_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    required_roles_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    idempotent: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    timeout_seconds: Mapped[Decimal] = mapped_column(
+        Numeric(10, 3), default=Decimal("20"), nullable=False
+    )
+    max_response_bytes: Mapped[int] = mapped_column(
+        Integer, default=262_144, nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class SqlAssistantProfile(Base):
+    __tablename__ = "sql_assistant_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "statement_timeout_seconds > 0 AND statement_timeout_seconds <= 120",
+            name="ck_sql_assistant_profile_statement_timeout",
+        ),
+        CheckConstraint(
+            "max_rows >= 1 AND max_rows <= 10000",
+            name="ck_sql_assistant_profile_max_rows",
+        ),
+        CheckConstraint(
+            "max_result_bytes >= 1024 AND max_result_bytes <= 16777216",
+            name="ck_sql_assistant_profile_result_bytes",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    dsn_secret_name: Mapped[str] = mapped_column(
+        String(128), default="SQL_ASSISTANT_DSN", nullable=False
+    )
+    expected_role: Mapped[str] = mapped_column(String(63), default="", nullable=False)
+    allowed_schemas_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    allowed_tables_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    sensitive_columns_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    statement_timeout_seconds: Mapped[Decimal] = mapped_column(
+        Numeric(10, 3), default=Decimal("10"), nullable=False
+    )
+    max_rows: Mapped[int] = mapped_column(Integer, default=200, nullable=False)
+    max_result_bytes: Mapped[int] = mapped_column(
+        Integer, default=262_144, nullable=False
+    )
+    max_estimated_cost: Mapped[Decimal] = mapped_column(
+        Numeric(18, 3), default=Decimal("100000"), nullable=False
+    )
+    max_estimated_rows: Mapped[int] = mapped_column(
+        Integer, default=100_000, nullable=False
+    )
+    max_estimated_bytes: Mapped[int] = mapped_column(
+        Integer, default=8_388_608, nullable=False
+    )
+    catalog_cache_ttl_seconds: Mapped[Decimal] = mapped_column(
+        Numeric(10, 3), default=Decimal("300"), nullable=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
 class RagEvaluationDataset(Base):
     __tablename__ = "rag_evaluation_datasets"
     __table_args__ = (

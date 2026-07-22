@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from functools import partial
 from typing import Annotated, Literal
 
@@ -116,6 +117,7 @@ def build_default_tool_registry(
     sql_assistant_settings: SqlAssistantSettings | None = None,
     web_research_settings: WebResearchSettings | None = None,
     sandbox_settings: SandboxSettings | None = None,
+    freeze: bool = True,
 ) -> ToolRegistry:
     sql_settings = sql_assistant_settings or SqlAssistantSettings()
     web_settings = web_research_settings or WebResearchSettings()
@@ -295,7 +297,7 @@ def build_default_tool_registry(
             max_concurrency=web_settings.max_concurrency,
             idempotent=True,
             required_roles=frozenset(),
-            required_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            required_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             requires_approval=False,
             network_policy="restricted",
             result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
@@ -305,6 +307,7 @@ def build_default_tool_registry(
         partial(
             make_web_search,
             default_results=web_settings.default_search_results,
+            max_total_evidence_bytes=web_settings.max_total_evidence_bytes,
         ),
         exposure=ToolExposure.DEFERRED,
     )
@@ -323,14 +326,17 @@ def build_default_tool_registry(
             max_concurrency=web_settings.max_concurrency,
             idempotent=True,
             required_roles=frozenset(),
-            required_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            required_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             requires_approval=False,
             network_policy="restricted",
             result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
             resource_scope="public-web",
             observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
         ),
-        make_web_fetch,
+        partial(
+            make_web_fetch,
+            max_total_evidence_bytes=web_settings.max_total_evidence_bytes,
+        ),
         exposure=ToolExposure.DEFERRED,
     )
     registry.register(
@@ -362,7 +368,8 @@ def build_default_tool_registry(
         _control_placeholder("sandbox_execute"),
         exposure=ToolExposure.DEFERRED,
     )
-    registry.freeze()
+    if freeze:
+        registry.freeze()
     return registry
 
 
@@ -372,12 +379,14 @@ def configured_secret_names(
     sql_assistant_settings: SqlAssistantSettings | None = None,
     web_research_settings: WebResearchSettings | None = None,
     sandbox_settings: SandboxSettings | None = None,
+    additional_secret_names: Iterable[str] = (),
 ) -> frozenset[str]:
     required: set[str] = set()
     for name in registry.names:
         descriptor = registry.descriptor(name)
         if descriptor is not None:
             required.update(descriptor.required_secrets)
+    required.update(str(name).strip() for name in additional_secret_names if str(name).strip())
     configured: set[str] = set()
     for name in required:
         if name == "SQL_ASSISTANT_DSN":
@@ -385,9 +394,9 @@ def configured_secret_names(
             if sql_settings.enabled and sql_settings.dsn.get_secret_value().strip():
                 configured.add(name)
             continue
-        if name == "BRAVE_SEARCH_API_KEY":
+        if name == "WEB_RESEARCH_RUNTIME":
             web_settings = web_research_settings or WebResearchSettings()
-            if web_settings.search_configured:
+            if web_settings.enabled:
                 configured.add(name)
             continue
         if name == "SANDBOX_RUNTIME":

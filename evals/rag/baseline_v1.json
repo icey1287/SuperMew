@@ -1474,7 +1474,7 @@
     "profile_fingerprint": "3c28851ecfd9c4c3a67b33cb442deea05ae8e513599d77214a5d9907ba392291",
     "profile_id": "offline-smoke-v1",
     "provenance": "contract_smoke",
-    "rag_source_fingerprint": "363d779b4e715b51cf34c53663a966ae7461d00638f84b1597e5dc89583b6f8e",
+    "rag_source_fingerprint": "8008b47d01cc73f5298e606fb2450e0b4f2126af2128dcbf30b3da1e92dc33c4",
     "source_mismatch_override": false
   },
   "metrics": {

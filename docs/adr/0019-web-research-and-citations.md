@@ -26,14 +26,14 @@ fetch(url, deadline_at, cancellation_probe) -> WebResearchResult
 readiness() -> aggregate status
 ```
 
-进程组合层从 Settings 构造并安装 Runtime；Tool 不持有 API key、HTTP client 或 DNS resolver。
-Runtime 默认关闭，任何环境启用时都必须有 `BRAVE_SEARCH_API_KEY`。搜索 origin 固定为 Brave
-官方 HTTPS endpoint，不允许用配置把 Secret 转发到任意主机。
+进程组合层从 Settings 构造并安装 Runtime；Tool 不持有 HTTP client 或 DNS resolver。
+Runtime 默认关闭。搜索使用 Tavily Keyless，不需要 API Key；origin 固定为 Tavily 官方 HTTPS
+endpoint，不允许通过配置改写目标主机。
 
-`web_search` 与 `web_fetch` 均为 deferred Tool，要求 active `web-research` Skill、已配置
-Secret 名称和 `restricted` network policy。`user` 与 `admin` 都可使用；Secret 只声明能力
-可用性，值不进入模型上下文或 Run state。Factory 继续使用 configured secrets 与 caller
-secrets 的交集，调用方伪造 Secret 名称不能越过 feature flag。
+`web_search` 与 `web_fetch` 均为 deferred Tool，要求 active `web-research` Skill、内部
+`WEB_RESEARCH_RUNTIME` capability 和 `restricted` network policy。`user` 与 `admin` 都可使用；
+该 capability 只声明 Keyless Runtime 可用性。Factory 继续使用 configured capabilities 与 caller
+capabilities 的交集，调用方伪造名称不能越过 feature flag。
 
 ### 搜索铸造 capability，抓取不接受任意 URL
 
@@ -84,7 +84,7 @@ ContextBudget Seam 把已通过 `ToolResultV1` 验证的 Web ToolMessage 视为�
 `WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES` 不得大于
 `AGENT_MAX_CONTEXT_TOKENS - AGENT_RESPONSE_RESERVE_TOKENS` 的一半。ContextBudget 对混合中英文使用
 1 character/token 的保守估算，因此该关系为 System Prompt、Tool schema、active Skill 和当前
-请求保留至少一半输入预算。应用 Settings 默认总证据收敛为 4 KiB，单页正文
+请求保留至少一半输入预算。应用 Settings 默认单 Run Web ToolResult 累计收敛为 3 KiB，单页正文
 收敛为 3 KiB。
 
 ### 证据和引用身份
@@ -98,8 +98,9 @@ request-owned citation ledger 分别记录 `search_snippet` 与 `fetched_page` p
 search evidence 会铸造 fetch capability；fetch 返回的新 identity 可用于引用，不能扩大后续
 网络访问权限。模型只能输出 `[标题](webcite:evidence_id)` token，不能输出 raw HTTP(S) URL。
 `TerminalResponseMiddleware` 在当前 Run ledger 中校验 identity，并用 ledger 内 authoritative
-title 与 canonical URL 服务端渲染 Markdown link；未知、跨 Run、畸形 token、raw URL，或已有
-成功证据却完全无引用时均 fail-closed。失败且无证据的回答不会被误伤。
+title 与 canonical URL 服务端渲染 Markdown link；未知、跨 Run、畸形 token 和 raw URL 均
+fail-closed。若已有成功证据但模型完全漏写引用，服务端从当前 Run ledger 补充可信来源列表，
+不再丢弃已经生成的回答；失败且无证据的回答不会被误伤。
 
 Web Research 的模型 delta 在终态校验前只保存在 Runtime 内；只有最终 graph state 已经过
 TerminalResponseMiddleware 后，才一次性发布可见内容。普通非 Web Run 继续逐 token 流式发布。
@@ -126,7 +127,7 @@ Registry 会再次按 descriptor allowlist 丢弃任意额外 metadata。稳定�
 
 ## 结果
 
-代价是当前搜索 provider 固定为 Brave，fetch 只能跟随当前 Run 的搜索 capability，且只处理
+代价是当前搜索 provider 固定为 Tavily Keyless，fetch 只能跟随当前 Run 的搜索 capability，且只处理
 有界 HTML/XHTML/plain text。该限制换来更小的攻击面、稳定引用身份和可证明的 Locality。
 若未来增加其他 provider、PDF、浏览器执行或私网检索，应新增独立 Adapter/policy，不得复用
 本公共网络权限静默放宽 SSRF 或审计边界。

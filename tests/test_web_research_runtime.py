@@ -10,7 +10,7 @@ import pytest
 from backend.web_research.contracts import WebResearchLimits
 from backend.web_research.http import WebHttpFetch
 from backend.web_research.runtime import (
-    BraveWebSearchAdapter,
+    TavilyKeylessWebSearchAdapter,
     WebResearchError,
     WebResearchErrorCode,
     WebResearchRuntime,
@@ -59,7 +59,11 @@ class _Fetch:
         self.calls = []
 
     def get(self, url: str, **kwargs) -> WebHttpFetch:
-        self.calls.append((url, kwargs))
+        self.calls.append(("GET", url, kwargs))
+        return self.result
+
+    def post(self, url: str, **kwargs) -> WebHttpFetch:
+        self.calls.append(("POST", url, kwargs))
         return self.result
 
 
@@ -67,7 +71,7 @@ def _policy() -> WebUrlPolicy:
     return WebUrlPolicy(
         _Resolver(
             {
-                "api.search.brave.com": ("1.1.1.1",),
+                "api.tavily.com": ("1.1.1.1",),
                 "news.openai.com": ("93.184.216.34",),
                 "research.cloudflare.com": ("8.8.8.8",),
                 "private.openai.com": ("127.0.0.1",),
@@ -209,8 +213,8 @@ def test_fetch_extracts_html_text_and_removes_active_or_hidden_content() -> None
     assert "token" not in evidence.content
     assert "comment" not in evidence.content
     assert result.encoded_size <= runtime.config.limits.max_total_evidence_bytes
-    assert client.calls[0][1]["max_redirects"] == runtime.config.limits.max_redirects
-    assert client.calls[0][1]["allowed_content_types"] == frozenset(
+    assert client.calls[0][2]["max_redirects"] == runtime.config.limits.max_redirects
+    assert client.calls[0][2]["allowed_content_types"] == frozenset(
         {"text/html", "application/xhtml+xml", "text/plain"}
     )
 
@@ -297,21 +301,21 @@ def test_runtime_checks_cancel_and_deadline_before_calling_adapters() -> None:
     assert search.calls == []
 
 
-def test_brave_adapter_uses_bounded_json_response_and_masks_key_repr() -> None:
+def test_tavily_keyless_adapter_posts_bounded_json_without_an_api_key() -> None:
     policy = _policy()
-    resolved = policy.resolve("https://api.search.brave.com/res/v1/web/search")
+    resolved = policy.resolve("https://api.tavily.com/search")
     client = _Fetch(
         WebHttpFetch(
             resolved=resolved,
             status_code=200,
             headers={"content-type": "application/json"},
-            body=b'{"web":{"results":[{"url":"https://news.openai.com/a",'
-            b'"title":"A","description":"Evidence"}]}}',
+            body=b'{"results":[{"url":"https://news.openai.com/a",'
+            b'"title":"A","content":"Evidence","score":0.9}]}',
             redirects=0,
         )
     )
-    config = WebResearchRuntimeConfig(brave_api_key="top-secret-key")
-    adapter = BraveWebSearchAdapter(client, config)
+    config = WebResearchRuntimeConfig()
+    adapter = TavilyKeylessWebSearchAdapter(client, config)
 
     hits = adapter.search(
         "safe query",
@@ -321,10 +325,15 @@ def test_brave_adapter_uses_bounded_json_response_and_masks_key_repr() -> None:
     )
 
     assert hits == (WebSearchHit("https://news.openai.com/a", "A", "Evidence"),)
-    assert "top-secret-key" not in repr(config)
-    assert client.calls[0][1]["headers"]["X-Subscription-Token"] == "top-secret-key"
-    assert "q=safe+query" in client.calls[0][0]
-    assert client.calls[0][1]["max_response_bytes"] == config.limits.max_response_bytes
+    assert client.calls[0][0] == "POST"
+    assert client.calls[0][1] == "https://api.tavily.com/search"
+    assert client.calls[0][2]["headers"]["X-Tavily-Access-Mode"] == "keyless"
+    assert "Authorization" not in client.calls[0][2]["headers"]
+    assert client.calls[0][2]["max_response_bytes"] == config.limits.max_response_bytes
+    assert client.calls[0][2]["max_redirects"] == 0
+    assert client.calls[0][2]["body"] == (
+        b'{"query":"safe query","search_depth":"basic","max_results":1}'
+    )
 
 
 def test_process_runtime_is_installed_only_by_the_composition_root() -> None:
@@ -370,13 +379,8 @@ def test_lifecycle_readiness_matches_start_and_close_state() -> None:
 
 
 def test_builder_maps_settings_without_importing_the_settings_layer() -> None:
-    class _Secret:
-        def get_secret_value(self) -> str:
-            return "builder-secret"
-
     web = SimpleNamespace(
         enabled=True,
-        brave_search_api_key=_Secret(),
         request_timeout_seconds=3.0,
         dns_timeout_seconds=1.0,
         dns_max_concurrency=2,
@@ -485,13 +489,13 @@ def test_runtime_close_is_idempotent_and_closes_its_url_policy() -> None:
 @pytest.mark.parametrize(
     "values",
     [
-        {"brave_api_key": "secret\nheader"},
-        {"brave_endpoint": "http://api.search.brave.com/search"},
-        {"brave_endpoint": "https://user@api.search.brave.com/search"},
-        {"brave_endpoint": "https://api.search.brave.com.evil.test/search"},
+        {"tavily_endpoint": "http://api.tavily.com/search"},
+        {"tavily_endpoint": "https://user@api.tavily.com/search"},
+        {"tavily_endpoint": "https://api.tavily.com.evil.test/search"},
+        {"tavily_endpoint": "https://api.tavily.com/other"},
     ],
 )
-def test_brave_configuration_rejects_credential_transport_risks(values) -> None:
+def test_tavily_configuration_rejects_endpoint_transport_risks(values) -> None:
     with pytest.raises(ValueError):
         WebResearchRuntimeConfig(**values)
 
@@ -502,7 +506,7 @@ def test_runtime_value_repr_omits_search_content_and_credentials() -> None:
         "secret title",
         "secret snippet",
     )
-    config = WebResearchRuntimeConfig(brave_api_key="secret-key")
+    config = WebResearchRuntimeConfig()
 
     assert "secret" not in repr(hit)
     assert "secret" not in repr(config)

@@ -359,28 +359,28 @@
                     <li class="folder" onclick="showPage('page-overview')">SuperMew/</li>
                     <ul>
                         <li class="file" onclick="showPage('page-overview')">
-                            <span class="filename">main.py</span><span class="badge">入口</span>
+                            <span class="filename">app.py</span><span class="badge">入口</span>
                         </li>
                         
                         <li class="folder">backend/ <span class="badge">核心代码区</span></li>
                         <ul>
                             <li class="file active" id="nav-api" onclick="showPage('page-api')">
-                                <span class="filename">api.py</span><span class="badge">REST路由</span>
+                                <span class="filename">api/router.py</span><span class="badge">REST路由</span>
                             </li>
                             <li class="file" id="nav-rag" onclick="showPage('page-rag')">
-                                <span class="filename">rag_pipeline.py</span><span class="badge">LangGraph</span>
+                                <span class="filename">rag/pipeline.py</span><span class="badge">LangGraph</span>
                             </li>
                             <li class="file" id="nav-agent" onclick="showPage('page-agent')">
-                                <span class="filename">agent.py</span><span class="badge">流式/Agent</span>
+                                <span class="filename">chat/service.py</span><span class="badge">流式/Agent</span>
                             </li>
                             <li class="file" id="nav-tools" onclick="showPage('page-tools')">
-                                <span class="filename">tools.py</span><span class="badge">工具网关</span>
+                                <span class="filename">tools/knowledge.py</span><span class="badge">工具网关</span>
                             </li>
                             <li class="file" id="nav-embedding" onclick="showPage('page-embedding')">
-                                <span class="filename">embedding.py</span><span class="badge">本地BM25</span>
+                                <span class="filename">indexing/embedding.py</span><span class="badge">稠密向量</span>
                             </li>
                             <li class="file" id="nav-milvus" onclick="showPage('page-milvus')">
-                                <span class="filename">milvus_client.py</span><span class="badge">混合检索库</span>
+                                <span class="filename">indexing/milvus_client.py</span><span class="badge">混合检索库</span>
                             </li>
                             <li class="file" id="nav-milvus_writer" onclick="showPage('page-milvus_writer')">
                                 <span class="filename">milvus_writer.py</span><span class="badge">数据写入</span>
@@ -423,12 +423,12 @@
 
                     <h3>🌟 六大核心工程亮点</h3>
                     <ul class="feature-list">
-                        <li><strong>LangGraph 自治检索纠错</strong>：如果初步检索相关性差，系统会自动触发退步提问 (Step-back) 或假设性文档 (HyDE) 生成来扩充查询。</li>
-                        <li><strong>双路混合检索引擎</strong>：系统不依赖商业 API，自己在 <code>embedding.py</code> 徒手实现了持久化的 BM25 稀疏向量计算。结合语义密集向量，在 Milvus 中利用 RRF (Reciprocal Rank Fusion) 算法做排名融合，兼顾语义泛化和专有名词精准匹配。</li>
+                        <li><strong>LangGraph 检索纠错</strong>：如果初步证据不足，FAST_MODEL 在 Step-back 与 HyDE 中单选一种，只执行一次重写检索和一次复评。</li>
+                        <li><strong>双路混合检索引擎</strong>：本地 embedding 生成 Dense 向量；原文写入 Milvus 后由中文 analyzer 与 <code>FunctionType.BM25</code> 自动生成 Sparse 向量，再用 RRF 融合两路排名。</li>
                         <li><strong>父子层级文档切片 (Parent-Child Chunking)</strong>：为了解决检索碎片化问题，系统对文档执行 L1/L2/L3 三级切片。仅把极小的 L3 存入 Milvus，一旦命中，自动向上溯源拉取大段 L2/L1 上下文喂给大模型。</li>
                         <li><strong>防幻觉系统级 Prompt</strong>：严格约束 Agent，要求必须基于知识库结果输出，严禁没结果强答或一回合内陷入死循环查库。</li>
-                        <li><strong>高并发流式穿透体系</strong>：RAG 复杂流程非常耗时，系统通过 <code>asyncio.Queue</code> 在 <code>agent.py</code> 中实现了底层引擎状态的实时捕获，在 LLM 思考前就把 “检索进度” 推送给前端。</li>
-                        <li><strong>轻量级无依赖架构</strong>：核心算法除了依赖底层库外，基本采用原生手写（如 BM25 增量状态机、原生 SSE 协议交互等），极其透明可控。</li>
+                        <li><strong>高并发流式穿透体系</strong>：<code>backend/chat/service.py</code> 通过请求级 <code>ChatRequestContext</code> 与 <code>asyncio.Queue</code>，在最终答案首 token 前持续推送检索进度。</li>
+                        <li><strong>低延迟规划</strong>：本地简单问题快判跳过复杂度模型；其余问题由 FAST_MODEL 一次完成复杂度判断和子问题规划。</li>
                     </ul>
                 </div>
 
@@ -443,6 +443,13 @@
                         </div>
                         <div class="flow-arrow">↓</div>
                         <div class="flow-row">
+                            <div class="flow-box decision">
+                                classify_complexity
+                                <small>本地快判 / FAST_MODEL 一次规划</small>
+                            </div>
+                        </div>
+                        <div class="flow-arrow">↓ simple</div>
+                        <div class="flow-row">
                             <div class="flow-box">
                                 retrieve_initial
                                 <small>Milvus HNSW+BM25 混合检索</small>
@@ -453,22 +460,22 @@
                             <div class="flow-box decision">
                                 grade_documents
                                 <small>Grader LLM</small>
-                                <small>相关性评估</small>
+                                <small>相关性 / 可回答性 / 歧义 / route</small>
                             </div>
                         </div>
                         <div class="flow-row" style="margin: 0;">
-                            <div style="flex:1; text-align:right; padding-right:40px; color: var(--secondary-color); font-weight: bold;">不相关 (No) ↙</div>
-                            <div style="flex:1; padding-left:40px; color: #4caf50; font-weight: bold;">↘ 相关 (Yes)</div>
+                            <div style="flex:1; text-align:right; padding-right:40px; color: var(--secondary-color); font-weight: bold;">rewrite ↙</div>
+                            <div style="flex:1; padding-left:40px; color: #4caf50; font-weight: bold;">↘ answer / HITL / end</div>
                         </div>
                         <div class="flow-row" style="align-items: flex-start;">
                             <div style="flex: 1; display: flex; flex-direction: column; align-items: center;">
                                 <div class="flow-box" style="border-color: var(--secondary-color);">
                                     rewrite_question
-                                    <small>HyDE 假设 / Step-back 泛化</small>
+                                    <small>Step-back / HyDE 单选</small>
                                 </div>
                                 <div class="flow-arrow">↓</div>
                                 <div class="flow-box">
-                                    retrieve_expanded
+                                    retrieve_rewritten
                                     <small>用新查询二次搜索</small>
                                 </div>
                                 <div class="flow-arrow">↘</div>
@@ -490,17 +497,18 @@
             <!-- ================= PAGE: RAG PIPELINE (重点1) ================= -->
             <div id="page-rag" class="details-section">
                 <div class="card">
-                    <h2>🧠 [重点] AI大脑状态机编排 (backend/rag_pipeline.py)</h2>
+                    <h2>🧠 [重点] AI大脑状态机编排 (backend/rag/pipeline.py)</h2>
                     <p>普通的 RAG 流程是直线的：“搜索 -> 组装Prompt -> 大模型输出”。但真实的文档搜索往往会失败（比如用户用了同义词、指代不明）。本系统使用 <strong>LangGraph</strong> 建立了一个带有自我纠错机制的循环状态图（Self-Reflective RAG）。</p>
                     
                     <h3>核心机制 1：文档裁判官 (Grader)</h3>
-                    <p>在初次检索 <code>retrieve_initial</code> 之后，系统不急于让主模型回答，而是先让一个小模型（Grader）去“打分”。如果文档跟问题牛头不对马嘴，直接判定为 <code>no</code>，避免主模型产生幻觉。</p>
+                    <p>在初次检索 <code>retrieve_initial</code> 之后，独立的 GRADE_MODEL 一次输出相关性、可回答性、歧义、置信度和下一步 <code>route</code>，避免主模型基于不足证据产生幻觉。</p>
 
                     <h3>核心机制 2：查询变换 (Query Transformation)</h3>
-                    <p>被 Grader 驳回后，系统进入 <code>rewrite_question_node</code>。这不是简单的换词，而是采用了高阶策略：</p>
+                    <p>被 Grader 判定为证据不足后，系统进入 <code>rewrite_question_node</code>。FAST_MODEL 在一次结构化调用中选择 Step-back 或 HyDE，并生成本轮唯一使用的重写内容。</p>
                     <ul class="feature-list">
-                        <li><strong>HyDE (Hypothetical Document Embeddings)</strong>：当问题很概念化时，让模型直接“盲答”写一篇假设性文章，拿这篇文章的向量去搜索。因为答案的行文风格往往和原始文档更接近，相似度极高。</li>
-                        <li><strong>Step-back (退步提问)</strong>：如果问题是具体的“报错日志”，退回一步提问“这个组件的报错排查原理是什么”，从而召回整体结构文档。</li>
+                        <li><strong>Step-back (退步提问)</strong>：把过于具体的问法提升为更概括的检索意图，再执行一次混合检索和证据复评。</li>
+                        <li><strong>HyDE</strong>：为模糊、概念性问题生成一段仅用于召回的假设性答案文档，不把它当作事实证据。</li>
+                        <li><strong>严格单选</strong>：每轮只运行一种方式，不额外调用路由模型，也不并行执行两路检索。</li>
                     </ul>
 
                     <h3>核心代码剖析：LangGraph 有向图编译</h3>
@@ -510,13 +518,18 @@
     graph = StateGraph(RAGState)
     
     <span class="comment"># 2. 注册图节点（定义执行函数）</span>
+    graph.add_node(<span class="string">"classify_complexity"</span>, classify_complexity)
+    graph.add_node(<span class="string">"prepare_sub_questions"</span>, prepare_sub_questions)
     graph.add_node(<span class="string">"retrieve_initial"</span>, retrieve_initial)
     graph.add_node(<span class="string">"grade_documents"</span>, grade_documents_node)
     graph.add_node(<span class="string">"rewrite_question"</span>, rewrite_question_node)
-    graph.add_node(<span class="string">"retrieve_expanded"</span>, retrieve_expanded)
+    graph.add_node(<span class="string">"retrieve_rewritten"</span>, retrieve_rewritten)
+    graph.add_node(<span class="string">"rag_sub_agent"</span>, rag_sub_agent)
+    graph.add_node(<span class="string">"synthesis"</span>, synthesis)
 
-    <span class="comment"># 3. 画出固定的单行道</span>
-    graph.set_entry_point(<span class="string">"retrieve_initial"</span>)
+    <span class="comment"># 3. 入口先做本地快判或一次复杂度规划</span>
+    graph.set_entry_point(<span class="string">"classify_complexity"</span>)
+    graph.add_conditional_edges(<span class="string">"classify_complexity"</span>, _route_after_complexity)
     graph.add_edge(<span class="string">"retrieve_initial"</span>, <span class="string">"grade_documents"</span>)
     
     <span class="comment"># 4. 【灵魂】条件分叉：根据 grader 评分决定走向</span>
@@ -524,14 +537,14 @@
         <span class="string">"grade_documents"</span>,
         <span class="keyword">lambda</span> state: state.get(<span class="string">"route"</span>), 
         {
-            <span class="string">"generate_answer"</span>: END, <span class="comment"># 裁判给过了：结束图计算，主模型准备输出</span>
-            <span class="string">"rewrite_question"</span>: <span class="string">"rewrite_question"</span>, <span class="comment"># 没过：去重写问题</span>
+            <span class="string">"end"</span>: END,
+            <span class="string">"rewrite_question"</span>: <span class="string">"rewrite_question"</span>,
         },
     )
     
-    <span class="comment"># 5. 重写完了去二次搜索，完了再结束</span>
-    graph.add_edge(<span class="string">"rewrite_question"</span>, <span class="string">"retrieve_expanded"</span>)
-    graph.add_edge(<span class="string">"retrieve_expanded"</span>, END)
+    <span class="comment"># 5. 唯一一次 Step-back / HyDE 单选重写后重新评判</span>
+    graph.add_edge(<span class="string">"rewrite_question"</span>, <span class="string">"retrieve_rewritten"</span>)
+    graph.add_edge(<span class="string">"retrieve_rewritten"</span>, <span class="string">"grade_documents"</span>)
     
     <span class="keyword">return</span> graph.compile()</code></pre>
                 </div>
@@ -540,44 +553,28 @@
             <!-- ================= PAGE: EMBEDDING (重点2) ================= -->
             <div id="page-embedding" class="details-section">
                 <div class="card">
-                    <h2>🔢 [重点] 本地增量 BM25 稀疏向量 (backend/embedding.py)</h2>
-                    <p>商业向量模型（如 OpenAI、BAAI）生成的叫做“稠密向量”(Dense)，擅长“语义模糊匹配”。但如果在手册里搜 <span class="highlight-text">"XYZ-9988C 型号"</span>，稠密向量往往全军覆没。系统在此处硬核地在纯 Python 环境下手写了 <strong>BM25 (Sparse) 稀疏向量算法</strong>。</p>
-                    
-                    <h3>硬核点 1：不依赖外接服务的纯净状态机</h3>
-                    <p>系统没有外接 ElasticSearch，而是维护了一个 <code>data/bm25_state.json</code>。每次上传/删除新文档，它都会被安全地锁（<code>threading.Lock()</code>）住并重新计算每个词的 <code>doc_freq</code>（逆文档频率）和全库文档总数 <code>total_docs</code>，实现了轻量级的 <strong>增量 IDF</strong>。</p>
+                    <h2>🔢 [重点] Dense Embedding 与 Milvus 原生 BM25</h2>
+                    <p><code>backend/indexing/embedding.py</code> 只负责生成 Dense 稠密向量。Sparse 稀疏向量由 Milvus 2.5+ 在服务端根据原始 <code>text</code> 字段自动生成，因此只在应用启动和文档入库时涉及本地 embedding，不增加用户知识问答链路中的模型加载步骤。</p>
 
-                    <h3>核心代码剖析：TF-IDF 稀疏向量构建</h3>
-                    <p>由于 Milvus <code>SPARSE_INVERTED_INDEX</code> 的要求，我们需要将文本转为一个形如 <code>{词汇ID: 得分}</code> 的字典（其中只包含非零分数，这就叫稀疏）。</p>
-                    <pre><code><span class="keyword">def</span> <span class="function">_sparse_vector_for_text_unlocked</span>(self, text: str):
-    <span class="comment"># 1. 拆词并统计当前句子的词频 (Term Frequency, TF)</span>
-    tokens = self.tokenize(text)
-    doc_len = len(tokens)
-    tf = Counter(tokens)
-    
-    sparse_vector = {}
-    <span class="keyword">for</span> token, freq <span class="keyword">in</span> tf.items():
-        <span class="comment"># 词典索引，用于给 Milvus 做倒排 ID</span>
-        idx = self._vocab[token]
-        
-        <span class="comment"># 2. IDF 计算（逆文档频率）：如果一个词在全库太常见，得分被暴扣</span>
-        df = self._doc_freq.get(token, <span class="string">0</span>)
-        <span class="keyword">if</span> df == <span class="string">0</span>:
-            idf = math.log((n + <span class="string">1</span>) / <span class="string">1</span>)
-        <span class="keyword">else</span>:
-            idf = math.log((n - df + <span class="string">0.5</span>) / (df + <span class="string">0.5</span>) + <span class="string">1</span>)
+                    <h3>服务端原生稀疏特征</h3>
+                    <p>Collection 的 <code>text</code> 字段启用中文 analyzer，并绑定 <code>FunctionType.BM25</code>。文档写入后，Milvus 自动维护词项统计和 <code>sparse_embedding</code>，应用侧无需保存额外状态。</p>
 
-        <span class="comment"># 3. 经典 BM25 算法公式</span>
-        <span class="comment"># numerator: TF 上限抑制 (饱和度参数 k1)</span>
-        <span class="comment"># denominator: 引入文档长度惩罚 (参数 b)</span>
-        numerator = freq * (self.k1 + <span class="string">1</span>)
-        denominator = freq + self.k1 * (<span class="string">1</span> - self.b + self.b * doc_len / avg)
-        
-        score = idf * numerator / denominator
-        <span class="keyword">if</span> score &gt; <span class="string">0</span>:
-            <span class="comment"># { 维度ID: 分数 } 这就是稀疏向量的本质</span>
-            sparse_vector[idx] = float(score)
+                    <h3>核心代码剖析：Schema 绑定 BM25 Function</h3>
+                    <pre><code>schema.add_field(
+    <span class="string">"text"</span>, DataType.VARCHAR,
+    max_length=<span class="string">65535</span>,
+    enable_analyzer=<span class="keyword">True</span>,
+    analyzer_params={<span class="string">"type"</span>: <span class="string">"chinese"</span>},
+    enable_match=<span class="keyword">True</span>,
+)
 
-    <span class="keyword">return</span> sparse_vector, vocab_changed</code></pre>
+bm25_function = Function(
+    name=<span class="string">"text_bm25_emb"</span>,
+    function_type=FunctionType.BM25,
+    input_field_names=[<span class="string">"text"</span>],
+    output_field_names=[<span class="string">"sparse_embedding"</span>],
+)
+schema.add_function(bm25_function)</code></pre>
                 </div>
             </div>
 
@@ -585,7 +582,7 @@
             <div id="page-milvus" class="details-section">
                 <div class="card">
                     <h2>🗄️ [重点] 异构多路召回与重排 (backend/milvus_client.py)</h2>
-                    <p>这个模块展示了我们在上一步拿到 Dense 和 Sparse 两种向量后，如何将它们存入 Milvus，并在检索时优雅地合并（Fusion）这两种尺度完全不同的分数。</p>
+                    <p>这个模块把应用生成的 Dense 查询向量和原始查询文本同时交给 Milvus，由服务端执行 Dense + BM25 两路召回并通过 RRF 合并排名。</p>
 
                     <h3>异构双重索引设计</h3>
                     <p>建立 Collection 时，不同的向量类型配备了量身定制的武器：</p>
@@ -595,21 +592,21 @@ index_params.add_index(
 )
 <span class="comment"># 给 Sparse 向量配 倒排索引 (倒排索引是关键词检索引擎的核心)</span>
 index_params.add_index(
-    field_name=<span class="string">"sparse_embedding"</span>, index_type=<span class="string">"SPARSE_INVERTED_INDEX"</span>, 
-    metric_type=<span class="string">"IP"</span>, params={<span class="string">"drop_ratio_build"</span>: <span class="string">0.2</span>} <span class="comment"># 压缩长尾垃圾词</span>
+    field_name=<span class="string">"sparse_embedding"</span>, index_type=<span class="string">"SPARSE_INVERTED_INDEX"</span>,
+    metric_type=<span class="string">"BM25"</span>, params={<span class="string">"drop_ratio_build"</span>: <span class="string">0.2</span>}
 )</code></pre>
 
                     <h3>核心代码剖析：RRF (Reciprocal Rank Fusion) 算法</h3>
                     <p>这是混合检索最难的一步：Dense 的距离分数（例如 0.81）和 BM25 的得分（例如 25.4）如同苹果和香蕉，没法加权平均。系统巧妙使用了 <span class="highlight-text">RRF 算法</span>，<strong>彻底抛弃绝对分数，仅使用两边的排名次序来合并</strong>。</p>
-                    <pre><code><span class="keyword">def</span> <span class="function">hybrid_retrieve</span>(self, dense_embedding, sparse_embedding, top_k=<span class="string">5</span>):
+                    <pre><code><span class="keyword">def</span> <span class="function">hybrid_retrieve</span>(self, dense_embedding, query, top_k=<span class="string">5</span>):
     <span class="comment"># 1. 构造语义查询：让它多跑一点候选量 (top_k * 2) 参与后面大乱斗</span>
     dense_search = AnnSearchRequest(
         data=[dense_embedding], anns_field=<span class="string">"dense_embedding"</span>, limit=top_k * <span class="string">2</span>
     )
     
-    <span class="comment"># 2. 构造关键词纯词频查询</span>
+    <span class="comment"># 2. 原始文本直接交给 Milvus BM25 Function</span>
     sparse_search = AnnSearchRequest(
-        data=[sparse_embedding], anns_field=<span class="string">"sparse_embedding"</span>, limit=top_k * <span class="string">2</span>
+        data=[query], anns_field=<span class="string">"sparse_embedding"</span>, limit=top_k * <span class="string">2</span>
     )
     
     <span class="comment"># 3. 部署 RRF 重排器 (重排分 = 1 / (k参数 + 单路排名))</span>
@@ -666,7 +663,7 @@ index_params.add_index(
             <!-- ================= PAGE: AGENT ================= -->
             <div id="page-agent" class="details-section">
                 <div class="card">
-                    <h2>🤖 Agent 行为约束与流式黑科技 (backend/agent.py)</h2>
+                    <h2>🤖 Agent 行为约束与流式交互 (backend/chat/service.py)</h2>
                     <p>负责管理系统的主循环：串联用户记忆、设定大模型行为边界、并提供复杂的 SSE (Server-Sent Events) 双通道流式渲染能力。</p>
                     
                     <h3>设计亮点：防幻觉的 System Prompt</h3>
@@ -714,7 +711,7 @@ index_params.add_index(
             <!-- ================= PAGE: TOOLS ================= -->
             <div id="page-tools" class="details-section">
                 <div class="card">
-                    <h2>🚪 工具网关与状态逃逸 (backend/tools.py)</h2>
+                    <h2>🚪 工具网关与请求上下文 (backend/tools/knowledge.py)</h2>
                     <p>这个模块扮演了 <strong>LangChain Agent</strong> 和 <strong>LangGraph RAG 状态机</strong> 之间的桥梁。</p>
                     
                     <h3>状态逃逸设计</h3>
@@ -749,7 +746,7 @@ index_params.add_index(
             <!-- ================= PAGE: API ================= -->
             <div id="page-api" class="details-section">
                 <div class="card">
-                    <h2>🌐 API 核心路由 (backend/api.py)</h2>
+                    <h2>🌐 API 核心路由 (backend/api/routes)</h2>
                     <p>FastAPI 的入口文件。通过 <code>StreamingResponse</code> 返回长期存活的流式通讯。</p>
                 </div>
             </div>

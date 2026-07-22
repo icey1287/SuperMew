@@ -86,7 +86,7 @@ def _catalog(
         _descriptor(
             "web_search",
             group="web-research",
-            required_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            required_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             network_policy="restricted",
             resource_scope="public-web",
         ),
@@ -115,7 +115,7 @@ def _catalog(
         name="web-research",
         description="Research the public web.",
         tool_names=("web_search",),
-        required_secrets=("BRAVE_SEARCH_API_KEY",),
+        required_secrets=("WEB_RESEARCH_RUNTIME",),
     )
     _write_skill(
         root,
@@ -150,7 +150,7 @@ def test_snapshot_projects_role_and_configuration_without_secret_material(
 ) -> None:
     catalog = _catalog(
         tmp_path,
-        secrets=frozenset({"BRAVE_SEARCH_API_KEY", "SANDBOX_RUNTIME"}),
+        secrets=frozenset({"WEB_RESEARCH_RUNTIME", "SANDBOX_RUNTIME"}),
     )
 
     snapshot = catalog.snapshot(role="user")
@@ -178,7 +178,7 @@ def test_snapshot_projects_role_and_configuration_without_secret_material(
         "secret",
     }
     assert _keys(asdict(snapshot)).isdisjoint(forbidden)
-    assert "BRAVE_SEARCH_API_KEY" not in str(asdict(snapshot))
+    assert "WEB_RESEARCH_RUNTIME" not in str(asdict(snapshot))
     assert "SANDBOX_RUNTIME" not in str(asdict(snapshot))
     assert "private instructions" not in str(asdict(snapshot))
 
@@ -186,7 +186,7 @@ def test_snapshot_projects_role_and_configuration_without_secret_material(
 def test_approval_only_tool_is_available_before_run_preapproval(tmp_path: Path) -> None:
     catalog = _catalog(
         tmp_path,
-        secrets=frozenset({"BRAVE_SEARCH_API_KEY", "SANDBOX_RUNTIME"}),
+        secrets=frozenset({"WEB_RESEARCH_RUNTIME", "SANDBOX_RUNTIME"}),
     )
 
     snapshot = catalog.snapshot(role="admin")
@@ -208,7 +208,7 @@ def test_missing_runtime_configuration_is_a_stable_unavailable_reason(
 ) -> None:
     catalog = _catalog(
         tmp_path,
-        secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+        secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
     )
 
     snapshot = catalog.snapshot(role="admin")

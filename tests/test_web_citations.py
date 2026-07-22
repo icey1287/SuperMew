@@ -184,7 +184,7 @@ def test_malformed_or_non_link_webcite_tokens_are_rejected(content: str):
     assert "web_ev_" not in repr(captured.value)
 
 
-def test_successful_evidence_requires_a_citation_but_failed_attempt_does_not():
+def test_successful_evidence_gets_server_rendered_source_when_model_omits_it():
     evidence = _evidence()
     with_evidence = WebCitationLedger()
     with_evidence.register_result(
@@ -194,9 +194,12 @@ def test_successful_evidence_requires_a_citation_but_failed_attempt_does_not():
     failed_attempt = WebCitationLedger()
     failed_attempt.mark_attempted()
 
-    with pytest.raises(WebCitationLedgerError) as captured:
-        with_evidence.finalize("No citation was emitted.")
-    assert captured.value.code is WebCitationLedgerCode.REQUIRED
+    repaired = with_evidence.finalize("No citation was emitted.")
+    assert "No citation was emitted." in repaired.content
+    assert "参考来源" in repaired.content
+    assert evidence.canonical_url in repaired.content
+    assert repaired.citation_count == 1
+    assert repaired.cited_evidence_count == 1
 
     finalized = failed_attempt.finalize("Search failed; no evidence is available.")
     assert finalized.content == "Search failed; no evidence is available."

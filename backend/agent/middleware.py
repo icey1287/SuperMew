@@ -258,9 +258,17 @@ def _is_atomic_dynamic_context(message: BaseMessage) -> bool:
     )
 
 
-def _atomic_web_tool_result_ids(
+def _web_tool_result_has_evidence(message: ToolMessage) -> bool:
+    result = _typed_tool_result(message)
+    if result is None or not result.success or not isinstance(result.data, dict):
+        return False
+    evidence = result.data.get("evidence")
+    return isinstance(evidence, list) and bool(evidence)
+
+
+def _ordered_atomic_web_tool_results(
     messages: Sequence[BaseMessage],
-) -> frozenset[str]:
+) -> list[tuple[str, bool]]:
     web_call_ids = {
         str(tool_call.get("id"))
         for message in messages
@@ -268,8 +276,8 @@ def _atomic_web_tool_result_ids(
         for tool_call in (message.tool_calls or [])
         if tool_call.get("id") and str(tool_call.get("name") or "") in _WEB_TOOL_NAMES
     }
-    return frozenset(
-        message.tool_call_id
+    return [
+        (message.tool_call_id, _web_tool_result_has_evidence(message))
         for message in messages
         if isinstance(message, ToolMessage)
         and (
@@ -277,7 +285,92 @@ def _atomic_web_tool_result_ids(
             or str(getattr(message, "name", "") or "") in _WEB_TOOL_NAMES
         )
         and _typed_tool_result(message) is not None
+    ]
+
+
+def _ordered_atomic_web_tool_result_ids(
+    messages: Sequence[BaseMessage],
+) -> list[str]:
+    return [
+        tool_call_id
+        for tool_call_id, _has_evidence in _ordered_atomic_web_tool_results(messages)
+    ]
+
+
+def _atomic_web_tool_result_ids(
+    messages: Sequence[BaseMessage],
+) -> frozenset[str]:
+    return frozenset(_ordered_atomic_web_tool_result_ids(messages))
+
+
+def _remove_tool_call_bundle(
+    messages: Sequence[BaseMessage],
+    tool_call_id: str,
+) -> list[BaseMessage]:
+    retained: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, ToolMessage) and message.tool_call_id == tool_call_id:
+            continue
+        if isinstance(message, AIMessage):
+            calls = list(message.tool_calls or [])
+            if any(str(call.get("id")) == tool_call_id for call in calls):
+                remaining_calls = [
+                    call
+                    for call in calls
+                    if str(call.get("id")) != tool_call_id
+                ]
+                if remaining_calls or _message_text(message).strip():
+                    retained.append(
+                        message.model_copy(update={"tool_calls": remaining_calls})
+                    )
+                continue
+        retained.append(message)
+    return retained
+
+
+def _evict_older_web_tool_bundles(
+    messages: list[BaseMessage],
+    *,
+    token_budget: int,
+    system_message: SystemMessage | None,
+    tools: list | None,
+) -> tuple[list[BaseMessage], int]:
+    retained = list(messages)
+    estimated = estimate_request_tokens(
+        retained,
+        system_message=system_message,
+        tools=tools,
     )
+    web_results = _ordered_atomic_web_tool_results(retained)
+    if not web_results:
+        return retained, estimated
+    protected_id = next(
+        (
+            tool_call_id
+            for tool_call_id, has_evidence in reversed(web_results)
+            if has_evidence
+        ),
+        web_results[-1][0],
+    )
+    eviction_order = [
+        tool_call_id
+        for tool_call_id, has_evidence in web_results
+        if tool_call_id != protected_id and not has_evidence
+    ] + [
+        tool_call_id
+        for tool_call_id, has_evidence in web_results
+        if tool_call_id != protected_id and has_evidence
+    ]
+    for tool_call_id in eviction_order:
+        if estimated <= token_budget:
+            break
+        retained = _remove_tool_call_bundle(retained, tool_call_id)
+        estimated = estimate_request_tokens(
+            retained,
+            system_message=system_message,
+            tools=tools,
+        )
+    return retained, estimated
 
 
 def _compact_to_budget(
@@ -377,6 +470,13 @@ def trim_messages_to_budget(
         system_message=system_message,
         tools=tools,
     )
+    if estimated > token_budget:
+        retained, estimated = _evict_older_web_tool_bundles(
+            retained,
+            token_budget=token_budget,
+            system_message=system_message,
+            tools=tools,
+        )
     if estimated > token_budget:
         raise _ContextPackingError(
             atomic_web_tool_result=bool(_atomic_web_tool_result_ids(retained)),
@@ -778,9 +878,9 @@ class ContextBudgetMiddleware(AgentMiddleware):
                     error_code=_WEB_CONTEXT_BUDGET_ERROR,
                 )
                 raise AppError(
-                    ErrorCode.POLICY_DENIED,
+                    ErrorCode.WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED,
                     "Web Research 证据结果无法完整放入当前上下文预算。",
-                    status_code=403,
+                    status_code=422,
                     category="web_research",
                     stage="context_budget",
                 ) from exc

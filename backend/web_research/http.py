@@ -116,6 +116,20 @@ class WebHttpTransport(Protocol):
         cancellation_probe: CancellationProbe | None,
     ) -> WebHttpResponse: ...
 
+    def post(
+        self,
+        resolved: ResolvedWebUrl,
+        *,
+        headers: Mapping[str, str],
+        body: bytes,
+        allowed_content_types: frozenset[str],
+        max_compressed_bytes: int,
+        max_response_bytes: int,
+        timeout_seconds: float,
+        deadline_at: float | None,
+        cancellation_probe: CancellationProbe | None,
+    ) -> WebHttpResponse: ...
+
 
 class NumericSocketConnector(Protocol):
     def __call__(self, ip: str, port: int, timeout: float) -> socket.socket: ...
@@ -357,10 +371,10 @@ class _PinnedConnection(http.client.HTTPConnection):
         """Bind the live socket to the remaining request/Run time budget."""
 
         if self.sock is None:
-            raise WebHttpError(
-                WebHttpErrorCode.CONNECTION_FAILED,
-                retryable=True,
-            )
+            # ``http.client`` detaches a ``Connection: close`` socket after
+            # headers; the HTTPResponse still owns it and the watchdog still
+            # enforces the absolute deadline while the body is read.
+            return
         self._refresh_socket_timeout(self.sock)
 
     def _refresh_socket_timeout(self, sock: socket.socket) -> None:
@@ -500,6 +514,63 @@ class PinnedWebHttpTransport:
         deadline_at: float | None,
         cancellation_probe: CancellationProbe | None,
     ) -> WebHttpResponse:
+        return self._request(
+            "GET",
+            resolved,
+            headers=headers,
+            body=None,
+            allowed_content_types=allowed_content_types,
+            max_compressed_bytes=max_compressed_bytes,
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+            deadline_at=deadline_at,
+            cancellation_probe=cancellation_probe,
+        )
+
+    def post(
+        self,
+        resolved: ResolvedWebUrl,
+        *,
+        headers: Mapping[str, str],
+        body: bytes,
+        allowed_content_types: frozenset[str],
+        max_compressed_bytes: int,
+        max_response_bytes: int,
+        timeout_seconds: float,
+        deadline_at: float | None,
+        cancellation_probe: CancellationProbe | None,
+    ) -> WebHttpResponse:
+        if not isinstance(body, bytes):
+            raise TypeError("body must be bytes")
+        if len(body) > _HARD_MAX_BODY_BYTES:
+            raise ValueError("request body exceeds the hard byte limit")
+        return self._request(
+            "POST",
+            resolved,
+            headers=headers,
+            body=body,
+            allowed_content_types=allowed_content_types,
+            max_compressed_bytes=max_compressed_bytes,
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+            deadline_at=deadline_at,
+            cancellation_probe=cancellation_probe,
+        )
+
+    def _request(
+        self,
+        method: str,
+        resolved: ResolvedWebUrl,
+        *,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        allowed_content_types: frozenset[str],
+        max_compressed_bytes: int,
+        max_response_bytes: int,
+        timeout_seconds: float,
+        deadline_at: float | None,
+        cancellation_probe: CancellationProbe | None,
+    ) -> WebHttpResponse:
         _validate_body_limit(max_compressed_bytes, "max_compressed_bytes")
         _validate_body_limit(max_response_bytes, "max_response_bytes")
         _validate_positive_float(timeout_seconds, "timeout_seconds")
@@ -529,8 +600,9 @@ class PinnedWebHttpTransport:
         try:
             watchdog.start()
             connection.request(
-                "GET",
+                method,
                 resolved.request_target,
+                body=body,
                 headers=request_headers,
             )
             connection.refresh_timeout()
@@ -792,6 +864,123 @@ class SafeWebHttpClient:
                         for name, value in request_headers.items()
                         if name.casefold() in {"accept", "user-agent"}
                     }
+                current = redirected
+                continue
+            if not 200 <= response.status_code <= 299:
+                raise WebHttpError(
+                    WebHttpErrorCode.HTTP_STATUS,
+                    retryable=response.status_code in {408, 425, 429}
+                    or response.status_code >= 500,
+                    safe_details={"status_code": response.status_code},
+                )
+            _validate_content_type(response.headers, allowed_content_types)
+            encoding = response.headers.get("content-encoding", "identity")
+            if encoding.strip().casefold() not in {"", "identity", "gzip"}:
+                raise WebHttpError(WebHttpErrorCode.CONTENT_ENCODING_DENIED)
+            return WebHttpFetch(
+                resolved=current,
+                status_code=response.status_code,
+                headers=response.headers,
+                body=response.body,
+                redirects=redirects,
+            )
+        raise WebHttpError(WebHttpErrorCode.REDIRECT_LIMIT_EXCEEDED)
+
+    def post(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        body: bytes,
+        allowed_content_types: frozenset[str],
+        max_compressed_bytes: int,
+        max_response_bytes: int,
+        max_redirects: int,
+        timeout_seconds: float,
+        deadline_at: float | None = None,
+        cancellation_probe: CancellationProbe | None = None,
+    ) -> WebHttpFetch:
+        if not isinstance(body, bytes):
+            raise TypeError("body must be bytes")
+        if len(body) > _HARD_MAX_BODY_BYTES:
+            raise ValueError("request body exceeds the hard byte limit")
+        _validate_body_limit(max_compressed_bytes, "max_compressed_bytes")
+        _validate_body_limit(max_response_bytes, "max_response_bytes")
+        _validate_positive_float(timeout_seconds, "timeout_seconds")
+        if isinstance(max_redirects, bool) or not isinstance(max_redirects, int):
+            raise TypeError("max_redirects must be an integer")
+        if not 0 <= max_redirects <= _HARD_MAX_REDIRECTS:
+            raise ValueError(
+                f"max_redirects must be between 0 and {_HARD_MAX_REDIRECTS}"
+            )
+        if deadline_at is not None and (
+            isinstance(deadline_at, bool)
+            or not isinstance(deadline_at, (int, float))
+            or not math.isfinite(float(deadline_at))
+        ):
+            raise ValueError("deadline_at must be finite")
+        request_deadline = self._monotonic() + timeout_seconds
+        effective_deadline = (
+            request_deadline
+            if deadline_at is None
+            else min(request_deadline, deadline_at)
+        )
+        _checkpoint(
+            deadline_at=effective_deadline,
+            cancellation_probe=cancellation_probe,
+            monotonic=self._monotonic,
+        )
+        current = self.policy.resolve(
+            url,
+            deadline_at=effective_deadline,
+            cancellation_probe=cancellation_probe,
+        )
+        visited: set[str] = set()
+        request_headers = dict(headers or {})
+        for redirects in range(max_redirects + 1):
+            _checkpoint(
+                deadline_at=effective_deadline,
+                cancellation_probe=cancellation_probe,
+                monotonic=self._monotonic,
+            )
+            if current.canonical_url in visited:
+                raise WebHttpError(WebHttpErrorCode.REDIRECT_LIMIT_EXCEEDED)
+            visited.add(current.canonical_url)
+            response = self.transport.post(
+                current,
+                headers=request_headers,
+                body=body,
+                allowed_content_types=allowed_content_types,
+                max_compressed_bytes=max_compressed_bytes,
+                max_response_bytes=max_response_bytes,
+                timeout_seconds=timeout_seconds,
+                deadline_at=effective_deadline,
+                cancellation_probe=cancellation_probe,
+            )
+            _checkpoint(
+                deadline_at=effective_deadline,
+                cancellation_probe=cancellation_probe,
+                monotonic=self._monotonic,
+            )
+            self.policy.verify_peer(current, response.peer_ip)
+            if len(response.body) > max_response_bytes:
+                raise WebHttpError(WebHttpErrorCode.RESPONSE_TOO_LARGE)
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.header("location")
+                if location is None or redirects >= max_redirects:
+                    raise WebHttpError(WebHttpErrorCode.REDIRECT_LIMIT_EXCEEDED)
+                if response.status_code not in {307, 308}:
+                    raise WebHttpError(WebHttpErrorCode.REDIRECT_DENIED)
+                redirected = self.policy.validate_redirect(
+                    current,
+                    location,
+                    deadline_at=effective_deadline,
+                    cancellation_probe=cancellation_probe,
+                )
+                if current.scheme == "https" and redirected.scheme != "https":
+                    raise WebHttpError(WebHttpErrorCode.REDIRECT_DENIED)
+                if _origin(current) != _origin(redirected):
+                    raise WebHttpError(WebHttpErrorCode.REDIRECT_DENIED)
                 current = redirected
                 continue
             if not 200 <= response.status_code <= 299:

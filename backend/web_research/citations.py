@@ -430,7 +430,19 @@ class WebCitationLedger:
             rendered_segments.append(rendered_prose)
         rendered = "".join(rendered_segments)
         if self._evidence and citation_count == 0:
-            raise WebCitationLedgerError(WebCitationLedgerCode.REQUIRED)
+            sources = tuple(self._evidence.values())
+            source_list = "\n".join(
+                f"- [{_markdown_label(source.title)}](<{source.canonical_url}>)"
+                for source in sources
+            )
+            rendered = (
+                f"{rendered.rstrip()}\n\n参考来源：\n{source_list}"
+                if rendered.strip()
+                else f"参考来源：\n{source_list}"
+            )
+            rendered = _validated_content(rendered)
+            citation_count = len(sources)
+            cited_evidence.update(source.evidence_id for source in sources)
         return WebCitationFinalization(
             content=rendered,
             citation_count=citation_count,

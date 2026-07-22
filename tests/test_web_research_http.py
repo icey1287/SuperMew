@@ -56,6 +56,11 @@ class _ScriptedTransport:
         self.request_options.append(kwargs)
         return self.responses.pop(0)
 
+    def post(self, resolved, **kwargs) -> WebHttpResponse:
+        self.requests.append(resolved)
+        self.request_options.append(kwargs)
+        return self.responses.pop(0)
+
 
 class _PinnedSocket:
     """Socket proxy whose peer identity matches the public DNS test pin."""
@@ -108,6 +113,78 @@ def _get(client: SafeWebHttpClient, url: str, **overrides):
     }
     values.update(overrides)
     return client.get(url, **values)
+
+
+def _post(client: SafeWebHttpClient, url: str, **overrides):
+    values = {
+        "body": b'{"query":"safe"}',
+        "allowed_content_types": frozenset({"application/json"}),
+        "max_compressed_bytes": 1024,
+        "max_response_bytes": 1024,
+        "max_redirects": 0,
+        "timeout_seconds": 1.0,
+    }
+    values.update(overrides)
+    return client.post(url, **values)
+
+
+def test_safe_client_posts_bounded_body_to_the_pinned_origin() -> None:
+    resolver = _Resolver({"api.tavily.com": ("1.1.1.1",)})
+    transport = _ScriptedTransport(
+        [
+            WebHttpResponse(
+                200,
+                {"Content-Type": "application/json"},
+                b'{"results":[]}',
+                "1.1.1.1",
+            )
+        ]
+    )
+
+    result = _post(
+        SafeWebHttpClient(WebUrlPolicy(resolver), transport=transport),
+        "https://api.tavily.com/search",
+        headers={
+            "Content-Type": "application/json",
+            "X-Tavily-Access-Mode": "keyless",
+        },
+    )
+
+    assert result.body == b'{"results":[]}'
+    assert resolver.calls == [("api.tavily.com", 443)]
+    assert transport.request_options[0]["body"] == b'{"query":"safe"}'
+    assert transport.request_options[0]["headers"]["X-Tavily-Access-Mode"] == (
+        "keyless"
+    )
+
+
+def test_safe_client_denies_cross_origin_post_redirects() -> None:
+    resolver = _Resolver(
+        {
+            "api.tavily.com": ("1.1.1.1",),
+            "other.cloudflare.com": ("93.184.216.34",),
+        }
+    )
+    transport = _ScriptedTransport(
+        [
+            WebHttpResponse(
+                307,
+                {"Location": "https://other.cloudflare.com/search"},
+                b"",
+                "1.1.1.1",
+            )
+        ]
+    )
+
+    with pytest.raises(WebHttpError) as raised:
+        _post(
+            SafeWebHttpClient(WebUrlPolicy(resolver), transport=transport),
+            "https://api.tavily.com/search",
+            max_redirects=1,
+        )
+
+    assert raised.value.code == WebHttpErrorCode.REDIRECT_DENIED.value
+    assert len(transport.requests) == 1
 
 
 def test_safe_client_re_resolves_and_revalidates_every_redirect_hop() -> None:
@@ -363,6 +440,48 @@ def test_transport_rebinds_socket_timeout_before_each_body_read() -> None:
         WebHttpErrorCode.REQUEST_TIMEOUT.value,
     }
     assert elapsed < 0.28
+
+
+def test_transport_reads_body_when_server_closes_connection() -> None:
+    client_socket, server_socket = socket.socketpair()
+    server_socket.sendall(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: 14\r\n"
+        b"Connection: close\r\n\r\n"
+        b'{"results":[]}'
+    )
+    server_socket.shutdown(socket.SHUT_WR)
+    policy = WebUrlPolicy(_Resolver({"api.tavily.com": ("93.184.216.34",)}))
+    resolved = policy.resolve("http://api.tavily.com/search")
+
+    def connector(ip: str, port: int, timeout: float) -> socket.socket:
+        del ip, port
+        client_socket.settimeout(timeout)
+        return _PinnedSocket(client_socket)  # type: ignore[return-value]
+
+    transport = PinnedWebHttpTransport(
+        _PeerPolicy(),  # type: ignore[arg-type]
+        connector=connector,
+    )
+    try:
+        response = transport.post(
+            resolved,
+            headers={"Content-Type": "application/json"},
+            body=b'{}',
+            allowed_content_types=frozenset({"application/json"}),
+            max_compressed_bytes=1024,
+            max_response_bytes=1024,
+            timeout_seconds=1.0,
+            deadline_at=None,
+            cancellation_probe=None,
+        )
+    finally:
+        client_socket.close()
+        server_socket.close()
+
+    assert response.status_code == 200
+    assert response.body == b'{"results":[]}'
 
 
 def test_transport_absolute_deadline_interrupts_slow_response_headers() -> None:
@@ -788,7 +907,7 @@ def test_cross_origin_redirect_drops_all_headers_except_explicit_safe_list() -> 
             "Authorization": "Bearer secret",
             "Cookie": "session=secret",
             "User-Agent": "test-agent",
-            "X-Subscription-Token": "brave-secret",
+            "X-Provider-Token": "provider-secret",
             "X-Unknown-Secret": "secret",
         },
     )
@@ -799,7 +918,7 @@ def test_cross_origin_redirect_drops_all_headers_except_explicit_safe_list() -> 
     }
 
 
-def test_same_origin_redirect_can_retain_search_credentials() -> None:
+def test_same_origin_redirect_can_retain_provider_credentials() -> None:
     resolver = _Resolver({"first.openai.com": ("93.184.216.34",)})
     transport = _ScriptedTransport(
         [
@@ -821,11 +940,11 @@ def test_same_origin_redirect_can_retain_search_credentials() -> None:
     _get(
         SafeWebHttpClient(WebUrlPolicy(resolver), transport=transport),
         "https://first.openai.com/v1/search",
-        headers={"X-Subscription-Token": "brave-secret"},
+        headers={"X-Provider-Token": "provider-secret"},
     )
 
     assert transport.request_options[1]["headers"] == {
-        "X-Subscription-Token": "brave-secret"
+        "X-Provider-Token": "provider-secret"
     }
 
 

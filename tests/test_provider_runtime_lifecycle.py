@@ -11,6 +11,45 @@ from backend.providers.loop_bridge import ProviderLoopBridge
 from backend.providers.runtime import ProviderRuntime
 
 
+class _CapabilityRuntime:
+    def __init__(self, settings, *, start, close) -> None:
+        self.settings = settings
+        self.factory = object()
+        self.catalog = object()
+        self.tools = object()
+        self._start = start
+        self._close = close
+
+    def start(self):
+        return self._start()
+
+    def close(self):
+        return self._close()
+
+
+class _CapabilityControl:
+    def __init__(self, runtime: _CapabilityRuntime) -> None:
+        self.runtime = runtime
+        self.active = False
+
+    def ensure_defaults(self):
+        return None
+
+    def build_runtime(self):
+        return self.runtime
+
+    def apply_runtime(self, runtime, *, executor):
+        runtime.start()
+        executor.runtime_builder = runtime.factory
+        self.active = True
+        return runtime
+
+    def close_runtime(self):
+        if self.active:
+            self.runtime.close()
+            self.active = False
+
+
 class _FakeReranker:
     enabled = True
     model = "fake-reranker"
@@ -158,20 +197,6 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def close(self):
                 events.append("runs.close")
 
-        class SqlRuntime:
-            def start(self):
-                events.append("sql.start")
-
-            def close(self):
-                events.append("sql.close")
-
-        class WebRuntime:
-            def start(self):
-                events.append("web.start")
-
-            def close(self):
-                events.append("web.close")
-
         class SandboxRuntime:
             def start(self):
                 events.append("sandbox.start")
@@ -209,6 +234,12 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         def init_db():
             events.append("db.init")
 
+        runtime = _CapabilityRuntime(
+            settings,
+            start=lambda: events.extend(["sql.start", "web.start", "web.install"]),
+            close=lambda: events.extend(["web.clear", "web.close", "sql.close"]),
+        )
+
         with (
             patch.object(app_module, "get_settings", return_value=settings),
             patch.object(app_module, "init_db", side_effect=init_db),
@@ -217,27 +248,12 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "model_control_service",
                 SimpleNamespace(ensure_environment_defaults=lambda: None),
             ),
+            patch.object(
+                app_module,
+                "capability_control_service",
+                _CapabilityControl(runtime),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
-            patch.object(
-                app_module,
-                "get_sql_assistant_runtime",
-                return_value=SqlRuntime(),
-            ),
-            patch.object(
-                app_module,
-                "build_web_research_runtime",
-                return_value=WebRuntime(),
-            ),
-            patch.object(
-                app_module,
-                "install_web_research_runtime",
-                side_effect=lambda _runtime: events.append("web.install"),
-            ),
-            patch.object(
-                app_module,
-                "clear_web_research_runtime",
-                side_effect=lambda _runtime: events.append("web.clear"),
-            ),
             patch.object(
                 app_module,
                 "build_sandbox_runtime",
@@ -332,6 +348,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             sandbox=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
         )
+        runtime = _CapabilityRuntime(settings, start=lambda: None, close=lambda: None)
 
         with (
             patch.object(app_module, "get_settings", return_value=settings),
@@ -340,6 +357,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app_module,
                 "model_control_service",
                 SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
+            patch.object(
+                app_module,
+                "capability_control_service",
+                _CapabilityControl(runtime),
             ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
@@ -390,14 +412,6 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def aclose(self):
                 events.append("provider.close")
 
-        class FailingSqlRuntime:
-            def start(self):
-                events.append("sql.start")
-                raise RuntimeError("sql startup failed")
-
-            def close(self):
-                events.append("sql.close")
-
         settings = SimpleNamespace(
             security=SimpleNamespace(
                 cors_origins=["http://localhost:5173"],
@@ -405,6 +419,15 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ),
             sql_assistant=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
+        )
+        def start_runtime():
+            events.append("sql.start")
+            raise RuntimeError("sql startup failed")
+
+        runtime = _CapabilityRuntime(
+            settings,
+            start=start_runtime,
+            close=lambda: events.append("sql.close"),
         )
 
         with (
@@ -415,12 +438,12 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "model_control_service",
                 SimpleNamespace(ensure_environment_defaults=lambda: None),
             ),
-            patch.object(app_module, "provider_runtime", Provider()),
             patch.object(
                 app_module,
-                "get_sql_assistant_runtime",
-                return_value=FailingSqlRuntime(),
+                "capability_control_service",
+                _CapabilityControl(runtime),
             ),
+            patch.object(app_module, "provider_runtime", Provider()),
         ):
             app = app_module.create_app()
             with self.assertRaisesRegex(RuntimeError, "sql startup failed"):
@@ -444,14 +467,6 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def aclose(self):
                 events.append("provider.close")
 
-        class FailingWebRuntime:
-            def start(self):
-                events.append("web.start")
-                raise RuntimeError("web startup failed")
-
-            def close(self):
-                events.append("web.close")
-
         settings = SimpleNamespace(
             security=SimpleNamespace(
                 cors_origins=["http://localhost:5173"],
@@ -459,6 +474,15 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ),
             web_research=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
+        )
+        def start_runtime():
+            events.append("web.start")
+            raise RuntimeError("web startup failed")
+
+        runtime = _CapabilityRuntime(
+            settings,
+            start=start_runtime,
+            close=lambda: events.append("web.close"),
         )
 
         with (
@@ -469,17 +493,12 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "model_control_service",
                 SimpleNamespace(ensure_environment_defaults=lambda: None),
             ),
+            patch.object(
+                app_module,
+                "capability_control_service",
+                _CapabilityControl(runtime),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
-            patch.object(
-                app_module,
-                "build_web_research_runtime",
-                return_value=FailingWebRuntime(),
-            ),
-            patch.object(
-                app_module,
-                "install_web_research_runtime",
-                side_effect=lambda _runtime: events.append("web.install"),
-            ),
         ):
             app = app_module.create_app()
             with self.assertRaisesRegex(RuntimeError, "web startup failed"):
@@ -505,20 +524,6 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def aclose(self):
                 events.append("provider.close")
 
-        class SqlRuntime:
-            def start(self):
-                events.append("sql.start")
-
-            def close(self):
-                events.append("sql.close")
-
-        class WebRuntime:
-            def start(self):
-                events.append("web.start")
-
-            def close(self):
-                events.append("web.close")
-
         class FailingSandboxRuntime:
             def start(self):
                 events.append("sandbox.start")
@@ -537,6 +542,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             sandbox=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
         )
+        runtime = _CapabilityRuntime(
+            settings,
+            start=lambda: events.extend(["sql.start", "web.start", "web.install"]),
+            close=lambda: events.extend(["web.clear", "web.close", "sql.close"]),
+        )
 
         with (
             patch.object(app_module, "get_settings", return_value=settings),
@@ -546,27 +556,12 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "model_control_service",
                 SimpleNamespace(ensure_environment_defaults=lambda: None),
             ),
+            patch.object(
+                app_module,
+                "capability_control_service",
+                _CapabilityControl(runtime),
+            ),
             patch.object(app_module, "provider_runtime", Provider()),
-            patch.object(
-                app_module,
-                "get_sql_assistant_runtime",
-                return_value=SqlRuntime(),
-            ),
-            patch.object(
-                app_module,
-                "build_web_research_runtime",
-                return_value=WebRuntime(),
-            ),
-            patch.object(
-                app_module,
-                "install_web_research_runtime",
-                side_effect=lambda _runtime: events.append("web.install"),
-            ),
-            patch.object(
-                app_module,
-                "clear_web_research_runtime",
-                side_effect=lambda _runtime: events.append("web.clear"),
-            ),
             patch.object(
                 app_module,
                 "build_sandbox_runtime",
@@ -640,6 +635,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ),
             validate_startup=lambda: None,
         )
+        runtime = _CapabilityRuntime(settings, start=lambda: None, close=lambda: None)
 
         with (
             patch.object(app_module, "get_settings", return_value=settings),
@@ -648,6 +644,11 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 app_module,
                 "model_control_service",
                 SimpleNamespace(ensure_environment_defaults=lambda: None),
+            ),
+            patch.object(
+                app_module,
+                "capability_control_service",
+                _CapabilityControl(runtime),
             ),
             patch.object(app_module, "provider_runtime", Provider()),
             patch.object(app_module, "run_agent_executor", Executor()),

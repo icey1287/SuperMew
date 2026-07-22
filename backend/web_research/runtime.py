@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from itertools import islice
 from typing import Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 from bs4.element import Comment
@@ -131,10 +131,24 @@ class WebFetchClient(Protocol):
         cancellation_probe: CancellationProbe | None = None,
     ) -> WebHttpFetch: ...
 
+    def post(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        body: bytes,
+        allowed_content_types: frozenset[str],
+        max_compressed_bytes: int,
+        max_response_bytes: int,
+        max_redirects: int,
+        timeout_seconds: float,
+        deadline_at: float | None = None,
+        cancellation_probe: CancellationProbe | None = None,
+    ) -> WebHttpFetch: ...
+
 
 class WebResearchSettingsLike(Protocol):
     enabled: bool
-    brave_search_api_key: object
     request_timeout_seconds: float
     dns_timeout_seconds: float
     dns_max_concurrency: int
@@ -164,9 +178,8 @@ class WebResearchRuntimeConfig:
     """Internal config object; application settings map to it at composition."""
 
     enabled: bool = True
-    brave_api_key: str = field(default="", repr=False)
-    brave_endpoint: str = field(
-        default="https://api.search.brave.com/res/v1/web/search",
+    tavily_endpoint: str = field(
+        default="https://api.tavily.com/search",
         repr=False,
     )
     request_timeout_seconds: float = 10.0
@@ -179,41 +192,28 @@ class WebResearchRuntimeConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise TypeError("enabled must be a bool")
-        if not isinstance(self.brave_api_key, str):
-            raise TypeError("brave_api_key must be a string")
-        object.__setattr__(self, "brave_api_key", self.brave_api_key.strip())
-        try:
-            api_key_bytes = len(self.brave_api_key.encode("utf-8"))
-        except UnicodeEncodeError:
-            raise ValueError("brave_api_key is not a safe header value") from None
-        if (
-            api_key_bytes > 4096
-            or "\r" in self.brave_api_key
-            or "\n" in self.brave_api_key
-            or "\x00" in self.brave_api_key
-        ):
-            raise ValueError("brave_api_key is not a safe header value")
-        if not isinstance(self.brave_endpoint, str):
-            raise TypeError("brave_endpoint must be a string")
-        endpoint = self.brave_endpoint.strip()
+        if not isinstance(self.tavily_endpoint, str):
+            raise TypeError("tavily_endpoint must be a string")
+        endpoint = self.tavily_endpoint.strip()
         if not endpoint:
-            raise ValueError("brave_endpoint cannot be empty")
+            raise ValueError("tavily_endpoint cannot be empty")
         try:
             endpoint_parts = urlsplit(endpoint)
             endpoint_port = endpoint_parts.port
         except ValueError:
-            raise ValueError("brave_endpoint must be a valid HTTPS URL") from None
+            raise ValueError("tavily_endpoint must be a valid HTTPS URL") from None
         if (
             endpoint_parts.scheme.casefold() != "https"
-            or endpoint_parts.hostname != "api.search.brave.com"
+            or endpoint_parts.hostname != "api.tavily.com"
             or endpoint_port not in {None, 443}
             or endpoint_parts.username is not None
             or endpoint_parts.password is not None
             or endpoint_parts.fragment
             or endpoint_parts.query
+            or endpoint_parts.path != "/search"
         ):
-            raise ValueError("brave_endpoint must be an HTTPS URL without credentials")
-        object.__setattr__(self, "brave_endpoint", endpoint)
+            raise ValueError("tavily_endpoint must be the fixed Tavily HTTPS search URL")
+        object.__setattr__(self, "tavily_endpoint", endpoint)
         if (
             isinstance(self.request_timeout_seconds, bool)
             or not isinstance(self.request_timeout_seconds, (int, float))
@@ -272,16 +272,14 @@ class DisabledWebSearchAdapter:
         raise WebResearchError(WebResearchErrorCode.SEARCH_NOT_CONFIGURED)
 
 
-class BraveWebSearchAdapter:
-    """Small Brave Search Adapter over the same pinned HTTP Seam as fetch."""
+class TavilyKeylessWebSearchAdapter:
+    """Tavily Keyless Adapter over the same pinned HTTP Seam as fetch."""
 
     def __init__(
         self,
         client: WebFetchClient,
         config: WebResearchRuntimeConfig,
     ) -> None:
-        if not config.brave_api_key:
-            raise ValueError("Brave Search requires an API key")
         self._client = client
         self._config = config
 
@@ -305,34 +303,36 @@ class BraveWebSearchAdapter:
             self._config.limits.max_evidence_items,
             self._config.limits.max_citations,
         )
-        url = _with_query(
-            self._config.brave_endpoint,
+        body = json.dumps(
             {
-                "q": query,
-                "count": str(limit),
-                "safesearch": "moderate",
-                "text_decorations": "false",
+                "query": query,
+                "search_depth": "basic",
+                "max_results": limit,
             },
-        )
-        fetched = self._client.get(
-            url,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        fetched = self._client.post(
+            self._config.tavily_endpoint,
             headers={
                 "Accept": "application/json",
-                "X-Subscription-Token": self._config.brave_api_key,
+                "Content-Type": "application/json",
+                "X-Tavily-Access-Mode": "keyless",
                 "User-Agent": self._config.user_agent,
             },
+            body=body,
             allowed_content_types=_JSON_CONTENT_TYPES,
             max_compressed_bytes=self._config.max_compressed_bytes,
             max_response_bytes=self._config.limits.max_response_bytes,
-            max_redirects=self._config.limits.max_redirects,
+            max_redirects=0,
             timeout_seconds=self._config.request_timeout_seconds,
             deadline_at=deadline_at,
             cancellation_probe=cancellation_probe,
         )
         try:
             payload = json.loads(fetched.body)
-            web = payload.get("web") if isinstance(payload, dict) else None
-            raw_results = web.get("results") if isinstance(web, dict) else None
+            raw_results = payload.get("results") if isinstance(payload, dict) else None
             if not isinstance(raw_results, list):
                 raise TypeError
         except (UnicodeError, ValueError, TypeError, json.JSONDecodeError):
@@ -352,8 +352,8 @@ class BraveWebSearchAdapter:
                 continue
             title = raw.get("title") if isinstance(raw.get("title"), str) else ""
             snippet = (
-                raw.get("description")
-                if isinstance(raw.get("description"), str)
+                raw.get("content")
+                if isinstance(raw.get("content"), str)
                 else ""
             )
             try:
@@ -398,8 +398,8 @@ class WebResearchRuntime:
         )
         if search_adapter is not None:
             self.search_adapter = search_adapter
-        elif self.config.brave_api_key:
-            self.search_adapter = BraveWebSearchAdapter(
+        elif self.config.enabled:
+            self.search_adapter = TavilyKeylessWebSearchAdapter(
                 self.http_client,
                 self.config,
             )
@@ -775,7 +775,6 @@ def build_web_research_runtime(
     """
 
     source = getattr(settings, "web_research", settings)
-    api_key = _secret_value(getattr(source, "brave_search_api_key"))
     limits = WebResearchLimits(
         max_query_bytes=getattr(source, "max_query_bytes"),
         max_url_bytes=getattr(source, "max_url_bytes"),
@@ -804,7 +803,6 @@ def build_web_research_runtime(
         )
         config = WebResearchRuntimeConfig(
             enabled=getattr(source, "enabled"),
-            brave_api_key=api_key,
             request_timeout_seconds=getattr(source, "request_timeout_seconds"),
             max_compressed_bytes=getattr(source, "max_compressed_bytes"),
             default_search_results=getattr(source, "default_search_results"),
@@ -816,20 +814,6 @@ def build_web_research_runtime(
     except BaseException:
         resolver.close()
         raise
-
-
-def _secret_value(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    getter = getattr(value, "get_secret_value", None)
-    if not callable(getter):
-        raise TypeError("brave_search_api_key must be a string-like secret")
-    secret = getter()
-    if not isinstance(secret, str):
-        raise TypeError("brave_search_api_key secret must resolve to a string")
-    return secret
-
-
 _runtime_lock = threading.RLock()
 _installed_runtime: WebResearchRuntime | None = None
 
@@ -861,13 +845,6 @@ def get_web_research_runtime() -> WebResearchRuntime:
     if runtime is None:
         raise WebResearchError(WebResearchErrorCode.RUNTIME_NOT_CONFIGURED)
     return runtime
-
-
-def _with_query(endpoint: str, values: Mapping[str, str]) -> str:
-    parsed = urlsplit(endpoint)
-    query = parse_qsl(parsed.query, keep_blank_values=True)
-    query.extend(values.items())
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
 
 
 def _raise_if_cancelled(cancellation_probe: CancellationProbe | None) -> None:
@@ -1020,7 +997,7 @@ def _create_single_result(
 
 __all__ = [
     "AppWebResearchSettingsLike",
-    "BraveWebSearchAdapter",
+    "TavilyKeylessWebSearchAdapter",
     "build_web_research_runtime",
     "clear_web_research_runtime",
     "DisabledWebSearchAdapter",

@@ -536,6 +536,120 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertGreater(len(web_result.encode("utf-8")), 20_000)
         self.assertEqual(1, json.loads(packed.messages[-1].content)["schema_version"])
 
+    def test_context_packing_evicts_older_web_bundle_before_rejecting_latest(self):
+        first_result = _web_tool_result(content_bytes=900)
+        second_result = _web_tool_result(content_bytes=900)
+        first_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "web_search",
+                    "args": {"query": "first public topic"},
+                    "id": "call-web-first",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        second_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "web_search",
+                    "args": {"query": "second public topic"},
+                    "id": "call-web-second",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        latest_bundle = [
+            HumanMessage(content="compare current public evidence"),
+            second_call,
+            ToolMessage(content=second_result, tool_call_id="call-web-second"),
+        ]
+        token_budget = estimate_request_tokens(latest_bundle) + 32
+        messages = [
+            HumanMessage(content="compare current public evidence"),
+            first_call,
+            ToolMessage(content=first_result, tool_call_id="call-web-first"),
+            second_call,
+            ToolMessage(content=second_result, tool_call_id="call-web-second"),
+        ]
+
+        packed = trim_messages_to_budget(messages, token_budget)
+
+        self.assertLessEqual(packed.estimated_tokens, token_budget)
+        self.assertGreaterEqual(packed.removed_count, 2)
+        retained_call_ids = {
+            str(call.get("id"))
+            for message in packed.messages
+            if isinstance(message, AIMessage)
+            for call in (message.tool_calls or [])
+        }
+        self.assertNotIn("call-web-first", retained_call_ids)
+        self.assertIn("call-web-second", retained_call_ids)
+        self.assertEqual(second_result, packed.messages[-1].content)
+
+    def test_context_packing_keeps_substantive_web_evidence_over_later_empty_result(
+        self,
+    ):
+        evidence_result = _web_tool_result(content_bytes=900)
+        empty_result = new_tool_success(
+            data=WebResearchResult.create([], truncated=True).to_public_dict(),
+            observability_metadata={
+                "citation_count": 0,
+                "evidence_count": 0,
+                "output_bytes": 66,
+                "truncated": True,
+            },
+        ).model_dump_json()
+        evidence_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "web_search",
+                    "args": {"query": "substantive public topic"},
+                    "id": "call-web-evidence",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        empty_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "web_search",
+                    "args": {"query": "empty public topic"},
+                    "id": "call-web-empty",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        evidence_bundle = [
+            HumanMessage(content="answer from available public evidence"),
+            evidence_call,
+            ToolMessage(content=evidence_result, tool_call_id="call-web-evidence"),
+        ]
+        token_budget = estimate_request_tokens(evidence_bundle) + 32
+        messages = [
+            HumanMessage(content="answer from available public evidence"),
+            evidence_call,
+            ToolMessage(content=evidence_result, tool_call_id="call-web-evidence"),
+            empty_call,
+            ToolMessage(content=empty_result, tool_call_id="call-web-empty"),
+        ]
+
+        packed = trim_messages_to_budget(messages, token_budget)
+
+        retained_call_ids = {
+            str(call.get("id"))
+            for message in packed.messages
+            if isinstance(message, AIMessage)
+            for call in (message.tool_calls or [])
+        }
+        self.assertIn("call-web-evidence", retained_call_ids)
+        self.assertNotIn("call-web-empty", retained_call_ids)
+        self.assertEqual(evidence_result, packed.messages[-1].content)
+
     def test_context_budget_rejects_oversized_web_tool_result_before_model_call(self):
         request_context, context = _context(
             budget=_budget(max_context_tokens=1_256, response_reserve_tokens=256),
@@ -569,7 +683,10 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         finally:
             request_context.close()
 
-        self.assertEqual(ErrorCode.POLICY_DENIED, rejected.exception.code)
+        self.assertEqual(
+            ErrorCode.WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED,
+            rejected.exception.code,
+        )
         self.assertEqual("web_research", rejected.exception.category)
         self.assertEqual("context_budget", rejected.exception.stage)
         self.assertIn("无法完整放入", rejected.exception.message)
@@ -948,6 +1065,33 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertIn("[Architecture research]", rendered)
         self.assertIn(evidence.canonical_url, rendered)
         self.assertNotIn("webcite:", rendered)
+        self.assertIn(
+            "web.citation_validated",
+            [item["stage"] for item in context.trace_events],
+        )
+
+    def test_terminal_guard_appends_run_local_source_when_model_omits_citation(self):
+        request_context, context = _context()
+        result = _web_result(content_bytes=32)
+        evidence = result.evidence[0]
+        request_context.record_web_search_result(result)
+        try:
+            update = TerminalResponseMiddleware().after_agent(
+                {
+                    "messages": [
+                        AIMessage(content="Python currently has a newer release.")
+                    ]
+                },
+                SimpleNamespace(context=context),
+            )
+        finally:
+            request_context.close()
+
+        rendered = update["messages"][0].content
+        self.assertIn("Python currently has a newer release.", rendered)
+        self.assertIn("参考来源", rendered)
+        self.assertIn(evidence.canonical_url, rendered)
+        self.assertNotIn("引用未通过校验", rendered)
         self.assertIn(
             "web.citation_validated",
             [item["stage"] for item in context.trace_events],

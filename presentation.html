@@ -1,269 +1,1446 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SuperMew - 新一代 RAG 检索引擎</title>
-    <style>
-        :root {
-            --bg-color: #0a0a0a;
-            --text-primary: #ffffff;
-            --text-secondary: #a0a0a0;
-            --accent-blue: #2997ff;
-            --accent-purple: #bf5af2;
-            --accent-green: #32d74b;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SuperMew Project Update Presentation</title>
+  <style>
+    :root {
+      --ink: #f7f4ec;
+      --muted: #a8acb3;
+      --soft: #d7d2c8;
+      --bg: #101113;
+      --panel: rgba(247, 244, 236, 0.075);
+      --panel-strong: rgba(247, 244, 236, 0.12);
+      --line: rgba(247, 244, 236, 0.18);
+      --teal: #3dd6c6;
+      --coral: #ff715b;
+      --lime: #c8e66b;
+      --amber: #ffba49;
+      --violet: #b38cff;
+      --blue: #6ab8ff;
+      --shadow: rgba(0, 0, 0, 0.38);
+    }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+    * {
+      box-sizing: border-box;
+    }
 
-        body, html {
-            height: 100%;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            overflow: hidden; /* Hide default scrollbar on body */
-        }
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
 
-        .scroll-container {
-            height: 100vh;
-            overflow-y: scroll;
-            scroll-snap-type: y mandatory;
-            scroll-behavior: smooth;
-        }
+    body {
+      overflow: hidden;
+    }
 
-        .slide {
-            height: 100vh;
-            width: 100%;
-            scroll-snap-align: start;
-            scroll-snap-stop: always;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            padding: 2rem;
-            position: relative;
-        }
+    button {
+      font: inherit;
+    }
 
-        .slide-content {
-            max-width: 800px;
-            text-align: center;
-            opacity: 0;
-            transform: translateY(40px);
-            transition: opacity 0.8s ease-out, transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-        }
+    code {
+      border: 1px solid rgba(247, 244, 236, 0.14);
+      border-radius: 4px;
+      padding: 0.08em 0.32em;
+      color: var(--lime);
+      background: rgba(0, 0, 0, 0.22);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 0.9em;
+    }
 
-        .slide-content.in-view {
-            opacity: 1;
-            transform: translateY(0);
-        }
+    .deck {
+      height: 100vh;
+      overflow-y: auto;
+      scroll-snap-type: y mandatory;
+      scroll-behavior: smooth;
+      background:
+        linear-gradient(180deg, rgba(61, 214, 198, 0.08), transparent 34%),
+        linear-gradient(135deg, rgba(255, 113, 91, 0.09), transparent 38%),
+        #101113;
+    }
 
-        h1 {
-            font-size: clamp(3rem, 8vw, 6rem);
-            font-weight: 700;
-            letter-spacing: -0.04em;
-            margin-bottom: 1rem;
-            background: linear-gradient(135deg, #fff 0%, #a0a0a0 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
+    .deck::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(247, 244, 236, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(247, 244, 236, 0.035) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.75), transparent 82%);
+      z-index: 1;
+    }
 
-        h2 {
-            font-size: clamp(2rem, 5vw, 4rem);
-            font-weight: 600;
-            letter-spacing: -0.02em;
-            margin-bottom: 1.5rem;
-        }
+    .progress {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 4px;
+      width: 100%;
+      z-index: 20;
+      background: rgba(247, 244, 236, 0.08);
+    }
 
-        p {
-            font-size: clamp(1.2rem, 2vw, 1.5rem);
-            color: var(--text-secondary);
-            line-height: 1.5;
-            margin-bottom: 2rem;
-        }
+    .progress span {
+      display: block;
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--teal), var(--lime), var(--coral));
+      transition: width 180ms ease;
+    }
 
-        /* Slide specific accents */
-        .slide:nth-child(2) h2 { color: #ff3b30; } /* Problem */
-        .slide:nth-child(3) h2 { color: var(--accent-purple); } /* Brain */
-        .slide:nth-child(4) h2 { color: var(--accent-blue); } /* Engine */
-        .slide:nth-child(5) h2 { color: var(--accent-green); } /* Memory */
+    .slide {
+      position: relative;
+      min-height: 100vh;
+      scroll-snap-align: start;
+      display: flex;
+      align-items: center;
+      padding: 56px 7vw;
+      z-index: 2;
+    }
 
-        /* Bouncing indicator */
-        .scroll-indicator {
-            position: absolute;
-            bottom: 40px;
-            left: 50%;
-            transform: translateX(-50%);
-            animation: bounce 2s infinite;
-            color: var(--text-secondary);
-            font-size: 24px;
-            opacity: 0;
-            transition: opacity 1s ease-in;
-        }
+    .slide-inner {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+    }
 
-        .slide.in-view .scroll-indicator {
-            opacity: 1;
-        }
+    .slide-topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 28px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-transform: uppercase;
+    }
 
-        @keyframes bounce {
-            0%, 20%, 50%, 80%, 100% { transform: translateY(0) translateX(-50%); }
-            40% { transform: translateY(-20px) translateX(-50%); }
-            60% { transform: translateY(-10px) translateX(-50%); }
-        }
-        
-        .code-snippet {
-            background: rgba(255, 255, 255, 0.05);
-            padding: 1.5rem;
-            border-radius: 12px;
-            font-family: monospace;
-            font-size: 1rem;
-            color: #e6e6e6;
-            text-align: left;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            margin-top: 2rem;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-        }
+    .kicker {
+      color: var(--teal);
+      font-weight: 800;
+    }
 
-        .btn {
-            display: inline-block;
-            background: var(--text-primary);
-            color: var(--bg-color);
-            padding: 12px 24px;
-            border-radius: 30px;
-            text-decoration: none;
-            font-weight: 600;
-            margin-top: 1rem;
-            transition: transform 0.2s, background 0.2s;
-        }
+    .slide-number {
+      min-width: 56px;
+      text-align: right;
+      color: rgba(247, 244, 236, 0.48);
+    }
 
-        .btn:hover {
-            transform: scale(1.05);
-            background: #e0e0e0;
-        }
-        
-        .btn-outline {
-            background: transparent;
-            color: var(--text-primary);
-            border: 1px solid var(--text-secondary);
-        }
-        
-        .btn-outline:hover {
-            background: rgba(255,255,255,0.1);
-        }
-    </style>
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 980px;
+      font-size: 5.7rem;
+      line-height: 0.98;
+      font-weight: 850;
+    }
+
+    h2 {
+      max-width: 900px;
+      font-size: 3.75rem;
+      line-height: 1.04;
+      font-weight: 820;
+    }
+
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 820;
+    }
+
+    .lead {
+      max-width: 780px;
+      margin-top: 22px;
+      color: var(--soft);
+      font-size: 1.22rem;
+      line-height: 1.68;
+    }
+
+    .body-copy {
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.8;
+    }
+
+    .hero {
+      align-items: stretch;
+      padding-top: 84px;
+      padding-bottom: 48px;
+    }
+
+    .hero .slide-inner {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+      align-items: center;
+      gap: 48px;
+    }
+
+    .hero-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+      color: var(--ink);
+      font-size: 0.92rem;
+      font-weight: 760;
+    }
+
+    .hero-tag::before {
+      content: "";
+      width: 34px;
+      height: 2px;
+      background: var(--teal);
+    }
+
+    .hero-title mark,
+    .accent-teal {
+      color: var(--teal);
+      background: transparent;
+    }
+
+    .accent-coral {
+      color: var(--coral);
+    }
+
+    .accent-lime {
+      color: var(--lime);
+    }
+
+    .accent-amber {
+      color: var(--amber);
+    }
+
+    .hero-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 42px;
+      max-width: 760px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: var(--panel);
+      box-shadow: 0 18px 60px var(--shadow);
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--ink);
+      font-size: 1.9rem;
+      line-height: 1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .visual-stage {
+      position: relative;
+      min-height: 520px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.11), transparent 44%),
+        linear-gradient(180deg, rgba(61, 214, 198, 0.08), rgba(255, 113, 91, 0.06)),
+        rgba(15, 18, 21, 0.72);
+      overflow: hidden;
+      box-shadow: 0 30px 100px var(--shadow);
+    }
+
+    .visual-stage svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .visual-label {
+      position: absolute;
+      left: 26px;
+      bottom: 24px;
+      max-width: 280px;
+      color: var(--soft);
+      font-size: 0.95rem;
+      line-height: 1.65;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 0.86fr 1.14fr;
+      gap: 44px;
+      align-items: center;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 13px;
+      color: var(--soft);
+      background: rgba(247, 244, 236, 0.06);
+      font-size: 0.86rem;
+      white-space: nowrap;
+    }
+
+    .grid-3,
+    .grid-4,
+    .grid-2 {
+      display: grid;
+      gap: 12px;
+    }
+
+    .grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grid-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: var(--panel);
+      min-height: 142px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+    }
+
+    .card.compact {
+      min-height: auto;
+      padding: 18px;
+    }
+
+    .card h3 {
+      margin-bottom: 12px;
+    }
+
+    .card p,
+    .card li {
+      color: var(--muted);
+      font-size: 0.96rem;
+      line-height: 1.72;
+    }
+
+    .card ul {
+      padding-left: 18px;
+      margin: 0;
+    }
+
+    .rail {
+      position: relative;
+      display: grid;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .rail-item {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 14px;
+      align-items: stretch;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(247, 244, 236, 0.055);
+      overflow: hidden;
+    }
+
+    .rail-key {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--bg);
+      background: var(--teal);
+      font-weight: 860;
+      font-size: 0.84rem;
+    }
+
+    .rail-copy {
+      padding: 15px 16px 15px 0;
+    }
+
+    .rail-copy strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: 1rem;
+    }
+
+    .rail-copy span {
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.6;
+    }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: 1fr 42px 1fr 42px 1fr 42px 1fr;
+      align-items: center;
+      margin-top: 28px;
+    }
+
+    .pipe-node {
+      min-height: 132px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: rgba(247, 244, 236, 0.065);
+    }
+
+    .pipe-node strong {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--ink);
+      font-size: 1.08rem;
+    }
+
+    .pipe-node span {
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.65;
+    }
+
+    .pipe-arrow {
+      text-align: center;
+      color: var(--lime);
+      font-size: 1.7rem;
+      font-weight: 600;
+    }
+
+    .branch-map {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 26px;
+    }
+
+    .branch-card {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 190px;
+      background: rgba(247, 244, 236, 0.065);
+      overflow: hidden;
+    }
+
+    .branch-card::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 4px;
+      background: var(--teal);
+    }
+
+    .branch-card:nth-child(2)::before {
+      background: var(--coral);
+    }
+
+    .branch-card:nth-child(3)::before {
+      background: var(--lime);
+    }
+
+    .branch-card:nth-child(4)::before {
+      background: var(--violet);
+    }
+
+    .branch-name {
+      display: inline-block;
+      margin-bottom: 16px;
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 0.98rem;
+      font-weight: 700;
+    }
+
+    .branch-card h3 {
+      font-size: 1.45rem;
+      margin-bottom: 12px;
+    }
+
+    .branch-card p {
+      color: var(--muted);
+      font-size: 0.98rem;
+      line-height: 1.7;
+    }
+
+    .arch-map {
+      display: grid;
+      grid-template-columns: 1fr 1.3fr;
+      gap: 16px;
+      margin-top: 26px;
+    }
+
+    .arch-block {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--panel);
+    }
+
+    .arch-block h3 {
+      margin-bottom: 14px;
+    }
+
+    .module-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .module {
+      border: 1px solid rgba(247, 244, 236, 0.14);
+      border-radius: 6px;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.18);
+    }
+
+    .module strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: 0.95rem;
+    }
+
+    .module span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .commit-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .commit {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+      border: 1px solid rgba(247, 244, 236, 0.15);
+      border-radius: 8px;
+      padding: 11px;
+      background: rgba(247, 244, 236, 0.055);
+      min-height: 118px;
+    }
+
+    .hash {
+      color: var(--amber);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 0.82rem;
+      overflow-wrap: anywhere;
+    }
+
+    .commit strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 0.9rem;
+      color: var(--ink);
+    }
+
+    .commit span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .final-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+      gap: 16px;
+      margin-top: 30px;
+      align-items: stretch;
+    }
+
+    .launch-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+      gap: 22px;
+      align-items: center;
+    }
+
+    .launch-copy .lead {
+      margin-bottom: 24px;
+    }
+
+    .invite {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      background: rgba(247, 244, 236, 0.075);
+    }
+
+    .launch-card {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 18px;
+    }
+
+    .launch-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      width: min(100%, 500px);
+      border: 1px solid rgba(61, 214, 198, 0.44);
+      border-radius: 8px;
+      padding: 18px 20px;
+      color: var(--bg);
+      background: linear-gradient(135deg, var(--teal), var(--lime));
+      font-size: 2rem;
+      font-weight: 860;
+      text-decoration: none;
+      box-shadow: 0 20px 60px rgba(61, 214, 198, 0.18);
+    }
+
+    .launch-link span {
+      color: rgba(16, 17, 19, 0.72);
+      font-size: 1.4rem;
+    }
+
+    .qr-invite {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .qr-image-wrap {
+      border: 1px solid rgba(247, 244, 236, 0.14);
+      border-radius: 8px;
+      padding: 10px;
+      background: #ffffff;
+      box-shadow: 0 20px 70px rgba(0, 0, 0, 0.24);
+    }
+
+    .qr-image {
+      display: block;
+      width: 100%;
+      max-height: 320px;
+      object-fit: contain;
+      border-radius: 6px;
+    }
+
+    .qr-caption {
+      color: var(--soft);
+      font-size: 0.92rem;
+      line-height: 1.55;
+    }
+
+    .invite h3 {
+      font-size: 1.35rem;
+      margin-bottom: 14px;
+    }
+
+    .invite p {
+      color: var(--muted);
+      line-height: 1.75;
+    }
+
+    .controls {
+      position: fixed;
+      right: 24px;
+      top: 50%;
+      z-index: 22;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid rgba(247, 244, 236, 0.12);
+      border-radius: 8px;
+      background: rgba(16, 17, 19, 0.72);
+      backdrop-filter: blur(12px);
+      transform: translateY(-50%);
+    }
+
+    .control-btn {
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(247, 244, 236, 0.15);
+      border-radius: 6px;
+      color: var(--ink);
+      background: rgba(247, 244, 236, 0.08);
+      cursor: pointer;
+      transition: transform 140ms ease, background 140ms ease;
+    }
+
+    .control-btn:hover {
+      transform: translateY(-1px);
+      background: rgba(247, 244, 236, 0.14);
+    }
+
+    .dots {
+      position: fixed;
+      left: 24px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 22;
+      display: grid;
+      gap: 10px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border: 1px solid rgba(247, 244, 236, 0.48);
+      border-radius: 50%;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .dot.active {
+      background: var(--teal);
+      border-color: var(--teal);
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(18px);
+      transition: opacity 500ms ease, transform 500ms ease;
+    }
+
+    .slide.is-active .reveal {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .slide.is-active .reveal:nth-child(2) {
+      transition-delay: 80ms;
+    }
+
+    .slide.is-active .reveal:nth-child(3) {
+      transition-delay: 160ms;
+    }
+
+    .slide.is-active .reveal:nth-child(4) {
+      transition-delay: 240ms;
+    }
+
+    @media (max-width: 980px) {
+      body {
+        overflow: auto;
+      }
+
+      .deck {
+        scroll-snap-type: none;
+      }
+
+      .slide {
+        padding: 64px 24px;
+        min-height: auto;
+      }
+
+      .hero .slide-inner,
+      .split,
+      .arch-map,
+      .final-panel,
+      .launch-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .hero h1,
+      h1 {
+        font-size: 3.25rem;
+      }
+
+      h2 {
+        font-size: 2.55rem;
+      }
+
+      .lead {
+        font-size: 1.08rem;
+      }
+
+      .hero-summary,
+      .grid-3,
+      .grid-4,
+      .grid-2,
+      .branch-map,
+      .commit-grid,
+      .module-list {
+        grid-template-columns: 1fr;
+      }
+
+      .pipeline {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .pipe-arrow {
+        transform: rotate(90deg);
+      }
+
+      .visual-stage {
+        min-height: 360px;
+      }
+
+      .dots {
+        display: none;
+      }
+
+      .controls {
+        right: 16px;
+        bottom: 16px;
+        top: auto;
+        flex-direction: row;
+        transform: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .slide {
+        padding: 56px 18px;
+      }
+
+      h1 {
+        font-size: 2.7rem;
+      }
+
+      h2 {
+        font-size: 2.1rem;
+      }
+
+      .slide-topline {
+        align-items: flex-start;
+        font-size: 0.78rem;
+      }
+
+      .rail-item,
+      .commit {
+        grid-template-columns: 1fr;
+      }
+
+      .rail-key {
+        min-height: 40px;
+      }
+
+      .rail-copy {
+        padding: 0 14px 15px;
+      }
+    }
+
+    @media print {
+      body {
+        overflow: visible;
+      }
+
+      .deck {
+        height: auto;
+        overflow: visible;
+      }
+
+      .slide {
+        break-after: page;
+        min-height: 100vh;
+      }
+
+      .controls,
+      .dots,
+      .progress {
+        display: none;
+      }
+    }
+  </style>
 </head>
 <body>
-    <div class="scroll-container">
-        <!-- Slide 1: Hero -->
-        <section class="slide">
-            <div class="slide-content">
-                <h1>SuperMew</h1>
-                <p style="color: var(--text-primary); font-size: clamp(1.5rem, 3vw, 2.5rem); font-weight: 500;">新一代 CRAG 知识引擎</p>
-                <p>为高精度问答打造的企业级自我反思 RAG 架构。</p>
-                <div class="scroll-indicator">↓</div>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <nav class="dots" id="dots" aria-label="slides"></nav>
+  <main class="deck" id="deck">
+    <section class="slide hero" data-title="Opening">
+      <div class="slide-inner">
+        <div>
+          <div class="hero-tag reveal">SuperMew Update · 9706f566 → 0cdb8d7</div>
+          <h1 class="hero-title reveal">SuperMew <mark>进化报告</mark></h1>
+          <p class="lead reveal">从 RAG 原型到可部署的 Agentic Knowledge App。这一次的重点不是多加几个功能，而是把检索、Agent、后端边界和前端工程全部重新梳理，让项目从“能跑”走向“能维护、能观测、能给别人试”。</p>
+          <div class="hero-summary reveal">
+            <div class="metric">
+              <strong>20</strong>
+              <span>个功能提交，覆盖 RAG、后端、前端、Agent 和并发稳定性</span>
             </div>
-        </section>
-
-        <!-- Slide 2: The Problem -->
-        <section class="slide">
-            <div class="slide-content">
-                <h2>传统的 RAG 是盲目的。</h2>
-                <p>标准的向量检索面对专有名词时频繁失效、丢失上下文边界，<br>并因为喂给大模型满是噪音的垃圾数据而导致幻觉。</p>
-                <div style="font-size: 4rem; margin-top: 1rem; opacity: 0.5;">🙈</div>
+            <div class="metric">
+              <strong>97</strong>
+              <span>个文件发生变化，形成职责清晰的模块结构</span>
             </div>
-        </section>
-
-        <!-- Slide 3: The Brain -->
-        <section class="slide">
-            <div class="slide-content">
-                <h2>自我反思架构。</h2>
-                <p>SuperMew 不仅仅是搜索。它懂得 <strong>评估</strong> 和 <strong>纠错</strong>。</p>
-                <p>如果 <strong>Grader 裁判模型</strong> 认为检索结果无关，LangGraph 状态机将自动触发 <strong>HyDE</strong>（假设性文档）或 <strong>Step-back</strong>（退步提问）变换，以找回丢失的上下文。</p>
-                <div class="code-snippet">
-                    graph.add_conditional_edges(<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;"grade_documents",<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;lambda state: state.route,<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;{<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"generate": END,<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"rewrite": "rewrite_question"<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;}<br>
-                    )
-                </div>
+            <div class="metric">
+              <strong>+11162</strong>
+              <span>行新增代码，配合 3752 行清理与重构</span>
             </div>
-        </section>
+          </div>
+        </div>
+        <div class="visual-stage reveal" aria-label="SuperMew architecture visual">
+          <svg viewBox="0 0 640 640" role="img" aria-label="RAG and Agent network">
+            <defs>
+              <linearGradient id="lineA" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0%" stop-color="#3dd6c6"/>
+                <stop offset="55%" stop-color="#c8e66b"/>
+                <stop offset="100%" stop-color="#ff715b"/>
+              </linearGradient>
+              <filter id="softGlow">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feMerge>
+                  <feMergeNode in="blur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </defs>
+            <path d="M90 488 C190 380 182 210 316 250 C436 286 410 102 558 126" fill="none" stroke="url(#lineA)" stroke-width="4" opacity="0.85"/>
+            <path d="M104 156 C220 218 220 410 346 386 C464 364 454 500 560 510" fill="none" stroke="#6ab8ff" stroke-width="2" opacity="0.55"/>
+            <path d="M96 330 C188 300 254 314 318 342 C420 386 456 274 552 316" fill="none" stroke="#b38cff" stroke-width="2" opacity="0.55"/>
+            <g filter="url(#softGlow)">
+              <circle cx="104" cy="156" r="24" fill="#101113" stroke="#3dd6c6" stroke-width="3"/>
+              <circle cx="90" cy="488" r="20" fill="#101113" stroke="#ff715b" stroke-width="3"/>
+              <circle cx="316" cy="250" r="44" fill="#101113" stroke="#c8e66b" stroke-width="3"/>
+              <circle cx="346" cy="386" r="30" fill="#101113" stroke="#6ab8ff" stroke-width="3"/>
+              <circle cx="558" cy="126" r="22" fill="#101113" stroke="#b38cff" stroke-width="3"/>
+              <circle cx="560" cy="510" r="28" fill="#101113" stroke="#ffba49" stroke-width="3"/>
+            </g>
+            <g fill="#f7f4ec" font-family="ui-monospace, Menlo, monospace" font-size="18" font-weight="700">
+              <text x="76" y="162">UI</text>
+              <text x="59" y="494">API</text>
+              <text x="284" y="256">RAG</text>
+              <text x="318" y="392">CTX</text>
+              <text x="525" y="132">BM25</text>
+              <text x="524" y="516">Agent</text>
+            </g>
+          </svg>
+          <div class="visual-label">核心变化：检索链路产品化、请求上下文隔离、前后端工程化，以及清晰的分支定位。</div>
+        </div>
+      </div>
+    </section>
 
-        <!-- Slide 4: The Engine -->
-        <section class="slide">
-            <div class="slide-content">
-                <h2>混合精准检索。</h2>
-                <p>仅靠语义理解是不够的。我们在本地纯手写了一个支持高并发、带锁保护的 <strong>BM25 稀疏向量</strong> 引擎。</p>
-                <p>Milvus 将同时并发执行 HNSW (稠密语义) 和倒排索引 (稀疏词汇) 检索，并使用 <strong>RRF (倒数排名融合)</strong> 算法完美融合这两路差异极大的召回结果。</p>
+    <section class="slide" data-title="Thesis">
+      <div class="slide-inner split">
+        <div>
+          <div class="slide-topline reveal">
+            <span class="kicker">01 · 本轮主题</span>
+            <span class="slide-number">RAG / Arch / Agent</span>
+          </div>
+          <h2 class="reveal">这次变化可以压缩成三句话。</h2>
+          <p class="lead reveal">RAG 不再只是“向量召回后塞给模型”；项目不再是 backend + frontend 里堆所有代码；Agent 也不再靠全局状态硬撑多用户并发。</p>
+        </div>
+        <div class="grid-3 reveal">
+          <div class="card">
+            <h3><span class="accent-teal">RAG</span> 更像流水线</h3>
+            <p>召回、合并、精排、阈值过滤、纠错重写、复杂问题分解，全部进入可追踪流程。</p>
+          </div>
+          <div class="card">
+            <h3><span class="accent-coral">结构</span> 更像产品</h3>
+            <p>后端拆出 API、chat、rag、indexing、infra、schemas；前端迁移到 Vite + Vue 3 + TS。</p>
+          </div>
+          <div class="card">
+            <h3><span class="accent-lime">Agent</span> 更稳定</h3>
+            <p>每次请求独立上下文，RAG step、trace、工具调用预算不再互相污染。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="RAG Pipeline">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">02 · RAG 主干升级</span>
+          <span class="slide-number">recall → merge → rerank</span>
+        </div>
+        <h2 class="reveal">检索被重构成一条可解释的生产流水线。</h2>
+        <p class="lead reveal">现在的 RAG 不是只返回 topK，而是先扩大候选池，再把碎片自动合并回父级上下文，最后通过 Rerank 和阈值门控过滤噪声。</p>
+        <div class="pipeline reveal">
+          <div class="pipe-node">
+            <strong>Milvus 召回</strong>
+            <span>Dense + Sparse Hybrid，候选池支持 <code>RETRIEVAL_CANDIDATE_K</code> 或 topK 倍数配置。</span>
+          </div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-node">
+            <strong>Auto-merging</strong>
+            <span>优先召回 L3 叶子块，命中足够多时 L3→L2→L1 合并，恢复上下文边界。</span>
+          </div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-node">
+            <strong>Jina Rerank</strong>
+            <span>对合并后的候选做语义精排，并把 <code>rerank_score</code> 暴露给前端。</span>
+          </div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-node">
+            <strong>阈值与证据路由</strong>
+            <span><code>RERANK_MIN_SCORE</code> 过滤低质片段，再由证据路由决定回答、改写、澄清或短路。</span>
+          </div>
+        </div>
+        <div class="pill-row reveal">
+          <span class="pill">retrieval_pipeline: recall_merge_rerank</span>
+          <span class="pill">leaf_retrieve_level: L3</span>
+          <span class="pill">auto_merge_steps</span>
+          <span class="pill">post_threshold_count</span>
+          <span class="pill">evidence_route</span>
+          <span class="pill">hitl_status</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Native BM25">
+      <div class="slide-inner split">
+        <div>
+          <div class="slide-topline reveal">
+            <span class="kicker">03 · Milvus 2.5+ 原生 BM25</span>
+            <span class="slide-number">server-side sparse</span>
+          </div>
+          <h2 class="reveal">BM25 直接作为数据库能力运行。</h2>
+          <p class="lead reveal">原文写入启用中文 analyzer 的 <code>text</code> 字段，Milvus 服务端通过 <code>FunctionType.BM25</code> 自动生成 sparse embedding；本地 embedding 只负责 Dense 向量。</p>
+        </div>
+        <div class="rail reveal">
+          <div class="rail-item">
+            <div class="rail-key">Dense</div>
+            <div class="rail-copy">
+              <strong>本地 Embedding</strong>
+              <span>应用启动时加载，文档上传时生成 Dense 向量，不进入用户知识问答的模型加载链路。</span>
             </div>
-        </section>
-
-        <!-- Slide 5: The Memory -->
-        <section class="slide">
-            <div class="slide-content">
-                <h2>完整连贯的上下文。</h2>
-                <p>父子级文档切片 (Parent-Child Chunking) 彻底消灭了上下文破碎。</p>
-                <p>文档被切割成 3 个层级。只有微观的细碎句子（L3）会进入向量库。一旦命中，SuperMew 会顺藤摸瓜唤醒宏观段落（L1/L2）以供大模型全面理解。</p>
-                <div style="display: flex; justify-content: center; gap: 20px; margin-top: 2rem;">
-                    <div style="padding: 1rem; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px;">L1 (1200 字符)</div>
-                    <div style="padding: 1rem; border: 1px solid rgba(255,255,255,0.4); border-radius: 8px;">L2 (600 字符)</div>
-                    <div style="padding: 1rem; border: 2px solid var(--accent-green); border-radius: 8px; color: var(--accent-green); font-weight: bold;">L3 (300 字符) 🎯</div>
-                </div>
+          </div>
+          <div class="rail-item">
+            <div class="rail-key" style="background: var(--lime);">Sparse</div>
+            <div class="rail-copy">
+              <strong>Milvus Pipeline Function</strong>
+              <span>schema 绑定 BM25 函数，输入 <code>text</code>，输出 <code>sparse_embedding</code>，统计由向量库自动对齐。</span>
             </div>
-        </section>
-
-        <!-- Slide 6: Conclusion -->
-        <section class="slide">
-            <div class="slide-content">
-                <h2>为生产环境而生。</h2>
-                <p>通过我们的实时可视化数据大屏，深入体验系统的内部机械运转。</p>
-                <div style="display: flex; gap: 15px; justify-content: center;">
-                    <a href="project_visualization.html" class="btn">查看架构与源码</a>
-                    <a href="frontend/index.html" class="btn btn-outline">开始聊天</a>
-                </div>
+          </div>
+          <div class="rail-item">
+            <div class="rail-key" style="background: var(--coral);">Gain</div>
+            <div class="rail-copy">
+              <strong>更少状态，更高可靠性</strong>
+              <span>删除、重建、schema 升级都简单了，Hybrid Search 仍保留 Dense + BM25 + RRF。</span>
             </div>
-        </section>
-    </div>
-    
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const observerOptions = {
-                root: document.querySelector('.scroll-container'),
-                rootMargin: '0px',
-                threshold: 0.5 // Trigger when 50% of the slide is visible
-            };
+          </div>
+        </div>
+      </div>
+    </section>
 
-            const observer = new IntersectionObserver((entries) => {
-                entries.forEach(entry => {
-                    const content = entry.target.querySelector('.slide-content');
-                    if (entry.isIntersecting) {
-                        content.classList.add('in-view');
-                        entry.target.classList.add('in-view'); // For scroll indicator
-                    } else {
-                        // Optional: remove class to re-animate on scroll back up
-                        content.classList.remove('in-view');
-                        entry.target.classList.remove('in-view');
-                    }
-                });
-            }, observerOptions);
+    <section class="slide" data-title="Complex Question">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">04 · 复杂问题处理</span>
+          <span class="slide-number">parallel sub-agent</span>
+        </div>
+        <h2 class="reveal">复杂问题不再硬塞进一轮检索。</h2>
+        <p class="lead reveal">主图先用本地规则识别明显的单事实问题；其余问题由 FAST_MODEL 一次完成复杂度判断和 2-4 个子问题规划。复杂问题通过 LangGraph <code>Send</code> 并行检索，再由独立的 GRADE_MODEL 评判证据。</p>
+        <div class="grid-4 reveal">
+          <div class="card">
+            <h3>复杂度路由</h3>
+            <p>本地快判直接处理明显简单问题；FAST_MODEL 只处理其余查询。</p>
+          </div>
+          <div class="card">
+            <h3>子问题分解</h3>
+            <p>将一个大问题拆成覆盖不同维度、互不重叠的检索入口。</p>
+          </div>
+          <div class="card">
+            <h3>并行执行节点</h3>
+            <p><code>rag_sub_agent</code> 直接执行 retrieve → grade，多个子问题并行召回和评判。</p>
+          </div>
+          <div class="card">
+            <h3>有效证据合成</h3>
+            <p>最终 synthesis 只合并有效或部分有效证据，按 chunk 去重，并输出 sub_traces。</p>
+          </div>
+        </div>
+      </div>
+    </section>
 
-            const slides = document.querySelectorAll('.slide');
-            slides.forEach(slide => {
-                observer.observe(slide);
-            });
-            
-            // Trigger animation for the first slide immediately
-            setTimeout(() => {
-                document.querySelector('.slide:first-child .slide-content').classList.add('in-view');
-                document.querySelector('.slide:first-child').classList.add('in-view');
-            }, 100);
-        });
-    </script>
+    <section class="slide" data-title="Corrective RAG">
+      <div class="slide-inner split">
+        <div>
+          <div class="slide-topline reveal">
+            <span class="kicker">05 · Evidence Router / HITL</span>
+            <span class="slide-number">route / clarify / resume</span>
+          </div>
+          <h2 class="reveal">答不上来时，系统先判断证据状态。</h2>
+          <p class="lead reveal">评分节点升级成结构化证据路由器，不只看“相关/不相关”，还会输出可回答性、歧义程度、下一步路径和置信度。系统因此可以短路、定向改写，或把澄清问题交给用户。</p>
+        </div>
+        <div class="grid-2 reveal">
+          <div class="card">
+            <h3>Evidence Router</h3>
+            <p>输出 <code>relevance</code>、<code>answerability</code>、<code>ambiguity</code>、<code>route</code> 和 <code>confidence</code>。</p>
+          </div>
+          <div class="card">
+            <h3>短路路径</h3>
+            <p>支持 <code>no_knowledge</code>、<code>rewrite</code>、<code>clarify</code>、<code>scope_select</code>、<code>answer</code>，避免无知识问题完整跑完 RAG。</p>
+          </div>
+          <div class="card">
+            <h3>HITL 澄清</h3>
+            <p>当问题歧义高或范围不清时，前端把澄清问题展示在输入框上方，支持候选选项和自定义补充。</p>
+          </div>
+          <div class="card">
+            <h3>中断恢复</h3>
+            <p>保存 RAG 中间状态，用户补充信息后跳过 Agent、复杂度判断和子问题分解，直接继续针对性检索。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Reliability">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">06 · Bug 修复与可靠性</span>
+          <span class="slide-number">consistency / concurrency</span>
+        </div>
+        <h2 class="reveal">这一轮也修掉了几个会在真实使用中放大的坑。</h2>
+        <div class="grid-3 reveal" style="margin-top: 34px;">
+          <div class="card">
+            <h3>请求级上下文隔离</h3>
+            <p><code>ChatRequestContext</code> 保存本请求的队列、trace 和工具预算，修复并发串流时 RAG step 串到别的会话的问题。</p>
+          </div>
+          <div class="card">
+            <h3>短生命周期 Milvus 连接</h3>
+            <p>Milvus Store 不再长期持有 gRPC channel，按请求/按批次创建短连接，避免失效连接拖垮上传或检索。</p>
+          </div>
+          <div class="card">
+            <h3>事务性文档删除</h3>
+            <p>删除文档时统一清理 Milvus 向量、PostgreSQL 父块和 Redis 缓存，减少悬空脏数据。</p>
+          </div>
+          <div class="card">
+            <h3>文本净化升级</h3>
+            <p>增强 Unicode 规范化与非法字符过滤，解决 PostgreSQL / Milvus 字符兼容问题。</p>
+          </div>
+          <div class="card">
+            <h3>导入形态测试</h3>
+            <p>新增测试约束包级导入，避免 <code>backend.chat</code> 这类包和同名子模块 re-export 互相污染。</p>
+          </div>
+          <div class="card">
+            <h3>流式会话隔离</h3>
+            <p>流式回答绑定到发起问题的会话，用户切走再回来也能恢复问题、思考状态、RAG 步骤和已流出的回答。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Architecture">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">07 · 当前项目结构</span>
+          <span class="slide-number">bounded packages</span>
+        </div>
+        <h2 class="reveal">后端按职责组织为有边界的包结构。</h2>
+        <p class="lead reveal">请求、Agent、RAG、索引、基础设施和数据模型各自归位，便于独立测试、替换和扩展。</p>
+        <div class="arch-map reveal">
+          <div class="arch-block">
+            <h3>请求与编排</h3>
+            <div class="stack">
+              <div class="module"><strong>api/routes</strong><span>auth、chat、documents、sessions 分路由</span></div>
+              <div class="module"><strong>chat</strong><span>service、runtime、storage、request_context</span></div>
+              <div class="module"><strong>rag</strong><span>LangGraph pipeline 与检索 utils</span></div>
+              <div class="module"><strong>tools</strong><span>知识库与天气工具按领域拆分</span></div>
+            </div>
+          </div>
+          <div class="arch-block">
+            <h3>数据与基础设施</h3>
+            <div class="module-list">
+              <div class="module"><strong>indexing</strong><span>loader、embedding、Milvus writer / client</span></div>
+              <div class="module"><strong>infra</strong><span>database、cache、auth 基础设施</span></div>
+              <div class="module"><strong>schemas</strong><span>Pydantic 请求响应模型</span></div>
+              <div class="module"><strong>jobs</strong><span>上传/删除异步任务进度</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Frontend">
+      <div class="slide-inner split">
+        <div>
+          <div class="slide-topline reveal">
+            <span class="kicker">08 · 前端工程化</span>
+            <span class="slide-number">Vite + Vue 3 + TS</span>
+          </div>
+          <h2 class="reveal">前端从单文件 CDN 应用，迁移到组件化工程。</h2>
+          <p class="lead reveal"><code>frontend/index.html</code>、<code>script.js</code>、<code>style.css</code> 不再承载全部复杂度。现在有组件、类型、Store、API 工具和构建流程，界面可以继续长大。</p>
+          <div class="pill-row reveal">
+            <span class="pill">Vite</span>
+            <span class="pill">Vue 3 SFC</span>
+            <span class="pill">TypeScript</span>
+            <span class="pill">Pinia</span>
+            <span class="pill">Axios</span>
+            <span class="pill">SSE Reader</span>
+          </div>
+        </div>
+        <div class="grid-2 reveal">
+          <div class="card compact">
+            <h3>ChatArea / MessageItem</h3>
+            <p>消息流、Markdown、引用来源和思考状态拆成清晰组件。</p>
+          </div>
+          <div class="card compact">
+            <h3>ThinkingTrace</h3>
+            <p>RAG step 实时展示，子 Agent 步骤按真实子问题标题分组折叠。</p>
+          </div>
+          <div class="card compact">
+            <h3>RetrievalTraceDetails</h3>
+            <p>展示候选池、召回漏斗、Rerank、Step-back / HyDE 单选重写和子 Agent trace。</p>
+          </div>
+          <div class="card compact">
+            <h3>Documents Store</h3>
+            <p>文档列表、上传任务、删除进度和管理员设置集中管理。</p>
+          </div>
+          <div class="card compact">
+            <h3>Auth / Sessions</h3>
+            <p>JWT 鉴权、多会话历史、本地标题和用户隔离进入 Store。</p>
+          </div>
+          <div class="card compact">
+            <h3>AbortController</h3>
+            <p>用户可以主动终止回答，前端关闭请求，后端取消后台任务。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Agent Layer">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">09 · Agent 能力完善</span>
+          <span class="slide-number">tools / memory / citations</span>
+        </div>
+        <h2 class="reveal">Agent 层变得更克制，也更可信。</h2>
+        <p class="lead reveal">现在每次请求都会创建绑定上下文的 Agent 和知识库工具。系统提示约束知识库工具一轮最多调用一次，拿到结果后必须基于检索上下文回答并引用来源。</p>
+        <div class="grid-3 reveal" style="margin-top: 34px;">
+          <div class="card">
+            <h3>按请求创建工具</h3>
+            <p><code>make_search_knowledge_base(ctx)</code> 通过闭包绑定当前请求，trace 只回到自己的会话。</p>
+          </div>
+          <div class="card">
+            <h3>工具预算</h3>
+            <p>知识库工具一轮只允许一次，减少 Agent 重复检索、循环调用和成本浪费。</p>
+          </div>
+          <div class="card">
+            <h3>引用约束</h3>
+            <p>基于检索片段回答时必须使用 [1]、[2] 这类来源编号，降低无依据表达。</p>
+          </div>
+          <div class="card">
+            <h3>会话持久化</h3>
+            <p>聊天记录写入 PostgreSQL，Redis 缓存热点会话，历史读取更稳定。</p>
+          </div>
+          <div class="card">
+            <h3>本地标题</h3>
+            <p>新会话直接截断首问生成标题，不增加额外模型调用。</p>
+          </div>
+          <div class="card">
+            <h3>工具扩展点</h3>
+            <p>目前有天气和知识库工具，后续可以继续加搜索、SQL assistant 或企业数据源。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Commits">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">10 · Commit by Commit</span>
+          <span class="slide-number">9706f566 → 0cdb8d7</span>
+        </div>
+        <h2 class="reveal">这一轮的提交轨迹很清楚。</h2>
+        <div class="commit-grid reveal">
+          <div class="commit"><div class="hash">65aa5c8</div><div><strong>RAG 流水线</strong><span>召回→合并→精排，收口候选池配置和 trace。</span></div></div>
+          <div class="commit"><div class="hash">79aa1b6</div><div><strong>后端分层</strong><span>拆出 api、chat、rag、indexing、infra、tools 等包。</span></div></div>
+          <div class="commit"><div class="hash">526e40a</div><div><strong>启动稳定性</strong><span>统一加载 <code>.env</code>，移除包级 re-export 循环依赖风险。</span></div></div>
+          <div class="commit"><div class="hash">49702f9</div><div><strong>Milvus 连接</strong><span>按请求短连接，避免失效 gRPC channel。</span></div></div>
+          <div class="commit"><div class="hash">2ae104e</div><div><strong>通用 RAG 能力</strong><span>持久化笔记、会话标题、参考文献和 HTML 处理。</span></div></div>
+          <div class="commit"><div class="hash">2948500</div><div><strong>模式简化</strong><span>移除 fast / normal / deep 思考模式，降低交互复杂度。</span></div></div>
+          <div class="commit"><div class="hash">b503d84</div><div><strong>精排门控</strong><span>加入 Rerank 阈值和结构化证据路由。</span></div></div>
+          <div class="commit"><div class="hash">246ac35</div><div><strong>并行子 Agent</strong><span>复杂问题一次规划，多执行节点检索后合成。</span></div></div>
+          <div class="commit"><div class="hash">3b7330f</div><div><strong>子步骤分组</strong><span>前端按子问题展示 RAG 步骤，修复并行交错建组。</span></div></div>
+          <div class="commit"><div class="hash">a3c6e3c</div><div><strong>Vue 工程化</strong><span>单文件 CDN 应用迁移到 Vite + Vue 3 + TS + Pinia。</span></div></div>
+          <div class="commit"><div class="hash">0670511</div><div><strong>删除一致性</strong><span>事务性删除文档关联数据。</span></div></div>
+          <div class="commit"><div class="hash">97b3e13</div><div><strong>原生 BM25</strong><span>迁移到 Milvus 2.5+ 服务端中文 BM25。</span></div></div>
+          <div class="commit"><div class="hash">9a6d227</div><div><strong>文本兼容</strong><span>升级文本净化，兼容数据库与向量库。</span></div></div>
+          <div class="commit"><div class="hash">04ac7e7</div><div><strong>标题稳定性</strong><span>首问本地截断生成会话标题。</span></div></div>
+          <div class="commit"><div class="hash">1f6ad5d</div><div><strong>并发上下文</strong><span>显式注入 RAG 请求上下文，避免并发串流。</span></div></div>
+          <div class="commit"><div class="hash">767673a</div><div><strong>历史记录修复</strong><span>修复包级导入同名子模块导致历史记录报错，并补测试。</span></div></div>
+          <div class="commit"><div class="hash">4543c74</div><div><strong>子问题标题</strong><span>为 RAG 步骤增加 group_label，恢复真实子问题展示。</span></div></div>
+          <div class="commit"><div class="hash">3daa1a0</div><div><strong>流式会话隔离</strong><span>生成绑定原会话，切换历史后仍能恢复消息状态。</span></div></div>
+          <div class="commit"><div class="hash">d6ac940</div><div><strong>上传与 Milvus</strong><span>上传轮询跨页面保持，Milvus 入库改为批次短连接。</span></div></div>
+          <div class="commit"><div class="hash">0cdb8d7</div><div><strong>证据路由 / HITL</strong><span>支持短路、澄清、范围选择和中断恢复。</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Branches">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">11 · GitHub 分支定位</span>
+          <span class="slide-number">main + 3 branches</span>
+        </div>
+        <h2 class="reveal">仓库保留四条路线，各自服务不同学习阶段。</h2>
+        <div class="branch-map reveal">
+          <div class="branch-card">
+            <span class="branch-name">main</span>
+            <h3>当前主线：完整产品形态</h3>
+            <p>包含工程化前端、RAG 流水线、Agent、账户权限、会话历史、文档管理、Redis/PostgreSQL/Milvus 等完整链路，用于当前线上部署和公开体验。</p>
+          </div>
+          <div class="branch-card">
+            <span class="branch-name">agent-core</span>
+            <h3>纯粹 RAG 核心</h3>
+            <p>保留更轻量、更接近教学入口的 RAG 核心逻辑。适合初学者先理解检索、合并、精排与 trace，不必被完整产品架构淹没。</p>
+          </div>
+          <div class="branch-card">
+            <span class="branch-name">MedProject / med-project</span>
+            <h3>真实项目探索线</h3>
+            <p>以医疗真实项目为依托，在原有 RAG 核心之外加入知识图谱和图 RAG 检索，用来探索更复杂的数据组织、评估和领域问答。</p>
+          </div>
+          <div class="branch-card">
+            <span class="branch-name">langchain-study</span>
+            <h3>学习代码独立线</h3>
+            <p>把早期 LangChain 学习代码拆出去，主线保持干净。后面有时间会继续维护，但这里简要带过即可。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Launch">
+      <div class="slide-inner">
+        <div class="slide-topline reveal">
+          <span class="kicker">12 · 已经上线</span>
+          <span class="slide-number">launch / feedback / community</span>
+        </div>
+        <div class="launch-layout">
+          <div class="launch-copy">
+            <h2 class="reveal">SuperMew 已经部署上线。</h2>
+            <p class="lead reveal">访问 <strong>supermew.art</strong> 就可以直接体验。欢迎大家上传文档、试用聊天、观察 RAG trace、提 bug、提需求，也欢迎直接说哪里不好用。</p>
+            <div class="invite launch-card reveal">
+              <div>
+                <h3>访问地址</h3>
+                <p>主线版本已经部署到服务器上，后续会继续根据反馈迭代 RAG、Agent、文档处理和可观测能力。</p>
+              </div>
+              <a class="launch-link" href="http://supermew.art/" target="_blank" rel="noreferrer">
+                supermew.art
+                <span>↗</span>
+              </a>
+              <p>重点欢迎测试复杂问题、多文档问题、引用准确性、检索过程展示、文档上传删除以及并发聊天稳定性。</p>
+            </div>
+          </div>
+          <div class="invite qr-invite reveal">
+            <div>
+              <h3>QQ 交流群</h3>
+              <p>可以聊大模型技术、Agent 技术、RAG 工程、找实习找工作，也可以随便闲聊吹水。</p>
+            </div>
+            <div class="qr-image-wrap">
+              <img class="qr-image" src="presentation-assets/qq-group-qrcode-card.png" alt="QQ 群二维码，大模型应用实习就业群，群号 1053789739">
+            </div>
+            <div class="qr-caption">扫码加入 QQ 群 · 群号 1053789739 · 微信群后续同步</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="controls" aria-label="presentation controls">
+    <button class="control-btn" type="button" id="prevBtn" aria-label="previous slide">↑</button>
+    <button class="control-btn" type="button" id="nextBtn" aria-label="next slide">↓</button>
+  </div>
+
+  <script>
+    const deck = document.getElementById('deck');
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const dotsWrap = document.getElementById('dots');
+    const progressBar = document.getElementById('progressBar');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    let activeIndex = 0;
+
+    const scrollToSlide = (index) => {
+      const target = slides[Math.max(0, Math.min(index, slides.length - 1))];
+      if (!target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    slides.forEach((slide, index) => {
+      const dot = document.createElement('button');
+      dot.className = 'dot';
+      dot.type = 'button';
+      dot.setAttribute('aria-label', `slide ${index + 1}: ${slide.dataset.title || ''}`);
+      dot.addEventListener('click', () => scrollToSlide(index));
+      dotsWrap.appendChild(dot);
+    });
+
+    const dots = Array.from(document.querySelectorAll('.dot'));
+
+    const setActive = (index) => {
+      activeIndex = index;
+      slides.forEach((slide, i) => slide.classList.toggle('is-active', i === index));
+      dots.forEach((dot, i) => dot.classList.toggle('active', i === index));
+      progressBar.style.width = `${((index + 1) / slides.length) * 100}%`;
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          setActive(slides.indexOf(entry.target));
+        }
+      });
+    }, {
+      root: deck,
+      threshold: 0.55,
+    });
+
+    slides.forEach((slide) => observer.observe(slide));
+    setActive(0);
+
+    prevBtn.addEventListener('click', () => scrollToSlide(activeIndex - 1));
+    nextBtn.addEventListener('click', () => scrollToSlide(activeIndex + 1));
+
+    window.addEventListener('keydown', (event) => {
+      const forwardKeys = ['ArrowDown', 'ArrowRight', 'PageDown', ' '];
+      const backKeys = ['ArrowUp', 'ArrowLeft', 'PageUp'];
+      if (forwardKeys.includes(event.key)) {
+        event.preventDefault();
+        scrollToSlide(activeIndex + 1);
+      }
+      if (backKeys.includes(event.key)) {
+        event.preventDefault();
+        scrollToSlide(activeIndex - 1);
+      }
+      if (event.key === 'Home') {
+        event.preventDefault();
+        scrollToSlide(0);
+      }
+      if (event.key === 'End') {
+        event.preventDefault();
+        scrollToSlide(slides.length - 1);
+      }
+    });
+  </script>
 </body>
 </html>

@@ -267,7 +267,7 @@ def test_project_sql_assistant_skill_is_admin_and_secret_gated():
     assert "search_knowledge_base" not in activated.allowed_tools
 
 
-def test_project_web_research_skill_allows_user_and_admin_but_requires_secret():
+def test_project_web_research_skill_allows_user_and_admin_but_requires_runtime():
     registry = build_default_tool_registry()
     skills = _load_project_skills(registry)
 
@@ -276,7 +276,7 @@ def test_project_web_research_skill_allows_user_and_admin_but_requires_secret():
         with_secret = skills.catalog(
             SkillAccess(
                 roles=frozenset({role}),
-                available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+                available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             )
         )
 
@@ -287,7 +287,7 @@ def test_project_web_research_skill_allows_user_and_admin_but_requires_secret():
         "web-research",
         SkillAccess(
             roles=frozenset({"user"}),
-            available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
         ),
         source="test",
     )
@@ -369,7 +369,7 @@ def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
     assert "sql_query" not in {item.name for item in built["tools"]}
 
 
-def test_factory_authorizes_web_only_with_configured_and_caller_secret():
+def test_factory_authorizes_web_only_with_configured_and_caller_runtime():
     registry = build_default_tool_registry()
     factory = AgentRuntimeFactory(
         settings=_settings(),
@@ -377,7 +377,7 @@ def test_factory_authorizes_web_only_with_configured_and_caller_secret():
         agent_builder=lambda **_kwargs: object(),
         tools=registry,
         skills=_load_project_skills(registry),
-        secret_names_provider=lambda _registry: frozenset({"BRAVE_SEARCH_API_KEY"}),
+        secret_names_provider=lambda _registry: frozenset({"WEB_RESEARCH_RUNTIME"}),
     )
     request_context = RunRequestContext.for_sync(
         user_id="alice",
@@ -388,7 +388,7 @@ def test_factory_authorizes_web_only_with_configured_and_caller_secret():
             request_context,
             roles=frozenset({"user"}),
             allowed_tools=factory.tool_ceiling,
-            available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             allowed_network_policies=frozenset({"none", "restricted"}),
             routed_skill="web-research",
         )
@@ -424,7 +424,7 @@ def test_factory_disabled_web_cannot_be_enabled_by_a_forged_secret_name():
             request_context,
             roles=frozenset({"user"}),
             allowed_tools=factory.tool_ceiling,
-            available_secrets=frozenset({"BRAVE_SEARCH_API_KEY"}),
+            available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             allowed_network_policies=frozenset({"none", "restricted"}),
         )
     finally:

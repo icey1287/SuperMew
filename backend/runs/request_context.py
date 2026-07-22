@@ -66,6 +66,8 @@ class RunRequestContext:
         default_factory=WebCitationLedger,
         repr=False,
     )
+    _web_tool_result_budget_limit: int | None = field(default=None, repr=False)
+    _web_tool_result_bytes_claimed: int = field(default=0, repr=False)
     _started_at: float = field(default_factory=time.monotonic)
     _last_step_at: Optional[float] = None
 
@@ -307,6 +309,50 @@ class RunRequestContext:
             if self._active:
                 self._web_citation_ledger.mark_attempted()
 
+    def remaining_web_tool_result_budget(self, limit_bytes: int) -> int:
+        """Return the unclaimed Run-local Web ToolResult budget."""
+
+        if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int):
+            raise TypeError("limit_bytes must be an integer")
+        if limit_bytes <= 0:
+            raise ValueError("limit_bytes must be positive")
+        with self._lock:
+            if not self._active:
+                return 0
+            if self._web_tool_result_budget_limit is None:
+                self._web_tool_result_budget_limit = limit_bytes
+            elif self._web_tool_result_budget_limit != limit_bytes:
+                raise ValueError("web ToolResult budget cannot be rebound")
+            return max(limit_bytes - self._web_tool_result_bytes_claimed, 0)
+
+    def claim_web_tool_result_budget(
+        self,
+        requested_bytes: int,
+        *,
+        limit_bytes: int,
+    ) -> int:
+        """Atomically claim at most the remaining Run-local Web ToolResult bytes."""
+
+        if isinstance(requested_bytes, bool) or not isinstance(requested_bytes, int):
+            raise TypeError("requested_bytes must be an integer")
+        if requested_bytes <= 0:
+            raise ValueError("requested_bytes must be positive")
+        if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int):
+            raise TypeError("limit_bytes must be an integer")
+        if limit_bytes <= 0:
+            raise ValueError("limit_bytes must be positive")
+        with self._lock:
+            if not self._active:
+                return 0
+            if self._web_tool_result_budget_limit is None:
+                self._web_tool_result_budget_limit = limit_bytes
+            elif self._web_tool_result_budget_limit != limit_bytes:
+                raise ValueError("web ToolResult budget cannot be rebound")
+            remaining = max(limit_bytes - self._web_tool_result_bytes_claimed, 0)
+            claimed = min(requested_bytes, remaining)
+            self._web_tool_result_bytes_claimed += claimed
+            return claimed
+
     def record_web_search_result(self, result: WebResearchResult) -> None:
         """Register search evidence and mint only its Run-local fetch capabilities."""
 
@@ -403,6 +449,8 @@ class RunRequestContext:
             self.loop = None
             self._web_fetch_authorizations.clear()
             self._web_citation_ledger.clear()
+            self._web_tool_result_budget_limit = None
+            self._web_tool_result_bytes_claimed = 0
             authority = self._destination_authority
             self._destination_authority = None
         if authority is not None:

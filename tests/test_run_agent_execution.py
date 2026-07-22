@@ -400,6 +400,30 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_plain_language_web_intent_routes_web_research_before_runtime_build(
+        self,
+    ):
+        self.runtime_factory.tool_ceiling = frozenset(
+            {"search_knowledge_base", "web_search", "web_fetch"}
+        )
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-auto-web-skill",
+            message="查一下python目前的最新版本",
+            idempotency_key="auto-web-skill-request",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        create_kwargs = self.runtime_factory.create_kwargs[-1]
+        self.assertEqual("web-research", create_kwargs["routed_skill"])
+        self.assertIsNone(create_kwargs["pinned_skill"])
+
     async def test_runtime_role_and_skill_pin_are_persisted_with_owner_fence(self):
         activated = ActivatedSkill(
             name="knowledge-base",

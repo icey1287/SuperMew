@@ -993,10 +993,6 @@ class WebResearchSettings(_EnvSettings):
         default=False,
         validation_alias="WEB_RESEARCH_ENABLED",
     )
-    brave_search_api_key: SecretStr = Field(
-        default=SecretStr(""),
-        validation_alias="BRAVE_SEARCH_API_KEY",
-    )
     request_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
@@ -1054,7 +1050,7 @@ class WebResearchSettings(_EnvSettings):
         validation_alias="WEB_RESEARCH_MAX_CONTENT_BYTES",
     )
     max_total_evidence_bytes: int = Field(
-        default=4_096,
+        default=3_072,
         ge=1,
         le=8_388_608,
         validation_alias="WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES",
@@ -1120,9 +1116,7 @@ class WebResearchSettings(_EnvSettings):
 
     @property
     def search_configured(self) -> bool:
-        return self.enabled and not _is_placeholder(
-            self.brave_search_api_key.get_secret_value()
-        )
+        return self.enabled
 
 
 _WEAK_SECRETS = {
@@ -1277,9 +1271,6 @@ class AppSettings(BaseModel):
                 problems.append("生产环境必须配置 ARK_API_KEY")
             if not self.embedding.warmup_on_start:
                 problems.append("生产环境必须启用 EMBEDDING_WARMUP_ON_START")
-
-        if self.web_research.enabled and not self.web_research.search_configured:
-            problems.append("启用 Web Research 时必须配置 BRAVE_SEARCH_API_KEY")
 
         sandbox = self.sandbox
         if sandbox.enabled:
@@ -1477,7 +1468,6 @@ class AppSettings(BaseModel):
         payload["sql_assistant"]["dsn"] = _redact_url(
             self.sql_assistant.dsn.get_secret_value()
         )
-        payload["web_research"]["brave_search_api_key"] = "***"
         return payload
 
 

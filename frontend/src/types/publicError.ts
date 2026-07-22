@@ -33,6 +33,7 @@ const DEFAULT_MESSAGES: Record<string, string> = {
   PROVIDER_TIMEOUT: '运行截止时间已到，已停止等待上游服务',
   PROVIDER_AUTHENTICATION_FAILED: '上游服务配置不可用，请联系管理员',
   PROVIDER_REQUEST_INVALID: '上游服务拒绝了当前请求，请联系管理员',
+  WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED: '搜索结果超过上下文预算，请缩小搜索范围后重试',
   POLICY_DENIED: '当前操作被安全策略拒绝',
   RUN_CANCELLED: '运行已取消',
   REQUEST_CANCELLED: '请求已取消',
@@ -59,6 +60,8 @@ const PROVIDER_CODES = new Set([
   'PROVIDER_AUTHENTICATION_FAILED',
   'PROVIDER_REQUEST_INVALID',
 ]);
+
+const FIXED_CLIENT_MESSAGE_CODES = new Set(['WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED']);
 
 const RETRYABLE_CODES = new Set([
   'RATE_LIMITED',
@@ -111,7 +114,7 @@ export function normalizePublicErrorInfo(
   const category = safeString(source.category ?? defaults.category, 64);
   const serverMessage = safeString(source.message ?? defaults.message, 500);
   const message =
-    category === 'provider' || PROVIDER_CODES.has(code)
+    category === 'provider' || PROVIDER_CODES.has(code) || FIXED_CLIENT_MESSAGE_CODES.has(code)
       ? publicErrorMessage(code)
       : serverMessage || publicErrorMessage(code);
   const retryable =

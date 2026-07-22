@@ -114,7 +114,19 @@ uv run --frozen python -m backend.tools.registry_cli list-tools --role user
 
 新增或升级 Skill 的目录、manifest、hash pin、回滚和 Secret 规则见 `docs/runbooks/skill-tool-registry.md`。
 
-SQL Assistant 默认关闭。启用时必须使用与应用写库不同 username 的 PostgreSQL 只读账号、
+管理员也可在侧栏 **Skill / Tool** 控制面持久化配置能力：编辑或停用四个内建 Skill、创建
+自定义 Skill、创建声明式公共 HTTPS JSON Tool，以及配置 SQL Assistant 和 Tavily Keyless
+开关。自定义 Tool 只支持固定 HTTPS Endpoint、GET/POST、JSON Schema、静态 Header 与环境
+Secret Header 引用，不接受任意 Python/Shell 或服务端插件代码。保存后会立即重建并应用当前
+Registry 和 Runtime，不需要重启 API 或 Run worker。
+首次部署此控制面前先执行：
+
+```bash
+uv run alembic upgrade head
+```
+
+SQL Assistant 默认关闭。环境变量只负责首次种子和真实 DSN Secret；首次种子后，管理员可在
+**Skill / Tool** 页面保存开关、DSN 环境变量名称、allowlist 与查询预算。启用时必须使用与应用写库不同 username 的 PostgreSQL 只读账号、
 显式 schema/table allowlist、RLS 和 `admin` 角色；`sql_schema` / `sql_query` 以 deferred Tool
 按需披露，不满足开关、Secret 或 `private-data` policy 时不会进入模型上下文：
 
@@ -131,14 +143,13 @@ SQL_ASSISTANT_SENSITIVE_COLUMNS=analytics.customers.email
 `docs/runbooks/sql-assistant.md`。启用后由管理员使用 `/sql-assistant` 激活；Skill 只允许读取
 授权 catalog 和执行单条有界只读查询，不提供任何写操作。
 
-Web Research 同样默认关闭。启用后，`user` 与 `admin` 可用 `/web-research` 激活；
-`web_search` / `web_fetch` 仍是 deferred Tool，只有 feature flag、已配置的 Brave Search
-Secret、active Skill 和 `restricted` network policy 同时满足时才披露。Secret 只在进程级
-Runtime 内使用，不进入 prompt、Run state、Checkpoint、Event 或审计：
+Web Research 同样默认关闭，可由管理员在 **Skill / Tool** 页面切换；启用并保存后，`user` 与
+`admin` 可用 `/web-research` 激活；
+`web_search` / `web_fetch` 仍是 deferred Tool，只有 feature flag、Tavily Keyless Runtime、
+active Skill 和 `restricted` network policy 同时满足时才披露。搜索不需要 API Key：
 
 ```dotenv
 WEB_RESEARCH_ENABLED=true
-BRAVE_SEARCH_API_KEY=<由 Secret 管理系统注入>
 ```
 
 `web_fetch` 不接受模型提供的任意 URL，只接受同一 Run 内 `web_search` 返回的不可变
@@ -295,13 +306,14 @@ npm run build
 
 当前产品化入口包括：
 
-- **Web Research**：选择 Web Research 后输入需要调查的公开问题、时间范围或来源偏好。前端以 `/web-research` 激活 Skill；只有 feature flag、Brave Search Secret、角色与受限公网策略满足时才可用。回答中的外部事实应来自当前 Run 的 Web Evidence，并由服务端校验引用身份。
+- **Web Research**：选择 Web Research 后输入需要调查的公开问题、时间范围或来源偏好。前端以 `/web-research` 激活 Skill；只有 feature flag、Tavily Keyless Runtime、角色与受限公网策略满足时才可用。回答中的外部事实应来自当前 Run 的 Web Evidence，并由服务端校验引用身份。
 - **SQL Assistant**：选择 SQL Assistant 后用自然语言描述指标、维度、筛选条件和时间范围。该模式仅对满足配置与角色要求的账号开放，只能读取 allowlist 内 PostgreSQL catalog 并执行有界只读查询；它不提供 DDL、DML 或任何写入能力。
 - **Sandbox**：选择 Sandbox 后先选 Python 或 Shell，再输入要执行的源码。该模式固定无网络、无宿主挂载、无持久 workspace；发送前会展示 Tool、网络和资源范围确认。确认只会为即将创建的单个 Run 签发 names-only Approval Grant，并绑定当前用户、Tenant、Thread 与 Run，Run 结束后失效，也不会为后续 Run 自动续权。
 
-管理员侧栏还提供两个全页控制面：
+管理员侧栏还提供三个全页控制面：
 
 - **模型中心**：创建、编辑、停用和删除无 Secret Model Profile，查看 Stream/Structured Output 能力，并选择 Answer、Fast、Grader、Evaluator Assignment。`MODEL`、`FAST_MODEL`、`GRADE_MODEL` 与 `EVALUATION_MODEL` 只用于首次数据库种子；之后无需修改环境变量或重启进程。API Key 仍必须由服务端 `ARK_API_KEY` 提供，前端只显示“已配置/未配置”。
+- **Skill / Tool**：切换 Tavily Keyless，配置 SQL Assistant 的 Secret 名称、allowlist 和预算，编辑四个内建 Skill，并创建自定义 Skill 与受限 HTTPS JSON Tool。保存后立即生效；DSN 与 Header Secret 值始终只在服务端环境中。
 - **RAG 评估**：导入版本化 Dataset JSON、选择可比较 baseline、检查四角色模型后启动持久 Evaluation Job。页面自动恢复进度并展示历史趋势、核心指标、质量 Gate、Case 问题/答案/Judge reason 与 Evidence identity；Evidence 正文、endpoint、Secret 和私有推理不会进入响应。
 
 审批确认发生在 Run 创建之前。当前没有“Run 已开始后弹窗审批、暂停等待、再恢复执行”的状态机；未随创建请求预授权的 approval-only Tool 会被拒绝，而不会在运行中临时扩权。
@@ -518,6 +530,11 @@ npm run build
   - `POST /v1/runs/{run_id}/cancel`：请求取消真实后端 Run；客户端应等待 `run.cancelled` 或其他权威 terminal Event。
 - Capability control plane
   - `GET /v1/capabilities`：返回当前账号可见且不含 Secret 的 Skill/Tool 目录、可用状态、网络与资源策略以及审批要求，供能力中心和命令面板使用。
+  - `GET /v1/capabilities/control-plane`：管理员读取 Tavily、SQL、Skill 与 Tool 配置；只返回 Secret 名称和“已配置/未配置”，不返回 Secret 值。
+  - `POST /v1/capabilities/skills`、`PUT/DELETE /v1/capabilities/skills/{name}`：创建、编辑或删除自定义 Skill；内建 Skill 可编辑/停用但不可删除。
+  - `POST /v1/capabilities/tools`、`PUT/DELETE /v1/capabilities/tools/{name}`：管理声明式公共 HTTPS JSON Tool；仍被 Skill 引用时不能停用或删除。
+  - `PUT /v1/capabilities/sql-assistant`：保存 SQL Assistant Secret 引用、allowlist 和预算。
+  - `PUT /v1/capabilities/web-research`：切换 Tavily Keyless Web Research。
 - 文档（管理员权限）
   - `GET /documents`：列出已入库文档及 chunk 数。
   - `POST /documents/upload/async`：保存上传并提交持久化 Index Job。

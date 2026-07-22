@@ -17,19 +17,17 @@ from backend.web_research.runtime import WebResearchError, WebResearchErrorCode
 def _settings(
     *,
     enabled: bool = True,
-    api_key: str = "brave-test-secret",
 ) -> WebResearchSettings:
     return WebResearchSettings(
         _env_file=None,
         WEB_RESEARCH_ENABLED=enabled,
-        BRAVE_SEARCH_API_KEY=api_key,
     )
 
 
 def _access(
     *,
     role: str = "user",
-    secrets: frozenset[str] = frozenset({"BRAVE_SEARCH_API_KEY"}),
+    secrets: frozenset[str] = frozenset({"WEB_RESEARCH_RUNTIME"}),
 ) -> ToolAccess:
     return ToolAccess(
         roles=frozenset({role}),
@@ -55,7 +53,7 @@ def _result(
     return WebResearchResult.create([evidence])
 
 
-def test_catalog_registers_web_tools_as_secret_gated_deferred_adapters():
+def test_catalog_registers_web_tools_as_runtime_gated_deferred_adapters():
     settings = _settings()
     registry = build_default_tool_registry(web_research_settings=settings)
 
@@ -65,7 +63,7 @@ def test_catalog_registers_web_tools_as_secret_gated_deferred_adapters():
             assert descriptor is not None
             assert descriptor.output_schema == TOOL_RESULT_V1_SCHEMA
             assert descriptor.required_roles == frozenset()
-            assert descriptor.required_secrets == frozenset({"BRAVE_SEARCH_API_KEY"})
+            assert descriptor.required_secrets == frozenset({"WEB_RESEARCH_RUNTIME"})
             assert descriptor.network_policy == "restricted"
             assert descriptor.observability_metadata_keys == frozenset(
                 {
@@ -82,24 +80,18 @@ def test_catalog_registers_web_tools_as_secret_gated_deferred_adapters():
     assert "url" not in str(fetch_schema).casefold()
 
 
-def test_feature_flag_and_configured_secret_intersection_fail_closed():
+def test_feature_flag_and_runtime_capability_intersection_fail_closed():
     disabled = _settings(enabled=False)
     registry = build_default_tool_registry(web_research_settings=disabled)
 
-    assert "BRAVE_SEARCH_API_KEY" not in configured_secret_names(
+    assert "WEB_RESEARCH_RUNTIME" not in configured_secret_names(
         registry,
         web_research_settings=disabled,
     )
     assert registry.describe("web_search", _access(secrets=frozenset())) is None
 
-    placeholder = _settings(enabled=True, api_key="your_brave_search_api_key")
-    assert "BRAVE_SEARCH_API_KEY" not in configured_secret_names(
-        registry,
-        web_research_settings=placeholder,
-    )
-
     enabled = _settings()
-    assert "BRAVE_SEARCH_API_KEY" in configured_secret_names(
+    assert "WEB_RESEARCH_RUNTIME" in configured_secret_names(
         registry,
         web_research_settings=enabled,
     )
@@ -109,7 +101,6 @@ def test_tool_envelope_budget_does_not_reuse_http_response_budget(monkeypatch):
     settings = WebResearchSettings(
         _env_file=None,
         WEB_RESEARCH_ENABLED=True,
-        BRAVE_SEARCH_API_KEY="brave-test-secret",
         WEB_RESEARCH_MAX_CONTENT_BYTES=75_000,
         WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES=80_000,
         WEB_RESEARCH_MAX_RESPONSE_BYTES=1_024,
@@ -198,6 +189,53 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
     ]
     assert "current public research" not in str(tool_result.observability_metadata)
     assert evidence.canonical_url not in str(tool_result.observability_metadata)
+    ctx.close()
+
+
+def test_repeated_web_searches_share_one_run_evidence_budget(monkeypatch):
+    settings = WebResearchSettings(
+        _env_file=None,
+        WEB_RESEARCH_ENABLED=True,
+        WEB_RESEARCH_MAX_CONTENT_BYTES=3_072,
+        WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES=3_072,
+    )
+    calls = 0
+
+    class Runtime:
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            nonlocal calls
+            calls += 1
+            return _result(
+                url=f"https://www.example.edu/research/{calls}",
+                content=(f"evidence-{calls}-" + ("x" * 2_600)),
+            )
+
+    monkeypatch.setattr(
+        "backend.tools.web.get_web_research_runtime",
+        lambda: Runtime(),
+    )
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-cumulative")
+    registry = build_default_tool_registry(web_research_settings=settings)
+    session = registry.bind(ctx, _access())
+    session.apply_skill({"web_search"})
+    session.search("public web evidence")
+
+    first_payload = session.resolve("web_search").invoke(
+        {"query": "first public source"}
+    )
+    second_payload = session.resolve("web_search").invoke(
+        {"query": "second public source"}
+    )
+    first = ToolResultV1.model_validate_json(first_payload)
+    second = ToolResultV1.model_validate_json(second_payload)
+    assert first.success is True
+    assert second.success is True
+    assert second.data["truncated"] is True
+    assert (
+        len(first_payload.encode("utf-8")) + len(second_payload.encode("utf-8"))
+        <= settings.max_total_evidence_bytes
+    )
+    assert calls == 2
     ctx.close()
 
 

@@ -212,12 +212,10 @@ class SettingsSecurityTests(unittest.TestCase):
     def test_redacted_dict_does_not_expose_secrets(self):
         settings = make_settings(secret="x" * 40)
         settings.rerank.api_key = SecretStr("rerank-secret")
-        settings.web_research.brave_search_api_key = SecretStr("brave-secret")
         dumped = str(settings.redacted_dict())
         self.assertNotIn("x" * 40, dumped)
         self.assertNotIn("app:strong", dumped)
         self.assertNotIn("rerank-secret", dumped)
-        self.assertNotIn("brave-secret", dumped)
         self.assertNotIn("r" * 40, dumped)
 
     def test_agent_budget_relationships_are_validated_at_startup(self):
@@ -433,30 +431,18 @@ class SettingsSecurityTests(unittest.TestCase):
         self.assertNotIn("sql-password", dumped)
         self.assertIn("sql_reader:***@db", dumped)
 
-    def test_web_research_is_disabled_and_secretless_by_default(self):
+    def test_web_research_is_disabled_and_keyless_by_default(self):
         web = WebResearchSettings(_env_file=None)
 
         self.assertFalse(web.enabled)
         self.assertFalse(web.search_configured)
-        self.assertEqual("", web.brave_search_api_key.get_secret_value())
         self.assertEqual(8, web.max_dns_addresses)
         self.assertEqual(3_072, web.max_content_bytes)
-        self.assertEqual(4_096, web.max_total_evidence_bytes)
+        self.assertEqual(3_072, web.max_total_evidence_bytes)
 
-    def test_enabled_web_research_requires_real_brave_key_in_every_environment(self):
+    def test_enabled_web_research_is_keyless_in_every_environment(self):
         settings = make_settings(secret="x" * 40)
         settings.web_research.enabled = True
-
-        with self.assertRaisesRegex(ValueError, "BRAVE_SEARCH_API_KEY"):
-            settings.validate_startup()
-
-        settings.web_research.brave_search_api_key = SecretStr(
-            "your_brave_search_api_key"
-        )
-        with self.assertRaisesRegex(ValueError, "BRAVE_SEARCH_API_KEY"):
-            settings.validate_startup()
-
-        settings.web_research.brave_search_api_key = SecretStr("production-key")
         settings.validate_startup()
 
     def test_web_research_budget_relationships_are_validated(self):
@@ -480,7 +466,6 @@ class SettingsSecurityTests(unittest.TestCase):
 
         settings = make_settings(secret="x" * 40)
         settings.web_research.enabled = True
-        settings.web_research.brave_search_api_key = SecretStr("production-key")
         settings.web_research.max_content_bytes = 10_000
         settings.web_research.max_total_evidence_bytes = 20_000
         with self.assertRaisesRegex(ValueError, "Agent 输入 token 预算"):

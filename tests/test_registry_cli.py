@@ -58,14 +58,14 @@ def test_registry_cli_requires_explicit_private_data_policy(monkeypatch, capsys)
     )
 
 
-def test_registry_cli_web_catalog_uses_configured_secret_intersection(
+def test_registry_cli_web_catalog_uses_configured_runtime_intersection(
     monkeypatch,
     capsys,
 ):
     monkeypatch.setattr(
         registry_cli,
         "configured_secret_names",
-        lambda _registry: frozenset({"BRAVE_SEARCH_API_KEY"}),
+        lambda _registry: frozenset({"WEB_RESEARCH_RUNTIME"}),
     )
 
     assert main(["list-tools", "--role", "user"]) == 0
@@ -73,7 +73,7 @@ def test_registry_cli_web_catalog_uses_configured_secret_intersection(
     assert {"web_search", "web_fetch"}.issubset(
         {item["name"] for item in configured_tools}
     )
-    assert "BRAVE_SEARCH_API_KEY" not in json.dumps(configured_tools)
+    assert "WEB_RESEARCH_RUNTIME" not in json.dumps(configured_tools)
 
     assert (
         main(
@@ -99,7 +99,7 @@ def test_registry_cli_web_catalog_uses_configured_secret_intersection(
                 "--role",
                 "user",
                 "--secret-name",
-                "BRAVE_SEARCH_API_KEY",
+                "WEB_RESEARCH_RUNTIME",
                 "--network-policy",
                 "none",
             ]

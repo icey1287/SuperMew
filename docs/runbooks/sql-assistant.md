@@ -42,6 +42,15 @@ materialized/foreign view 与 sequence 不受支持。
 
 ## 配置
 
+推荐在管理员侧栏 **Skill / Tool → SQL Assistant 配置** 中维护开关、DSN Secret 名称、
+expected role、allowlist、敏感列和查询/结果预算。前端只保存类似
+`ANALYTICS_READER_DSN` 的环境变量名称；真实 DSN 必须由 Secret 管理系统注入 API 与 worker
+进程环境，控制面不会存储或返回 DSN。
+
+`.env` 中的开关、allowlist 与预算只在控制面记录不存在时作为首次种子。数据库已经初始化后，
+修改这些环境变量不会覆盖前端保存的目标配置；连接池、lock timeout、AST 等未开放字段仍由
+服务端环境配置。前端保存后会立即重建并应用 SQL Assistant Runtime。
+
 最小配置：
 
 ```dotenv
@@ -69,9 +78,11 @@ schema-qualified custom operator 都会令 readiness/query fail-closed。
 - 返回上限不得大于 EXPLAIN estimated bytes 上限；
 - pool min 不得大于 pool max。
 
-配置验证失败时 API/worker 必须拒绝启动，不要通过放大预算绕过高成本查询。
+配置验证失败时不要通过放大预算绕过高成本查询。前端显示“Secret 未配置”时，先在目标进程
+环境中注入所选名称；如果 Secret 是由部署系统新增或修改的，需要重启目标进程让它重新读取
+环境。这是环境变量加载要求，不是保存配置本身的发布步骤。不要把 DSN 粘贴到浏览器表单。
 
-## 发布验证
+## 验证
 
 ```bash
 uv run --frozen python -m backend.tools.registry_cli validate
@@ -94,8 +105,8 @@ DSN、密码、原始 SQL、literal、表中值或内部异常文本。
 
 ### Skill 不可见
 
-依次确认：feature flag 已启用、DSN 非空、当前用户数据库角色为 `admin`、Run 允许
-`private-data` network policy、Registry 已重启加载新 catalog。任一条件缺失都应保持隐藏。
+依次确认：SQL Assistant 已启用、DSN 非空、当前用户数据库角色为 `admin`、Run 允许
+`private-data` network policy。任一条件缺失都应保持隐藏。
 
 ### readiness 拒绝角色
 
@@ -118,11 +129,12 @@ WHERE rolname = current_user;
 
 ### schema 变更未出现
 
-等待 catalog cache TTL 或重启 runtime；确认新 relation 已加入 allowlist 且 reader 已获
+等待 catalog cache TTL，或在前端再次保存 SQL 配置以刷新 Runtime；确认新 relation 已加入 allowlist 且 reader 已获
 `USAGE`/`SELECT`。不要直接开放 `pg_catalog` 或 `schema.*` 作为临时修复。
 
 ## 禁用与轮换
 
-紧急禁用时设置 `SQL_ASSISTANT_ENABLED=false` 并重启 API/worker；随后可在数据库撤销 reader
-登录权限。轮换 DSN 时先更新 Secret 管理系统，滚动重启并验证 readiness；旧密码应立即失效。
+紧急禁用时在前端关闭 SQL Assistant 并保存；若控制面尚未初始化，也可用
+`SQL_ASSISTANT_ENABLED=false` 作为首次种子。随后可在数据库撤销 reader 登录权限。轮换 DSN
+时先更新当前配置引用的环境 Secret，滚动重启并验证 readiness；旧密码应立即失效。
 Secret 值不得出现在工单、聊天、提交或命令输出中。

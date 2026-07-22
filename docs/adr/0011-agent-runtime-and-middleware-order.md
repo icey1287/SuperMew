@@ -56,7 +56,7 @@ Run、Event、Checkpoint 是持久化事实来源，需要一个深 Module 隐�
 - shutdown、用户取消和 ownership 丢失是三种不同终止原因；部署关闭不得记录成用户取消。
 - 进程启动和周期 dispatcher 必须回收过期 owner，并唤醒持久化的 pending Run 与已接受的 checkpoint resume。
 - Runtime 执行受进程级并发上限约束；配置的 worker 前缀必须附加 host、pid 和 boot UUID，不能作为跨实例身份本身。
-- Skill 激活在进入 graph 前或 control tool round 中完成；动态上下文、上下文预算与 ToolPolicy 必须读取同一个 Run-local Registry snapshot。
+- Skill 激活在进入 graph 前或 control tool round 中完成；动态上下文、上下文预算与 ToolPolicy 必须读取当前执行中的同一个 Skill session 与授权 Tool 集合。
 - Runtime Context 的工具权限必须是显式集合；缺失策略时 fail-closed，不得以 `None` 表示全部放行。
 - 所有公开工具执行必须从 durable Run 进入同一 Guardrail、ToolAudit 与 Sandbox Seam；不得通过旁路 route、内部函数重导出或 SSE Adapter 绕行。
 

@@ -2,15 +2,18 @@
 
 ## 启用前准备
 
-Web Research 默认关闭。创建最小权限 Brave Search API key，并通过 Secret 管理系统注入；不要
-把 key 写入 `.env` 模板之外的仓库文件、工单、聊天、日志或命令输出。搜索 endpoint 固定为
-Brave 官方 HTTPS origin，不提供自定义 endpoint 配置。
+Web Research 默认关闭。搜索使用 Tavily Keyless，不需要 API Key。搜索 endpoint 固定为
+Tavily 官方 HTTPS origin，不提供自定义 endpoint 配置；请求仍经过 DNS pinning、SSRF policy、
+absolute deadline/cancellation 与独立响应大小限制。
+
+管理员可在前端侧栏 **Skill / Tool** 切换 Web Research。`WEB_RESEARCH_ENABLED` 只在数据库
+控制面首次创建时作为默认种子；之后以前端保存的配置为准。切换并保存后立即应用，不需要
+重启 API 或 worker。
 
 最小配置：
 
 ```dotenv
 WEB_RESEARCH_ENABLED=true
-BRAVE_SEARCH_API_KEY=<secret-manager-reference>
 ```
 
 完整预算见 `.env.example`。上线前重点确认：
@@ -18,7 +21,7 @@ BRAVE_SEARCH_API_KEY=<secret-manager-reference>
 - DNS timeout 小于等于 request timeout；DNS 并发和每次地址数量保持最小；
 - default search results 不大于 max results，max results 不大于 max citations；
 - title/snippet 不大于单页 content，content 不大于 total evidence；
-- total evidence 不大于 Agent 输入 token 预算的一半；默认为 4 KiB，不要直接恢复
+- 单 Run Web ToolResult 累计不大于 Agent 输入 token 预算的一半；默认为 3 KiB，不要直接恢复
   早期 512 KiB 高值；
 - compressed body、解压 response、单页 content 与 total evidence 使用各自独立上限；
 - redirect 上限、正文上限和总结果上限不因“抓取失败”被临时放大。
@@ -38,10 +41,10 @@ Web ToolResult 跨越 ContextBudget Seam 时是原子 JSON 消息。历史旧轮
 `WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED`。不得把 `…[truncated by context budget]` 写入
 ToolResult JSON。
 
-所有环境的启动验证都会在 feature enabled 时拒绝空 key 或模板占位 key。feature 关闭或 key
-缺失时，Registry 不会声明 `BRAVE_SEARCH_API_KEY` capability。
+feature 关闭时，Registry 不会声明内部的 `WEB_RESEARCH_RUNTIME` capability；这个符号只表示
+Keyless Runtime 已启用，不是 Secret，也不会作为请求凭据发送。
 
-## 发布验证
+## 验证
 
 ```bash
 uv run --frozen python -m backend.tools.registry_cli validate
@@ -53,7 +56,14 @@ uv run --frozen pytest -q tests/test_web_research_contracts.py \
   tests/test_agent_runtime.py tests/test_settings_security.py
 ```
 
-Secret 未配置时，`web-research` Skill 与两个 deferred Tool 必须隐藏。配置并重启后，目录可看到
+API 启动后还必须执行真实模型与 Tavily Keyless 的端到端冒烟测试；只有 `web_search` 产生
+`tool.completed` 且 Run 成功才通过：
+
+```bash
+uv run python scripts/smoke_web_research_e2e.py
+```
+
+feature 未启用时，`web-research` Skill 与两个 deferred Tool 必须隐藏。启用并保存后，目录可看到
 Skill；激活 `/web-research` 后，`tool_search` 才能披露 `web_search` / `web_fetch` schema。
 readiness 只应输出 enabled/ready/search-ready 与聚合预算，不得输出 key、query、URL 或正文。
 
@@ -88,9 +98,9 @@ redirect 转向私网、peer IP 不在 DNS pin、过多 redirect、未知 conten
 
 ### Skill 或 Tool 不可见
 
-依次检查 feature flag、Secret 是否由当前进程读到、调用方是否声明同名 capability、Run 是否
-允许 `restricted` network policy、Skill 是否已经激活、Registry 是否在配置变更后重启。
-不要把 key 放入 prompt 来“证明已配置”。
+依次检查 feature flag、Runtime capability、调用方是否声明同名 capability、Run 是否
+允许 `restricted` network policy、Skill 是否已经激活。
+不要把任何伪造 capability 放入 prompt 来“证明已配置”。
 
 ### 搜索可用但 fetch 被拒绝
 
@@ -107,9 +117,8 @@ Skill。
 
 ## 禁用、轮换与事件响应
 
-紧急禁用时设置 `WEB_RESEARCH_ENABLED=false` 并滚动重启 API/worker；必要时立即在 Brave
-控制台撤销 key。轮换时先部署新 Secret、滚动重启并验证 readiness，再撤销旧 key。
+紧急禁用时在前端关闭 Web Research 并保存；控制面尚未初始化时可用
+`WEB_RESEARCH_ENABLED=false` 作为首次种子。
 
-若怀疑 key 泄露，除轮换外还应审查 provider 用量和本地审计是否违反“无原文”规则。审计、
-Event、checkpoint 或日志中一旦出现 query、URL query string、正文或 key，应按数据泄露事件
+审计、Event、checkpoint 或日志中一旦出现 query、URL query string 或正文，应按数据泄露事件
 处理并停止发布；不要仅靠日志脱敏规则掩盖错误的数据流。

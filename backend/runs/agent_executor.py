@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import socket
 import time
 from datetime import UTC, datetime
@@ -63,6 +64,22 @@ _WARNING_TRACE_STAGES = {
     "web.citation_rejected",
     "web.context_rejected",
 }
+
+_EXPLICIT_WEB_INTENT = re.compile(
+    r"(?:联网|上网|网上|网页|网络).{0,12}(?:查|查询|搜索|检索|搜|找)"
+    r"|(?:search|look\s+up|find).{0,16}(?:the\s+)?web"
+    r"|(?:web|online)\s+(?:search|lookup)",
+    re.IGNORECASE,
+)
+_CURRENT_WEB_LOOKUP = re.compile(
+    r"(?:查(?:一?下)?|查询|搜索|搜(?:一?下)?|找(?:一?下)?).{0,48}"
+    r"(?:目前|当前|现在|最新|今日|今天).{0,24}"
+    r"(?:版本|发布|发行|新闻|消息|价格|天气|状态|资料|信息)"
+    r"|(?:search|look\s+up|check|find).{0,48}"
+    r"(?:latest|current|today).{0,24}"
+    r"(?:version|release|news|price|weather|status|information)",
+    re.IGNORECASE,
+)
 
 _PUBLIC_ARTIFACT_FIELDS = frozenset(
     {
@@ -156,6 +173,15 @@ def _remaining_deadline(deadline_at: str | None) -> float | None:
         deadline = deadline.astimezone(UTC).replace(tzinfo=None)
     now = datetime.now(UTC).replace(tzinfo=None)
     return max((deadline - now).total_seconds(), 0.0)
+
+
+def _routed_skill_for_user_text(user_text: str) -> str | None:
+    text = " ".join(str(user_text or "").split())
+    if not text or text.startswith("/"):
+        return None
+    if _EXPLICIT_WEB_INTENT.search(text) or _CURRENT_WEB_LOOKUP.search(text):
+        return "web-research"
+    return None
 
 
 def _pinned_skill(run: RunRecord) -> SkillPin | None:
@@ -587,6 +613,16 @@ class RunAgentExecutor:
                 source=activated.source,
             )
 
+        pinned_skill = _pinned_skill(snapshot.run)
+        effective_user_text = user_text or snapshot.user_text
+        routed_skill = None
+        if (
+            not disable_tools
+            and pinned_skill is None
+            and "web_search" in self._runtime_tool_ceiling()
+        ):
+            routed_skill = _routed_skill_for_user_text(effective_user_text)
+
         runtime = self.runtime_builder.create(
             request_context,
             persistent_note=snapshot.persistent_note,
@@ -615,8 +651,9 @@ class RunAgentExecutor:
                 if knowledge_tool is not None
                 else None
             ),
-            pinned_skill=_pinned_skill(snapshot.run),
+            pinned_skill=pinned_skill,
             pinned_skill_source=snapshot.run.skill_activation_source,
+            routed_skill=routed_skill,
             on_skill_activate=pin_skill,
             trace_queue=trace_queue,
             model_snapshot=snapshot.model_snapshot,
@@ -646,7 +683,7 @@ class RunAgentExecutor:
             async for runtime_event in runtime.astream(
                 AgentRuntimeInput(
                     history=_history_messages(snapshot),
-                    user_text=user_text or snapshot.user_text,
+                    user_text=effective_user_text,
                 )
             ):
                 await token.checkpoint()

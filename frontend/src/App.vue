@@ -28,6 +28,7 @@
         <template v-else>
           <DocumentSettings v-if="chatStore.activeNav === 'settings'" />
           <ModelCenter v-else-if="chatStore.activeNav === 'models'" />
+          <CapabilityAdmin v-else-if="chatStore.activeNav === 'capabilities-admin'" />
           <RagEvaluationWorkbench v-else-if="chatStore.activeNav === 'evaluations'" />
           <template v-else>
             <HistorySidebar />
@@ -52,6 +53,7 @@ import { useChatStore } from '@/stores/chat';
 import { useThreadStore } from '@/stores/threads';
 import { useRunsStore } from '@/stores/runs';
 import { useCapabilityStore } from '@/stores/capabilities';
+import { useCapabilityAdminStore } from '@/stores/capabilityAdmin';
 import { useModelStore } from '@/stores/models';
 import { useEvaluationStore } from '@/stores/evaluations';
 import superMewMark from '@/assets/images/supermew-mark.png';
@@ -62,6 +64,9 @@ const DocumentSettings = defineAsyncComponent(
   () => import('@/components/Documents/DocumentSettings.vue')
 );
 const ModelCenter = defineAsyncComponent(() => import('@/components/Models/ModelCenter.vue'));
+const CapabilityAdmin = defineAsyncComponent(
+  () => import('@/components/Capabilities/CapabilityAdmin.vue')
+);
 const RagEvaluationWorkbench = defineAsyncComponent(
   () => import('@/components/Evaluations/RagEvaluationWorkbench.vue')
 );
@@ -80,6 +85,7 @@ const chatStore = useChatStore();
 const threadStore = useThreadStore();
 const runsStore = useRunsStore();
 const capabilityStore = useCapabilityStore();
+const capabilityAdminStore = useCapabilityAdminStore();
 const modelStore = useModelStore();
 const evaluationStore = useEvaluationStore();
 
@@ -108,6 +114,7 @@ watch(
     threadStore.$reset();
     modelStore.reset();
     evaluationStore.reset();
+    capabilityAdminStore.reset();
     if (username) void capabilityStore.fetchCatalog().catch(() => undefined);
   }
 );

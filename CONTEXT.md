@@ -106,7 +106,7 @@ _Avoid_: Route counter、raw identity key
 ### Extensibility and safety
 
 **Skill**:
-按需激活、版本固定且声明允许 Tool 的领域能力包；一个 Run 使用同一个 Registry snapshot。
+按需激活、带版本且声明允许 Tool 的领域能力包。
 _Avoid_: Prompt preset、plugin
 
 **Tool**:

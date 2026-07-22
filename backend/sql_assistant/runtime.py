@@ -356,15 +356,44 @@ def _postgres_adapter(settings: SqlAssistantSettings) -> SqlDatabaseAdapter:
 
 
 @lru_cache(maxsize=1)
-def get_sql_assistant_runtime() -> SqlAssistantRuntime:
-    """Return the lazy process-wide SQL runtime without exposing its DSN."""
-
+def _environment_sql_runtime() -> SqlAssistantRuntime:
     return SqlAssistantRuntime(settings=get_settings().sql_assistant)
+
+
+_runtime_lock = threading.RLock()
+_installed_runtime: SqlAssistantRuntime | None = None
+
+
+def install_sql_assistant_runtime(runtime: SqlAssistantRuntime) -> None:
+    if not isinstance(runtime, SqlAssistantRuntime):
+        raise TypeError("runtime must be a SqlAssistantRuntime")
+    global _installed_runtime
+    with _runtime_lock:
+        _installed_runtime = runtime
+
+
+def clear_sql_assistant_runtime(
+    runtime: SqlAssistantRuntime | None = None,
+) -> None:
+    global _installed_runtime
+    with _runtime_lock:
+        if runtime is None or _installed_runtime is runtime:
+            _installed_runtime = None
+
+
+def get_sql_assistant_runtime() -> SqlAssistantRuntime:
+    """Return the installed control-plane runtime or the environment fallback."""
+
+    with _runtime_lock:
+        runtime = _installed_runtime
+    return runtime if runtime is not None else _environment_sql_runtime()
 
 
 __all__ = [
     "SqlAssistantReadiness",
     "SqlAssistantRuntime",
     "SqlDatabaseAdapter",
+    "clear_sql_assistant_runtime",
     "get_sql_assistant_runtime",
+    "install_sql_assistant_runtime",
 ]

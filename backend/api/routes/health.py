@@ -7,6 +7,7 @@ from backend.api.resources import (
     document_catalog,
     document_publication,
 )
+from backend.capabilities.control_service import capability_control_service
 from backend.providers.runtime import provider_runtime
 from backend.sandbox import get_sandbox_runtime
 from backend.sql_assistant.runtime import get_sql_assistant_runtime
@@ -25,9 +26,12 @@ async def live() -> dict[str, str]:
 async def ready() -> JSONResponse:
     snapshot = provider_runtime.readiness()
     worker_settings = provider_runtime.settings.worker
+    capability_settings = (
+        capability_control_service.active_settings or provider_runtime.settings
+    )
     sql_enabled = bool(
         getattr(
-            getattr(provider_runtime.settings, "sql_assistant", None),
+            getattr(capability_settings, "sql_assistant", None),
             "enabled",
             False,
         )
@@ -43,7 +47,7 @@ async def ready() -> JSONResponse:
             sql_ready = False
     web_enabled = bool(
         getattr(
-            getattr(provider_runtime.settings, "web_research", None),
+            getattr(capability_settings, "web_research", None),
             "enabled",
             False,
         )
@@ -59,7 +63,7 @@ async def ready() -> JSONResponse:
             web_ready = False
     sandbox_enabled = bool(
         getattr(
-            getattr(provider_runtime.settings, "sandbox", None),
+            getattr(capability_settings, "sandbox", None),
             "enabled",
             False,
         )

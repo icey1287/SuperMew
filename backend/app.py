@@ -26,6 +26,7 @@ from backend.auth.origin import (
     AuthBodyLimitMiddleware,
     AuthRequestGuardMiddleware,
 )
+from backend.capabilities.control_service import capability_control_service
 from backend.core.errors import install_exception_handlers
 from backend.core.settings import get_settings
 from backend.events.outbox import default_publisher
@@ -42,12 +43,6 @@ from backend.sandbox import (
     install_sandbox_runtime,
 )
 from backend.security.headers import SecurityHeadersMiddleware
-from backend.sql_assistant.runtime import get_sql_assistant_runtime
-from backend.web_research.runtime import (
-    build_web_research_runtime,
-    clear_web_research_runtime,
-    install_web_research_runtime,
-)
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend" / "dist"
 
@@ -59,11 +54,8 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         provider_started = False
-        sql_start_attempted = False
-        sql_runtime = None
-        web_start_attempted = False
-        web_runtime = None
-        web_installed = False
+        capability_runtime = None
+        capability_applied = False
         sandbox_start_attempted = False
         sandbox_runtime = None
         sandbox_installed = False
@@ -75,20 +67,18 @@ def create_app() -> FastAPI:
             settings.validate_startup()
             await asyncio.to_thread(init_db)
             await asyncio.to_thread(model_control_service.ensure_environment_defaults)
+            await asyncio.to_thread(capability_control_service.ensure_defaults)
+            capability_runtime = await asyncio.to_thread(
+                capability_control_service.build_runtime
+            )
             await provider_runtime.start()
             provider_started = True
-            if bool(
-                getattr(getattr(settings, "sql_assistant", None), "enabled", False)
-            ):
-                sql_runtime = get_sql_assistant_runtime()
-                sql_start_attempted = True
-                await asyncio.to_thread(sql_runtime.start)
-            if bool(getattr(getattr(settings, "web_research", None), "enabled", False)):
-                web_runtime = build_web_research_runtime(settings)
-                web_start_attempted = True
-                await asyncio.to_thread(web_runtime.start)
-                install_web_research_runtime(web_runtime)
-                web_installed = True
+            await asyncio.to_thread(
+                capability_control_service.apply_runtime,
+                capability_runtime,
+                executor=run_agent_executor,
+            )
+            capability_applied = True
             sandbox_runtime = build_sandbox_runtime(settings)
             sandbox_start_attempted = True
             await asyncio.to_thread(sandbox_runtime.start)
@@ -150,19 +140,14 @@ def create_app() -> FastAPI:
                     await asyncio.to_thread(sandbox_runtime.close)
                 except BaseException as exc:
                     cleanup_errors.append(exc)
-            if web_installed:
+            if capability_applied:
                 try:
-                    clear_web_research_runtime(web_runtime)
+                    await asyncio.to_thread(capability_control_service.close_runtime)
                 except BaseException as exc:
                     cleanup_errors.append(exc)
-            if web_start_attempted and web_runtime is not None:
+            elif capability_runtime is not None:
                 try:
-                    await asyncio.to_thread(web_runtime.close)
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
-            if sql_start_attempted and sql_runtime is not None:
-                try:
-                    await asyncio.to_thread(sql_runtime.close)
+                    await asyncio.to_thread(capability_runtime.close)
                 except BaseException as exc:
                     cleanup_errors.append(exc)
             if provider_started:

@@ -38,6 +38,9 @@ class ErrorCode(StrEnum):
     RERANK_UNAVAILABLE = "RERANK_UNAVAILABLE"
     TOOL_TIMEOUT = "TOOL_TIMEOUT"
     TOOL_UNAVAILABLE = "TOOL_UNAVAILABLE"
+    WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED = (
+        "WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED"
+    )
     PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
     UPLOAD_INVALID = "UPLOAD_INVALID"
     UPLOAD_TOO_LARGE = "UPLOAD_TOO_LARGE"
@@ -115,6 +118,8 @@ def _status_for_code(code: ErrorCode | str) -> int:
         return 503
     if value == "PROVIDER_REQUEST_INVALID":
         return 502
+    if value == ErrorCode.WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED.value:
+        return 422
     if value in {ErrorCode.PERMISSION_DENIED.value, ErrorCode.POLICY_DENIED.value}:
         return 403
     return 500
