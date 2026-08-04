@@ -37,6 +37,8 @@ from backend.runs.cancellation import (
     Runner,
     RunExecutionManager,
     RunExecutionOutcome,
+    RunLease,
+    RunOwnership,
     execution_manager,
 )
 from backend.runs.repository import RunExecutionSnapshot, RunRecord, RunRepository
@@ -363,13 +365,6 @@ class RunAgentExecutor:
             return task
 
     async def execute(self, *, username: str, run_id: str) -> None:
-        current = await asyncio.to_thread(
-            self.service.get_run,
-            username=username,
-            run_id=run_id,
-        )
-        if current.status != RunStatus.PENDING.value:
-            return
         try:
             claimed = await asyncio.to_thread(
                 self.service.claim_run,
@@ -382,11 +377,9 @@ class RunAgentExecutor:
             raise
 
         async def runner(token: CancellationToken) -> RunExecutionOutcome:
-            snapshot = await asyncio.to_thread(
-                self.repository.load_execution_snapshot,
+            snapshot = await self._load_execution_snapshot(
                 username=username,
                 run_id=claimed.id,
-                worker_id=self.worker_id,
                 fencing_token=claimed.fencing_token,
             )
             return await self._run_runtime(snapshot=snapshot, token=token)
@@ -415,17 +408,12 @@ class RunAgentExecutor:
         )
         if not consumed.should_resume:
             return
-        claimed = await asyncio.to_thread(
-            self.repository.get_internal,
-            run_id=run_id,
-        )
+        lease = RunLease(id=run_id, fencing_token=consumed.fencing_token)
 
         async def runner(token: CancellationToken) -> RunExecutionOutcome:
-            snapshot = await asyncio.to_thread(
-                self.repository.load_execution_snapshot,
+            snapshot = await self._load_execution_snapshot(
                 username=username,
                 run_id=run_id,
-                worker_id=self.worker_id,
                 fencing_token=consumed.fencing_token,
             )
             self.runtime_builder.validate_resume_access(_resume_access_state(snapshot))
@@ -457,8 +445,23 @@ class RunAgentExecutor:
                 initial_rag_trace=trace,
             )
 
-        await self._execute_claimed(claimed, runner)
-        await self._dispatch_next(username=username, thread_id=claimed.thread_id)
+        await self._execute_claimed(lease, runner)
+        await self._dispatch_next(username=username, thread_id=consumed.thread_id)
+
+    async def _load_execution_snapshot(
+        self,
+        *,
+        username: str,
+        run_id: str,
+        fencing_token: int,
+    ) -> RunExecutionSnapshot:
+        return await asyncio.to_thread(
+            self.repository.load_execution_snapshot,
+            username=username,
+            run_id=run_id,
+            worker_id=self.worker_id,
+            fencing_token=fencing_token,
+        )
 
     async def _resume_checkpoint(
         self,
@@ -507,7 +510,7 @@ class RunAgentExecutor:
             pump_stop.set()
             await pump_task
 
-    async def _execute_claimed(self, run: RunRecord, runner: Runner) -> None:
+    async def _execute_claimed(self, run: RunOwnership, runner: Runner) -> None:
         heartbeat_stop = asyncio.Event()
         manager_task = asyncio.create_task(
             self.manager.execute(run=run, runner=runner),
@@ -525,7 +528,7 @@ class RunAgentExecutor:
 
     async def _heartbeat_loop(
         self,
-        run: RunRecord,
+        run: RunOwnership,
         stop_event: asyncio.Event,
     ) -> None:
         while not stop_event.is_set():

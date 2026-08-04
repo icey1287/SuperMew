@@ -16,7 +16,6 @@ from backend.core.errors import (
     serialize_public_error,
 )
 from backend.core.settings import get_settings
-from backend.runs.repository import RunRecord
 from backend.runs.service import RunService, service
 from backend.runs.state import RunStatus, TERMINAL_RUN_STATUSES
 
@@ -262,6 +261,20 @@ Runner = Callable[
 ]
 
 
+class RunOwnership(Protocol):
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def fencing_token(self) -> int: ...
+
+
+@dataclass(frozen=True)
+class RunLease:
+    id: str
+    fencing_token: int
+
+
 class RunExecutionManager:
     def __init__(
         self,
@@ -284,7 +297,7 @@ class RunExecutionManager:
     async def execute(
         self,
         *,
-        run: RunRecord,
+        run: RunOwnership,
         runner: Runner,
     ) -> None:
         task = asyncio.current_task()
@@ -407,7 +420,7 @@ class RunExecutionManager:
     def spawn(
         self,
         *,
-        run: RunRecord,
+        run: RunOwnership,
         runner: Runner,
     ) -> asyncio.Task[None]:
         return asyncio.create_task(

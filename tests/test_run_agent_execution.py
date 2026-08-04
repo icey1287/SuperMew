@@ -320,12 +320,27 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             idempotency_key="request-1",
         )
 
-        task = await self.executor.spawn_once(
-            username="alice",
-            run_id=reservation.run.id,
-        )
-        self.assertIsNotNone(task)
-        await task
+        with (
+            patch.object(
+                self.service,
+                "get_run",
+                wraps=self.service.get_run,
+            ) as get_run,
+            patch.object(
+                self.repository,
+                "load_execution_snapshot",
+                wraps=self.repository.load_execution_snapshot,
+            ) as load_execution_snapshot,
+        ):
+            task = await self.executor.spawn_once(
+                username="alice",
+                run_id=reservation.run.id,
+            )
+            self.assertIsNotNone(task)
+            await task
+
+        get_run.assert_not_called()
+        load_execution_snapshot.assert_called_once()
 
         with self.Session() as db:
             run = db.query(Run).filter(Run.id == reservation.run.id).one()
@@ -949,15 +964,30 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 db.query(User).filter(User.username == "alice").one().role = "admin"
             await self.executor.close()
             await self.executor.start()
-            resume_task = await self.executor.resume_once(
-                username="alice",
-                run_id=reservation.run.id,
-                hitl_token=hitl_token,
-                answer="丹瑾",
-                idempotency_key="hitl-resume-1",
-            )
-            self.assertIsNotNone(resume_task)
-            await resume_task
+            with (
+                patch.object(
+                    self.repository,
+                    "get_internal",
+                    wraps=self.repository.get_internal,
+                ) as get_internal,
+                patch.object(
+                    self.repository,
+                    "load_execution_snapshot",
+                    wraps=self.repository.load_execution_snapshot,
+                ) as load_execution_snapshot,
+            ):
+                resume_task = await self.executor.resume_once(
+                    username="alice",
+                    run_id=reservation.run.id,
+                    hitl_token=hitl_token,
+                    answer="丹瑾",
+                    idempotency_key="hitl-resume-1",
+                )
+                self.assertIsNotNone(resume_task)
+                await resume_task
+
+            get_internal.assert_not_called()
+            load_execution_snapshot.assert_called_once()
 
         completed = self.service.get_run(
             username="alice",

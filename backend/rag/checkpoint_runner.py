@@ -47,6 +47,7 @@ class CheckpointPause:
 @dataclass(frozen=True)
 class ConsumedResume:
     checkpoint_id: str
+    thread_id: str
     answer: str
     fencing_token: int
     already_consumed: bool
@@ -338,6 +339,7 @@ class HitlCheckpointRepository:
                         )
                     return ConsumedResume(
                         checkpoint_id=checkpoint.checkpoint_id,
+                        thread_id=thread.thread_id,
                         answer=clean_answer,
                         fencing_token=run.fencing_token,
                         already_consumed=True,
@@ -400,6 +402,7 @@ class HitlCheckpointRepository:
                     )
                 return ConsumedResume(
                     checkpoint_id=checkpoint.checkpoint_id,
+                    thread_id=thread.thread_id,
                     answer=clean_answer,
                     fencing_token=run.fencing_token,
                     already_consumed=False,
