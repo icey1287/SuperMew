@@ -49,10 +49,6 @@ async def _apply(service: CapabilityControlService) -> None:
     await run_in_threadpool(service.apply_runtime)
 
 
-async def _apply_skills(service: CapabilityControlService) -> None:
-    await run_in_threadpool(service.apply_skills)
-
-
 @router.get("/capabilities", response_model=CapabilityResponse)
 def get_capabilities(
     current_user: User = Depends(get_current_user),
@@ -93,7 +89,7 @@ async def create_managed_skill(
         username=current_user.username,
         **request.model_dump(),
     )
-    await _apply_skills(service)
+    await _apply(service)
     return CapabilityControlPlaneResponse.model_validate(
         await run_in_threadpool(service.control_plane)
     )
@@ -116,7 +112,7 @@ async def update_managed_skill(
         name=name,
         **request.model_dump(),
     )
-    await _apply_skills(service)
+    await _apply(service)
     return CapabilityControlPlaneResponse.model_validate(
         await run_in_threadpool(service.control_plane)
     )
@@ -137,7 +133,7 @@ async def delete_managed_skill(
         username=current_user.username,
         name=name,
     )
-    await _apply_skills(service)
+    await _apply(service)
     return CapabilityDeleteResponse(name=name)
 
 

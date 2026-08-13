@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -149,31 +148,6 @@ class CapabilityControlService:
         self._active_settings = current.settings
         if previous is not None and previous is not current:
             _close_quietly(previous)
-        return current
-
-    def apply_skills(self, *, executor: Any | None = None) -> CapabilityRuntime:
-        """Replace only the Skill projection while preserving Tool runtimes."""
-
-        current = self._active_runtime
-        if current is None:
-            return self.apply_runtime(executor=executor)
-        if executor is None:
-            from backend.runs.agent_executor import run_agent_executor
-
-            executor = run_agent_executor
-
-        skills, factory, catalog = self._build_skill_projection(
-            tools=current.tools,
-            settings=current.settings,
-        )
-
-        from backend.capabilities.runtime import install_runtime_capabilities
-
-        executor.runtime_builder = factory
-        install_runtime_capabilities(catalog=catalog, tools=current.tools)
-        current.skills = skills
-        current.factory = factory
-        current.catalog = catalog
         return current
 
     def close_runtime(self) -> None:
@@ -420,9 +394,32 @@ class CapabilityControlService:
             custom_tools = self.repository.list_http_tools()
             register_custom_http_tools(registry, custom_tools, custom_http_runtime)
             registry.freeze()
-            skills, factory, catalog = self._build_skill_projection(
-                tools=registry,
+            skills = self._build_skill_registry(registry)
+            skill_secret_names = frozenset(
+                secret
+                for record in self.repository.list_skills()
+                if record.enabled
+                for secret in record.required_secrets
+            )
+            secret_provider = partial(
+                configured_secret_names,
+                sql_assistant_settings=sql_settings,
+                web_research_settings=web_settings,
+                sandbox_settings=runtime_settings.sandbox,
+                additional_secret_names=skill_secret_names,
+            )
+            factory = AgentRuntimeFactory(
                 settings=runtime_settings,
+                models=runtime_factory.models,
+                agent_builder=runtime_factory.agent_builder,
+                tools=registry,
+                skills=skills,
+                secret_names_provider=secret_provider,
+            )
+            catalog = CapabilityCatalog(
+                skills=skills,
+                tools=registry,
+                secret_names_provider=secret_provider,
             )
             if custom_http_runtime is None:
                 raise RuntimeError("custom HTTP runtime was not constructed")
@@ -441,44 +438,6 @@ class CapabilityControlService:
             _close_quietly(sql_runtime)
             _close_quietly(custom_http_runtime)
             raise
-
-    def _build_skill_projection(
-        self,
-        *,
-        tools: ToolRegistry,
-        settings: AppSettings,
-    ) -> tuple[SkillRegistry, AgentRuntimeFactory, CapabilityCatalog]:
-        skills = self._build_skill_registry(tools)
-        skill_secret_names = frozenset(
-            secret
-            for record in self.repository.list_skills()
-            if record.enabled
-            for secret in record.required_secrets
-        )
-        secret_provider = partial(
-            configured_secret_names,
-            sql_assistant_settings=settings.sql_assistant,
-            web_research_settings=settings.web_research,
-            sandbox_settings=settings.sandbox,
-            additional_secret_names=skill_secret_names,
-        )
-        factory = AgentRuntimeFactory(
-            settings=settings,
-            models=runtime_factory.models,
-            agent_builder=runtime_factory.agent_builder,
-            tools=tools,
-            skills=skills,
-            secret_names_provider=secret_provider,
-        )
-        return (
-            skills,
-            factory,
-            CapabilityCatalog(
-                skills=skills,
-                tools=tools,
-                secret_names_provider=secret_provider,
-            ),
-        )
 
     def _build_skill_registry(self, tools: ToolRegistry) -> SkillRegistry:
         definitions: list[SkillDefinition] = []
@@ -538,7 +497,7 @@ class CapabilityControlService:
         payload: dict[str, Any],
         *,
         version: str,
-        created_at: datetime | None = None,
+        created_at=None,
     ) -> ManagedHttpToolRecord:
         try:
             endpoint = validate_custom_http_endpoint(
@@ -685,7 +644,9 @@ def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
-def _placeholder_time() -> datetime:
+def _placeholder_time():
+    from datetime import UTC, datetime
+
     return datetime.now(UTC)
 
 
