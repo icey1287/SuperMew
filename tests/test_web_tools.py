@@ -121,7 +121,6 @@ def test_tool_envelope_budget_does_not_reuse_http_response_budget():
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-envelope")
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})
-    session.search("public web evidence")
 
     payload = session.resolve("web_search").invoke({"query": "public research"})
     tool_result = ToolResultV1.model_validate_json(payload)
@@ -162,7 +161,6 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search", "web_fetch"})
-    session.search("public web evidence")
 
     payload = session.resolve("web_search").invoke(
         {"query": "current public research", "max_results": 3}
@@ -214,7 +212,6 @@ def test_repeated_web_searches_share_one_run_evidence_budget():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})
-    session.search("public web evidence")
 
     first_payload = session.resolve("web_search").invoke(
         {"query": "first public source"}
@@ -265,7 +262,6 @@ def test_web_fetch_accepts_only_run_local_search_evidence():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search", "web_fetch"})
-    session.search("public web evidence fetch")
 
     unknown_payload = session.resolve("web_fetch").invoke(
         {"evidence_id": f"web_ev_{'0' * 64}"}
@@ -304,7 +300,6 @@ def test_web_runtime_stable_error_is_preserved_without_sensitive_details():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})
-    session.search("public web evidence")
 
     payload = session.resolve("web_search").invoke(
         {"query": "secret-shaped query must not enter the failure"}

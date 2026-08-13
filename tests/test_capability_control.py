@@ -247,7 +247,6 @@ def _invoke_web_search(registry, *, thread_id):
             ),
         )
         session.apply_skill({"web_search"})
-        session.search("public web evidence")
         payload = session.resolve("web_search").invoke({"query": "public facts"})
         return ToolResultV1.model_validate_json(payload)
     finally:

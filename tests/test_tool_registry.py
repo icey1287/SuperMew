@@ -274,7 +274,7 @@ def test_deferred_tools_are_registered_but_hidden_until_authorized_search():
     assert session.describe("web_search") is None
 
 
-def test_skill_scope_is_an_authorized_intersection_and_preserves_controls():
+def test_skill_scope_exposes_only_declared_authorized_tools():
     registry = ToolRegistry()
     registry.register(
         _descriptor("tool_search", required_roles=frozenset()),
@@ -295,10 +295,12 @@ def test_skill_scope_is_an_authorized_intersection_and_preserves_controls():
 
     scope = session.apply_skill({"sql_query", "web_search", "invented_tool"})
 
-    assert scope == frozenset({"tool_search", "sql_query"})
-    assert session.visible_names == frozenset({"tool_search"})
+    assert scope == frozenset({"sql_query"})
+    assert session.visible_names == frozenset({"sql_query"})
+    assert session.executable_names == frozenset({"sql_query"})
+    assert session.is_allowed("sql_query")
+    assert not session.is_allowed("tool_search")
     assert session.search("web") == ()
-    assert [item.name for item in session.search("SQL")] == ["sql_query"]
     assert not session.is_allowed("web_search")
 
 

@@ -890,22 +890,11 @@ class ToolSession:
             requested = _normalize_string_set(
                 allowed_tools, field_name="skill allowed_tools"
             )
-            control_names = {
-                name
-                for name, registration in self._registrations.items()
-                if registration.exposure is ToolExposure.CONTROL
-            }
             self._skill_scope = frozenset(
-                self._authorized_names.intersection(requested.union(control_names))
+                self._authorized_names.intersection(requested)
             )
-            self._visible_names.intersection_update(self._skill_scope)
-            self._executable_names.intersection_update(self._skill_scope)
-
-            for name in self._skill_scope:
-                exposure = self._registrations[name].exposure
-                if exposure in {ToolExposure.RESIDENT, ToolExposure.CONTROL}:
-                    self._visible_names.add(name)
-                    self._executable_names.add(name)
+            self._visible_names = set(self._skill_scope)
+            self._executable_names = set(self._skill_scope)
             return self._skill_scope
 
     def search(

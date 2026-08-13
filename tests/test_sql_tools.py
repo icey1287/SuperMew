@@ -128,7 +128,6 @@ def test_sql_query_adapter_passes_run_deadline_and_cancellation():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_schema", "sql_query"})
-    session.search("read-only PostgreSQL query")
 
     payload = session.resolve("sql_query").invoke(
         {"sql": "SELECT count(*) AS order_count FROM analytics.orders"}
@@ -187,7 +186,6 @@ def test_sql_schema_adapter_passes_only_requested_qualified_tables():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_schema", "sql_query"})
-    session.search("authorized SQL schema")
 
     payload = session.resolve("sql_schema").invoke({"tables": ["Analytics.Orders"]})
     result = ToolResultV1.model_validate_json(payload)
@@ -211,7 +209,6 @@ def test_sql_runtime_exception_is_redacted_by_registry():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_query"})
-    session.search("read-only query")
 
     payload = session.resolve("sql_query").invoke({"sql": "SELECT 1"})
     result = ToolResultV1.model_validate_json(payload)
@@ -237,7 +234,6 @@ def test_sql_runtime_stable_error_is_preserved_without_internal_message():
     )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_query"})
-    session.search("read-only query")
 
     payload = session.resolve("sql_query").invoke({"sql": "SELECT 1"})
     result = ToolResultV1.model_validate_json(payload)

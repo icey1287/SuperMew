@@ -303,7 +303,7 @@ def test_project_web_research_skill_allows_user_and_admin_but_requires_runtime()
 
 
 def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
-    registry = build_default_tool_registry()
+    registry = build_default_tool_registry(sql_runtime=SimpleNamespace())
     factory = AgentRuntimeFactory(
         settings=_settings(),
         models=_FixedModels(ScriptedChatModel(responses=[AIMessage(content="ok")])),
@@ -330,8 +330,9 @@ def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
         assert {"sql_schema", "sql_query"}.issubset(
             runtime.context.tool_session.authorized_names
         )
-        assert not runtime.context.tool_session.is_allowed("sql_query")
-        runtime.context.tool_session.search("read-only SQL query")
+        assert runtime.context.visible_tool_names() == frozenset(
+            {"sql_schema", "sql_query"}
+        )
         assert runtime.context.tool_session.is_allowed("sql_query")
     finally:
         request_context.close()
@@ -370,7 +371,7 @@ def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
 
 
 def test_factory_authorizes_web_only_with_configured_and_caller_runtime():
-    registry = build_default_tool_registry()
+    registry = build_default_tool_registry(web_runtime=SimpleNamespace())
     factory = AgentRuntimeFactory(
         settings=_settings(),
         models=_FixedModels(ScriptedChatModel(responses=[AIMessage(content="ok")])),
@@ -397,8 +398,9 @@ def test_factory_authorizes_web_only_with_configured_and_caller_runtime():
         assert {"web_search", "web_fetch"}.issubset(
             runtime.context.tool_session.authorized_names
         )
-        assert not runtime.context.tool_session.is_allowed("web_search")
-        runtime.context.tool_session.search("public web evidence")
+        assert runtime.context.visible_tool_names() == frozenset(
+            {"web_search", "web_fetch"}
+        )
         assert runtime.context.tool_session.is_allowed("web_search")
     finally:
         request_context.close()
@@ -501,9 +503,7 @@ def test_trusted_router_can_activate_a_pinned_skill_before_graph_creation():
 
     assert runtime.context.skill_session.active.name == "knowledge-base"
     assert runtime.context.skill_session.active.source == "router"
-    assert runtime.context.visible_tool_names() == frozenset(
-        {"describe_skill", "search_knowledge_base", "tool_search"}
-    )
+    assert runtime.context.visible_tool_names() == frozenset({"search_knowledge_base"})
 
 
 def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
@@ -743,7 +743,7 @@ async def test_slash_skill_activates_before_first_model_call_and_denies_forged_w
     assert "tool.denied" in {event["stage"] for event in result.runtime_trace}
 
 
-async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
+async def test_tool_search_remains_available_without_an_active_skill(
     tmp_path: Path,
 ):
     sql_calls: list[str] = []
@@ -766,17 +766,8 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
                 ],
             ),
             AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "analysis_query",
-                        "args": {"query": "select count(*) from orders"},
-                        "id": "call-sql-query",
-                        "type": "tool_call",
-                    }
-                ],
+                content="Deferred SQL schema discovered",
             ),
-            AIMessage(content="SQL completed"),
         ]
     )
     factory = AgentRuntimeFactory(
@@ -796,12 +787,12 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
     )
     try:
         result = await runtime.ainvoke(
-            AgentRuntimeInput(history=[], user_text="/analysis\nCount the orders")
+            AgentRuntimeInput(history=[], user_text="Count the orders")
         )
     finally:
         request_context.close()
 
-    assert result.content == "SQL completed"
+    assert result.content == "Deferred SQL schema discovered"
     assert model.bound_tool_names[0] == ["tool_search"]
     assert set(model.bound_tool_names[1]) == {"tool_search", "analysis_query"}
     search_results = [
@@ -817,8 +808,9 @@ async def test_tool_search_reveals_deferred_schema_then_executes_real_adapter(
         "schemas_available": True,
     }
     assert "input_schema" not in str(search_results[0].content)
-    assert sql_calls == ["select count(*) from orders"]
+    assert sql_calls == []
     assert runtime.context.tool_session.is_allowed("analysis_query")
+    assert runtime.context.skill_session.active is None
     assert "tool.denied" not in {event["stage"] for event in result.runtime_trace}
 
 
@@ -872,6 +864,7 @@ async def test_describe_skill_returns_only_activation_acknowledgement():
     payload = json.loads(str(tool_results[0].content))
     assert payload["data"]["activated"] is True
     assert "instructions" not in payload["data"]
+    assert model.bound_tool_names[1] == ["search_knowledge_base"]
     next_message_text = "\n".join(_message_texts(model.received_messages[1]))
     assert next_message_text.count("# Knowledge Base") == 1
     assert '<skill_catalog state="omitted" reason="active-skill" />' in next_message_text
@@ -892,9 +885,9 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
                 content="",
                 tool_calls=[
                     {
-                        "name": "tool_search",
-                        "args": {"query": "SQL", "limit": 5},
-                        "id": "call-first-search",
+                        "name": "analysis_query",
+                        "args": {"query": "select count(*) from orders"},
+                        "id": "call-first-query",
                         "type": "tool_call",
                     }
                 ],
@@ -944,7 +937,7 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
     assert second_result.content == "second complete"
     assert first_runtime.context.skill_session.active.name == "analysis"
     assert first_runtime.context.tool_session.is_allowed("analysis_query")
-    assert "analysis_query" in first_model.bound_tool_names[-1]
+    assert first_model.bound_tool_names[0] == ["analysis_query"]
 
     assert second_runtime.context.skill_session.active is None
     assert not second_runtime.context.tool_session.is_allowed("analysis_query")
@@ -956,4 +949,4 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
         '<active_skill state="inactive" />' in text
         for text in _message_texts(second_model.received_messages[0])
     )
-    assert sql_calls == []
+    assert sql_calls == ["select count(*) from orders"]
