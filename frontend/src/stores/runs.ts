@@ -347,12 +347,8 @@ export const useRunsStore = defineStore('runs', {
       return response;
     },
 
-    async replay(runId: string, token?: string): Promise<RunEventState> {
-      let current = this.byId[runId];
-      if (!current) {
-        const run = await this.get(runId, token);
-        current = this.ensure(run.id, run.thread_id);
-      }
+    async replay(runId: string, threadId: string, token?: string): Promise<RunEventState> {
+      let current = this.ensure(runId, threadId);
       if (current.lastSequence === 0 && current.terminal) {
         const idempotencyKey = current.idempotencyKey;
         const transportStatus = current.transportStatus;

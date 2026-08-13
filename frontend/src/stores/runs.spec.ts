@@ -452,13 +452,13 @@ describe('durable runs store', () => {
 
   it('replays durable events and can explicitly disconnect a local stream', async () => {
     const store = useRunsStore();
-    vi.mocked(getRun).mockResolvedValue(runRecord('running'));
     vi.mocked(getRunEvents).mockResolvedValue({
       events: [event(1, 'run.created', { status: 'pending' }), event(2, 'run.started')] as any,
       next_after: 2,
     });
 
-    const replayed = await store.replay('run_1', 'token');
+    const replayed = await store.replay('run_1', 'thread-1', 'token');
+    expect(getRun).not.toHaveBeenCalled();
     expect(replayed.status).toBe('running');
     expect(replayed.lastSequence).toBe(2);
 

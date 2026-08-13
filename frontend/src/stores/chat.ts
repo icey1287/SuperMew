@@ -425,7 +425,7 @@ export const useChatStore = defineStore('chat', {
       const runsStore = useRunsStore();
       const effectiveThreadId = threadId || this.threadId;
       this.attachRunProjection(runId, effectiveThreadId);
-      const run = await runsStore.replay(runId, authStore.token);
+      const run = await runsStore.replay(runId, effectiveThreadId, authStore.token);
       this.projectRunState(run);
       if (!run.terminal && run.status !== 'waiting_input') {
         void this.connectRun(runId, authStore.token);
@@ -433,23 +433,33 @@ export const useChatStore = defineStore('chat', {
       return run;
     },
 
-    async restoreRunsForThread(threadId: string) {
+    async restoreRecoverableRunsForThread(threadId: string) {
       const runsStore = useRunsStore();
-      const assistantMessages = [...this.ensureThreadMessages(threadId)]
-        .reverse()
-        .filter((message) => !message.isUser && message.runId);
-      const latestRunId = assistantMessages[0]?.runId;
+      const threadStore = useThreadStore();
+      const messages = this.ensureThreadMessages(threadId);
       const runIds = Array.from(
         new Set(
-          assistantMessages
+          messages
             .filter(
               (message) =>
-                message.runId === latestRunId ||
+                !message.isUser &&
+                message.runId &&
                 RECOVERABLE_MESSAGE_STATUSES.has(String(message.status || ''))
             )
             .map((message) => message.runId as string)
         )
       );
+      const activeRunId = threadStore.threadById(threadId)?.activeRunId;
+      if (activeRunId && !runIds.includes(activeRunId)) {
+        const activeAssistant = messages.find(
+          (message) => !message.isUser && message.runId === activeRunId
+        );
+        if (isTerminalMessage(activeAssistant)) {
+          threadStore.setRunView(threadId, null, null);
+        } else {
+          runIds.push(activeRunId);
+        }
+      }
 
       const restore = async (runId: string) => {
         try {
@@ -495,12 +505,12 @@ export const useChatStore = defineStore('chat', {
         useCapabilityStore().restoreThreadSkill(latestRunMessage?.skillName ?? null, threadId);
         this.setViewedThread(threadId, loadedMessages);
         this.mergeCachedThreadsIntoHistory();
-        await this.restoreRunsForThread(threadId);
+        await this.restoreRecoverableRunsForThread(threadId);
       } catch (error) {
         const publicError = getPublicError(error);
         this.threadLoadError = publicError.message;
         if (!cachedMessages && this.threadId === threadId) this.messages = [];
-        if (cachedMessages) await this.restoreRunsForThread(threadId);
+        if (cachedMessages) await this.restoreRecoverableRunsForThread(threadId);
         throw publicError;
       } finally {
         if (this.loadingThreadId === threadId) this.loadingThreadId = '';

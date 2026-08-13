@@ -488,6 +488,68 @@ describe('durable chat projection', () => {
     expect(chatStore.isViewingStreamingThread).toBe(false);
   });
 
+  it('clears stale active Run metadata when the newer durable Message is terminal', async () => {
+    const { chatStore, threadStore } = setupStores();
+    threadStore.threads[0].active_run_id = 'run-server';
+    threadStore.threads[0].active_run_status = 'running';
+    threadStore.threads[0].activeRunId = 'run-server';
+    threadStore.threads[0].activeRunStatus = 'running';
+    threadStore.threads[0].isStreaming = true;
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '问题', { run_id: 'run-server' }),
+        threadMessage(2, 'assistant', '完成回答', {
+          run_id: 'run-server',
+          status: 'completed',
+        }),
+      ],
+      previous_cursor: null,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    expect(threadStore.threads[0]).toMatchObject({
+      activeRunId: null,
+      activeRunStatus: null,
+      isStreaming: false,
+    });
+    expect(chatStore.isInputLocked).toBe(false);
+    expect(getRunEvents).not.toHaveBeenCalled();
+  });
+
+  it('restores an active Run missing from the latest Message page', async () => {
+    const { chatStore, threadStore } = setupStores();
+    threadStore.threads[0].active_run_id = 'run-server';
+    threadStore.threads[0].active_run_status = 'running';
+    threadStore.threads[0].activeRunId = 'run-server';
+    threadStore.threads[0].activeRunStatus = 'running';
+    threadStore.threads[0].isStreaming = true;
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [],
+      previous_cursor: null,
+    });
+    vi.mocked(getRunEvents).mockResolvedValue({
+      events: [
+        event('run-server', 'thread-1', 1, 'run.created', { status: 'pending' }),
+        event('run-server', 'thread-1', 2, 'run.started'),
+      ],
+      next_after: 2,
+    });
+    vi.mocked(connectRunEventStream).mockResolvedValue(2);
+
+    await chatStore.loadThread('thread-1');
+
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledWith(
+      'run-server',
+      'test-token',
+      expect.objectContaining({ after: 0 })
+    );
+    expect(connectRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-server', threadId: 'thread-1', after: 2 })
+    );
+  });
+
   it('restores the persisted Skill when reopening a Thread', async () => {
     const { chatStore, capabilityStore } = setupStores();
     installCapabilityCatalog();
@@ -536,30 +598,15 @@ describe('durable chat projection', () => {
       ],
       previous_cursor: null,
     });
-    vi.mocked(getRun).mockResolvedValue(runRecord('run-general', 'thread-1', 'succeeded'));
-    vi.mocked(getRunEvents).mockResolvedValue({
-      events: [
-        event('run-general', 'thread-1', 1, 'run.created', {
-          status: 'pending',
-          user_message_id: 3,
-          assistant_message_id: 4,
-        }),
-        event('run-general', 'thread-1', 2, 'message.completed', {
-          content: '最新通用回答',
-          status: 'completed',
-        }),
-        event('run-general', 'thread-1', 3, 'run.completed'),
-      ],
-      next_after: 3,
-    });
-
     await chatStore.loadThread('thread-1');
 
     expect(capabilityStore.selectedSkillName).toBeNull();
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).not.toHaveBeenCalled();
   });
 
   it.each(['completed', 'failed', 'cancelled'] as const)(
-    'keeps a persisted %s Message authoritative when Run lookup transport fails',
+    'loads a persisted %s Message without querying its terminal Run',
     async (messageStatus) => {
       const runId = `run-${messageStatus}`;
       const content = `${messageStatus} 持久正文`;
@@ -574,8 +621,6 @@ describe('durable chat projection', () => {
         ],
         previous_cursor: null,
       });
-      vi.mocked(getRun).mockRejectedValue(new TypeError('offline lookup'));
-
       await chatStore.loadThread('thread-1');
 
       expect(chatStore.messages[1]).toMatchObject({
@@ -584,19 +629,17 @@ describe('durable chat projection', () => {
         text: content,
       });
       expect(runsStore.byId[runId]).toBeUndefined();
+      expect(getRun).not.toHaveBeenCalled();
+      expect(getRunEvents).not.toHaveBeenCalled();
     }
   );
 
-  it.each([
-    ['completed', 'succeeded'],
-    ['failed', 'failed'],
-    ['cancelled', 'cancelled'],
-  ] as const)(
-    'keeps a persisted %s Message authoritative when Event Journal transport fails',
-    async (messageStatus, runStatus) => {
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'keeps a persisted %s Message authoritative when on-demand Event replay fails',
+    async (messageStatus) => {
       const runId = `run-${messageStatus}`;
       const content = `${messageStatus} 持久正文`;
-      const { chatStore, runsStore } = setupStores();
+      const { chatStore } = setupStores();
       vi.mocked(getThreadMessages).mockResolvedValue({
         messages: [
           threadMessage(1, 'user', '问题', { run_id: runId }),
@@ -607,21 +650,24 @@ describe('durable chat projection', () => {
         ],
         previous_cursor: null,
       });
-      vi.mocked(getRun).mockResolvedValue(runRecord(runId, 'thread-1', runStatus));
       vi.mocked(getRunEvents).mockRejectedValue(new TypeError('offline journal'));
 
       await chatStore.loadThread('thread-1');
+      await expect(chatStore.restoreRunProjection(runId, 'thread-1')).rejects.toThrow(
+        'offline journal'
+      );
 
       expect(chatStore.messages[1]).toMatchObject({
         status: messageStatus,
         isThinking: false,
         text: content,
       });
-      expect(runsStore.byId[runId]?.transportError?.code).toBe('NETWORK_UNAVAILABLE');
+      expect(getRun).not.toHaveBeenCalled();
+      expect(getRunEvents).toHaveBeenCalledOnce();
     }
   );
 
-  it('replays terminal Run Events so timeline and Artifacts survive a reload', async () => {
+  it('loads terminal Run timeline and Artifacts on demand without a Run metadata hop', async () => {
     const { chatStore } = setupStores();
     vi.mocked(getThreadMessages).mockResolvedValue({
       messages: [
@@ -633,7 +679,6 @@ describe('durable chat projection', () => {
       ],
       previous_cursor: null,
     });
-    vi.mocked(getRun).mockResolvedValue(runRecord('run-terminal', 'thread-1', 'succeeded'));
     vi.mocked(getRunEvents).mockResolvedValue({
       events: [
         event('run-terminal', 'thread-1', 1, 'run.created', { status: 'pending' }),
@@ -668,7 +713,15 @@ describe('durable chat projection', () => {
 
     await chatStore.loadThread('thread-1');
 
-    const assistant = chatStore.messages.find((message) => !message.isUser);
+    let assistant = chatStore.messages.find((message) => !message.isUser);
+    expect(assistant?.runTimeline).toBeUndefined();
+    expect(assistant?.artifacts).toBeUndefined();
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).not.toHaveBeenCalled();
+
+    await chatStore.restoreRunProjection('run-terminal', 'thread-1');
+
+    assistant = chatStore.messages.find((message) => !message.isUser);
     expect(assistant?.runTimeline).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -681,6 +734,8 @@ describe('durable chat projection', () => {
     expect(assistant?.artifacts).toEqual([
       expect.objectContaining({ artifactId: 'art_terminal', name: 'report.json' }),
     ]);
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledOnce();
     expect(connectRunEventStream).not.toHaveBeenCalled();
   });
 
@@ -959,7 +1014,6 @@ describe('durable chat projection', () => {
       ],
       previous_cursor: null,
     });
-    vi.mocked(getRun).mockResolvedValue(runRecord('run_1', 'thread-1', 'waiting_input'));
     vi.mocked(getRunEvents).mockResolvedValue({
       events: [
         event('run_1', 'thread-1', 1, 'run.created', {
@@ -980,7 +1034,7 @@ describe('durable chat projection', () => {
 
     await chatStore.loadThread('thread-1');
 
-    expect(getRun).toHaveBeenCalledWith('run_1', 'test-token');
+    expect(getRun).not.toHaveBeenCalled();
     expect(getRunEvents).toHaveBeenCalledWith(
       'run_1',
       'test-token',
