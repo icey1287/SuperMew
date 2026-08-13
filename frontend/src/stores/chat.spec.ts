@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearAuthSession, installAuthSession } from '@/auth/session';
-import { connectRunEventStream } from '@/events/runEventStream';
+import { connectRunEventStream, createRunEventStream } from '@/events/runEventStream';
 import { cancelRun, createRun, getRun, getRunEvents, resumeRun } from '@/runs/runClient';
 import { createThread, deleteThread, getThreadMessages } from '@/threads/threadClient';
 import type { RunEventType, RunEventV1 } from '@/types/chat';
@@ -22,6 +22,7 @@ vi.mock('@/runs/runClient', () => ({
 
 vi.mock('@/events/runEventStream', () => ({
   connectRunEventStream: vi.fn(),
+  createRunEventStream: vi.fn(),
 }));
 
 vi.mock('@/threads/threadClient', () => ({
@@ -32,6 +33,7 @@ vi.mock('@/threads/threadClient', () => ({
 }));
 
 type StreamOptions = Parameters<typeof connectRunEventStream>[0];
+type CreateStreamOptions = Parameters<typeof createRunEventStream>[0];
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -81,14 +83,6 @@ function runRecord(runId = 'run_1', threadId = 'thread-1', status = 'pending') {
     created_at: '2026-07-16T00:00:00Z',
     updated_at: '2026-07-16T00:00:00Z',
   } as any;
-}
-
-function createResponse(runId = 'run_1', threadId = 'thread-1') {
-  return {
-    run: runRecord(runId, threadId),
-    created: true,
-    thread_version: 2,
-  };
 }
 
 function threadDetail(threadId = 'thread-1') {
@@ -205,13 +199,34 @@ function installCapabilityCatalog() {
 function installControlledStreams() {
   const connections = new Map<
     string,
-    { options: StreamOptions; result: ReturnType<typeof deferred<number>> }
+    {
+      options: StreamOptions | CreateStreamOptions;
+      result: ReturnType<typeof deferred<number>>;
+      create: boolean;
+    }
   >();
   vi.mocked(connectRunEventStream).mockImplementation((options) => {
     const result = deferred<number>();
-    connections.set(options.runId, { options, result });
+    connections.set(options.runId, { options, result, create: false });
     options.onOpen?.(options.after || 0);
     return result.promise;
+  });
+  vi.mocked(createRunEventStream).mockImplementation(async (options) => {
+    const runId =
+      options.threadId === 'thread-2' || options.request.approved_tools?.includes('sandbox_execute')
+        ? 'run_2'
+        : 'run_1';
+    const reservation = {
+      runId,
+      threadId: options.threadId,
+      threadVersion: 2,
+    };
+    const result = deferred<number>();
+    connections.set(runId, { options, result, create: true });
+    return {
+      reservation,
+      connect: () => result.promise,
+    };
   });
   return {
     connections,
@@ -261,7 +276,6 @@ describe('durable chat projection', () => {
   it('creates a server-owned Thread before the first durable Run', async () => {
     const streams = installControlledStreams();
     vi.mocked(createThread).mockResolvedValue(threadDetail('thread-server'));
-    vi.mocked(createRun).mockResolvedValue(createResponse('run_1', 'thread-server'));
     const { chatStore } = setupStores('');
     chatStore.userInput = '第一条问题';
 
@@ -269,10 +283,12 @@ describe('durable chat projection', () => {
     await flushPromises();
 
     expect(createThread).toHaveBeenCalledWith({ title: '第一条问题' });
-    expect(createRun).toHaveBeenCalledWith(
-      'thread-server',
-      expect.objectContaining({ expected_thread_version: 0 }),
-      'test-token'
+    expect(createRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-server',
+        request: expect.objectContaining({ expected_thread_version: 0 }),
+        token: 'test-token',
+      })
     );
     expect(chatStore.threadId).toBe('thread-server');
 
@@ -303,7 +319,6 @@ describe('durable chat projection', () => {
 
   it('keeps the user-facing prompt clean while activating Web Research for the Run', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun).mockResolvedValue(createResponse('run_1', 'thread-1'));
     const { chatStore } = setupStores();
     const capabilityStore = installCapabilityCatalog();
     capabilityStore.selectSkill('web-research');
@@ -312,13 +327,15 @@ describe('durable chat projection', () => {
     const sending = chatStore.handleSend();
     await flushPromises();
 
-    expect(createRun).toHaveBeenCalledWith(
-      'thread-1',
+    expect(createRunEventStream).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: '/web-research\n核验今天的公开发布信息',
-        approved_tools: [],
-      }),
-      'test-token'
+        threadId: 'thread-1',
+        request: expect.objectContaining({
+          message: '/web-research\n核验今天的公开发布信息',
+          approved_tools: [],
+        }),
+        token: 'test-token',
+      })
     );
     expect(chatStore.messages[0]).toMatchObject({
       text: '核验今天的公开发布信息',
@@ -337,7 +354,6 @@ describe('durable chat projection', () => {
 
   it('opens a real pre-Run approval flow before sending Sandbox source', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun).mockResolvedValue(createResponse('run_2', 'thread-1'));
     const { chatStore } = setupStores();
     const capabilityStore = installCapabilityCatalog();
     capabilityStore.selectSkill('sandbox');
@@ -347,19 +363,21 @@ describe('durable chat projection', () => {
     await chatStore.handleSend();
 
     expect(capabilityStore.approvalOpen).toBe(true);
-    expect(createRun).not.toHaveBeenCalled();
+    expect(createRunEventStream).not.toHaveBeenCalled();
 
     capabilityStore.confirmPendingApproval();
     const sending = chatStore.handleSend({ approvalConfirmed: true });
     await flushPromises();
 
-    expect(createRun).toHaveBeenCalledWith(
-      'thread-1',
+    expect(createRunEventStream).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining('"source": "print(6 * 7)"'),
-        approved_tools: ['sandbox_execute'],
-      }),
-      'test-token'
+        threadId: 'thread-1',
+        request: expect.objectContaining({
+          message: expect.stringContaining('"source": "print(6 * 7)"'),
+          approved_tools: ['sandbox_execute'],
+        }),
+        token: 'test-token',
+      })
     );
     expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
 
@@ -374,7 +392,7 @@ describe('durable chat projection', () => {
   });
 
   it('restores an approved Sandbox draft when Run creation fails before reservation', async () => {
-    vi.mocked(createRun).mockRejectedValue({
+    vi.mocked(createRunEventStream).mockRejectedValue({
       code: 'SERVICE_UNAVAILABLE',
       message: '运行服务暂不可用',
       retryable: true,
@@ -412,7 +430,7 @@ describe('durable chat projection', () => {
 
     await chatStore.handleSend({ approvalConfirmed: true });
 
-    expect(createRun).not.toHaveBeenCalled();
+    expect(createRunEventStream).not.toHaveBeenCalled();
     expect(chatStore.userInput).toBe('print("new thread")');
     expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
     expect(alert).toHaveBeenCalledWith('Thread 服务暂不可用');
@@ -668,7 +686,6 @@ describe('durable chat projection', () => {
 
   it('creates optimistic messages, reserves a durable Run, and projects final authority', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun).mockResolvedValue(createResponse());
     const { chatStore, threadStore } = setupStores();
     chatStore.userInput = '帮我总结文档';
 
@@ -677,29 +694,33 @@ describe('durable chat projection', () => {
 
     expect(chatStore.messages).toHaveLength(2);
     expect(chatStore.messages[0]).toMatchObject({
-      id: 11,
       runId: 'run_1',
       text: '帮我总结文档',
       isUser: true,
     });
     expect(chatStore.messages[1]).toMatchObject({
-      id: 12,
       runId: 'run_1',
       isThinking: true,
     });
+    expect(chatStore.messages[0].id).toBeUndefined();
+    expect(chatStore.messages[1].id).toBeUndefined();
     expect(threadStore.threads[0]).toMatchObject({
       thread_id: 'thread-1',
       isStreaming: true,
     });
-    expect(createRun).toHaveBeenCalledWith(
-      'thread-1',
+    expect(createRun).not.toHaveBeenCalled();
+    expect(connectRunEventStream).not.toHaveBeenCalled();
+    expect(createRunEventStream).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: '帮我总结文档',
-        multitask_strategy: 'reject',
-        on_disconnect: 'continue',
-        approved_tools: [],
-      }),
-      'test-token'
+        threadId: 'thread-1',
+        request: expect.objectContaining({
+          message: '帮我总结文档',
+          multitask_strategy: 'reject',
+          on_disconnect: 'continue',
+          approved_tools: [],
+        }),
+        token: 'test-token',
+      })
     );
 
     streams.emit(
@@ -710,6 +731,8 @@ describe('durable chat projection', () => {
         assistant_message_id: 12,
       })
     );
+    expect(chatStore.messages[0].id).toBe(11);
+    expect(chatStore.messages[1].id).toBe(12);
     streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
     streams.emit(
       'run_1',
@@ -740,7 +763,6 @@ describe('durable chat projection', () => {
 
   it('keeps Event projection on the originating Thread after navigation', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun).mockResolvedValue(createResponse());
     const { chatStore } = setupStores();
     chatStore.userInput = '原会话问题';
     const sending = chatStore.handleSend();
@@ -787,7 +809,6 @@ describe('durable chat projection', () => {
 
   it('resumes HITL on the same Run and same assistant message', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun).mockResolvedValue(createResponse());
     vi.mocked(resumeRun).mockResolvedValue({
       run: runRecord('run_1', 'thread-1', 'pending'),
       checkpoint_id: 'checkpoint_1',
@@ -881,7 +902,6 @@ describe('durable chat projection', () => {
 
   it('requests cancel without aborting SSE and waits for the authoritative terminal', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun).mockResolvedValue(createResponse());
     vi.mocked(cancelRun).mockResolvedValue(runRecord('run_1', 'thread-1', 'cancelling'));
     const { chatStore } = setupStores();
     chatStore.userInput = '需要停止的问题';
@@ -977,9 +997,6 @@ describe('durable chat projection', () => {
 
   it('allows different Threads to run concurrently without cross-writing', async () => {
     const streams = installControlledStreams();
-    vi.mocked(createRun)
-      .mockResolvedValueOnce(createResponse('run_1', 'thread-1'))
-      .mockResolvedValueOnce(createResponse('run_2', 'thread-2'));
     const { chatStore } = setupStores();
     chatStore.userInput = '线程一';
     const first = chatStore.handleSend();
@@ -991,7 +1008,8 @@ describe('durable chat projection', () => {
     const second = chatStore.handleSend();
     await flushPromises();
 
-    expect(createRun).toHaveBeenCalledTimes(2);
+    expect(createRun).not.toHaveBeenCalled();
+    expect(createRunEventStream).toHaveBeenCalledTimes(2);
     expect(chatStore.messagesByThread['thread-1'][0].text).toBe('线程一');
     expect(chatStore.messagesByThread['thread-2'][0].text).toBe('线程二');
 
@@ -1052,7 +1070,7 @@ describe('durable chat projection', () => {
   });
 
   it('renders a safe create failure without exposing transport details', async () => {
-    vi.mocked(createRun).mockRejectedValue(new TypeError('secret socket detail'));
+    vi.mocked(createRunEventStream).mockRejectedValue(new TypeError('secret socket detail'));
     const { chatStore } = setupStores();
     chatStore.userInput = '触发故障';
 
@@ -1088,20 +1106,29 @@ describe('durable chat projection', () => {
   });
 
   it('keeps Message lifecycle authoritative when only Run transport fails', async () => {
-    vi.mocked(createRun).mockResolvedValue(createResponse());
-    vi.mocked(connectRunEventStream).mockRejectedValue(
-      Object.assign(new Error('offline'), {
-        code: 'NETWORK_UNAVAILABLE',
-        retryable: true,
-      })
-    );
+    vi.mocked(createRunEventStream).mockImplementation(async () => {
+      const reservation = {
+        runId: 'run_1',
+        threadId: 'thread-1',
+        threadVersion: 2,
+      };
+      return {
+        reservation,
+        connect: async () => {
+          throw Object.assign(new Error('offline'), {
+            code: 'NETWORK_UNAVAILABLE',
+            retryable: true,
+          });
+        },
+      };
+    });
     const { chatStore, runsStore } = setupStores();
     chatStore.userInput = '继续执行';
 
     await chatStore.handleSend();
 
     expect(runsStore.byId.run_1).toMatchObject({
-      status: 'pending',
+      status: 'creating',
       terminal: false,
       transportStatus: 'closed',
     });

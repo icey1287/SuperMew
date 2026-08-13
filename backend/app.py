@@ -193,6 +193,11 @@ def create_app() -> FastAPI:
         allow_credentials=settings.security.cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[
+            "X-Request-ID",
+            "X-Run-ID",
+            "X-Thread-Version",
+        ],
     )
 
     @app.middleware("http")

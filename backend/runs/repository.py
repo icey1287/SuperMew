@@ -30,7 +30,7 @@ from backend.db.models import (
     User,
     utcnow,
 )
-from backend.events.generated.run_event_v1 import RunEventType
+from backend.events.generated.run_event_v1 import RunEventType, RunEventV1
 from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
 from backend.model_control import (
@@ -88,6 +88,7 @@ class RunReservation:
     run: RunRecord
     created: bool
     thread_version: int
+    created_event: RunEventV1 | None = None
 
 
 @dataclass(frozen=True)
@@ -507,7 +508,7 @@ class RunRepository:
                 run.user_message_id = user_message.id
                 run.assistant_message_id = assistant_message.id
                 run.fencing_token = thread.version
-                append_event_in_session(
+                created_event = append_event_in_session(
                     db,
                     run=run,
                     thread_id=thread_id,
@@ -518,12 +519,13 @@ class RunRepository:
                         "assistant_message_id": assistant_message.id,
                         "multitask_strategy": run.multitask_strategy,
                     },
-                )
+                ).event
                 db.flush()
                 return RunReservation(
                     run=self._record(run, thread_id),
                     created=True,
                     thread_version=thread.version,
+                    created_event=created_event,
                 )
         except IntegrityError as exc:
             db.rollback()

@@ -8,7 +8,11 @@ import {
   type RunTransportStatus,
   type RuntimeRunEvent,
 } from '@/events/runEventReducer';
-import { connectRunEventStream } from '@/events/runEventStream';
+import {
+  connectRunEventStream,
+  createRunEventStream,
+  type CreatedRunEventStream,
+} from '@/events/runEventStream';
 import { useAuthStore } from '@/stores/auth';
 import {
   cancelRun,
@@ -24,6 +28,7 @@ import type {
   RunCreateResponse,
   RunRecord,
   RunResumeResponse,
+  RunStreamReservation,
 } from '@/types/runs';
 import { normalizePublicErrorInfo } from '@/types/publicError';
 import { getPublicError } from '@/utils/api';
@@ -39,6 +44,12 @@ interface PendingResumeAttempt {
   hitlToken: string;
   answer: string;
   idempotencyKey: string;
+}
+
+interface StartedRun {
+  reservation: RunStreamReservation;
+  idempotencyKey: string;
+  state: RunEventState;
 }
 
 const streamControllers = new WeakMap<object, Map<string, AbortController>>();
@@ -83,6 +94,36 @@ function lifecycleStatus(value: unknown): RunLifecycleStatus | null {
 function authToken(explicit?: string): string {
   if (explicit !== undefined) return explicit;
   return useAuthStore().token;
+}
+
+function beginCreateAttempt(
+  pendingCreates: Record<string, PendingCreateAttempt>,
+  command: CreateRunCommand
+) {
+  const existing = pendingCreates[command.threadId];
+  if (existing && existing.message !== command.message) {
+    throw getPublicError({ code: 'CONFLICT', retryable: false, category: 'run' });
+  }
+  if (existing && command.idempotencyKey && command.idempotencyKey !== existing.idempotencyKey) {
+    throw getPublicError({ code: 'CONFLICT', retryable: false, category: 'run' });
+  }
+  const idempotencyKey =
+    existing?.idempotencyKey || command.idempotencyKey || createIdempotencyKey('run');
+  pendingCreates[command.threadId] = {
+    message: command.message,
+    idempotencyKey,
+  };
+  return {
+    idempotencyKey,
+    request: {
+      message: command.message,
+      idempotency_key: idempotencyKey,
+      expected_thread_version: command.expectedThreadVersion,
+      multitask_strategy: command.multitaskStrategy || 'reject',
+      on_disconnect: command.onDisconnect || 'continue',
+      approved_tools: command.approvedTools || [],
+    },
+  };
 }
 
 export const useRunsStore = defineStore('runs', {
@@ -196,45 +237,10 @@ export const useRunsStore = defineStore('runs', {
       idempotencyKey: string;
       state: RunEventState;
     }> {
-      const existing = this.pendingCreates[command.threadId];
-      if (existing && existing.message !== command.message) {
-        throw getPublicError({
-          code: 'CONFLICT',
-          retryable: false,
-          category: 'run',
-        });
-      }
-      if (
-        existing &&
-        command.idempotencyKey &&
-        command.idempotencyKey !== existing.idempotencyKey
-      ) {
-        throw getPublicError({
-          code: 'CONFLICT',
-          retryable: false,
-          category: 'run',
-        });
-      }
-      const idempotencyKey =
-        existing?.idempotencyKey || command.idempotencyKey || createIdempotencyKey('run');
-      this.pendingCreates[command.threadId] = {
-        message: command.message,
-        idempotencyKey,
-      };
+      const { idempotencyKey, request } = beginCreateAttempt(this.pendingCreates, command);
 
       try {
-        const response = await createRun(
-          command.threadId,
-          {
-            message: command.message,
-            idempotency_key: idempotencyKey,
-            expected_thread_version: command.expectedThreadVersion,
-            multitask_strategy: command.multitaskStrategy || 'reject',
-            on_disconnect: command.onDisconnect || 'continue',
-            approved_tools: command.approvedTools || [],
-          },
-          command.token
-        );
+        const response = await createRun(command.threadId, request, command.token);
         delete this.pendingCreates[command.threadId];
         const state = this.ensure(response.run.id, response.run.thread_id);
         state.idempotencyKey = idempotencyKey;
@@ -245,10 +251,94 @@ export const useRunsStore = defineStore('runs', {
       }
     },
 
-    async start(command: CreateRunCommand): Promise<RunCreateResponse> {
-      const created = await this.create(command);
-      await this.connect(created.response.run.id, command.token);
-      return created.response;
+    async start(
+      command: CreateRunCommand,
+      onReserved?: (started: StartedRun) => void
+    ): Promise<StartedRun> {
+      const { idempotencyKey, request } = beginCreateAttempt(this.pendingCreates, command);
+      const controller = new AbortController();
+      let streamToken = command.token;
+      let activeRunId: string | null = null;
+      let openedStream: CreatedRunEventStream;
+
+      try {
+        const openStream = () =>
+          createRunEventStream({
+            threadId: command.threadId,
+            request,
+            token: streamToken,
+            signal: controller.signal,
+            onEvent: (event) => this.apply(event),
+            onOpen: () => {
+              if (activeRunId) this.setTransport(activeRunId, 'open');
+            },
+            onReconnect: (attempt, _cursor, error) => {
+              if (activeRunId) this.setTransport(activeRunId, 'reconnecting', attempt, error);
+            },
+            pauseWhen: (event) => event.type === 'hitl.required',
+          });
+        try {
+          openedStream = await openStream();
+        } catch (error) {
+          const publicError = getPublicError(error);
+          if (publicError.code !== 'AUTHENTICATION_REQUIRED') throw publicError;
+          try {
+            streamToken = (await refreshAuthSession()).access_token;
+          } catch {
+            expireAuthSession(streamToken);
+            throw publicError;
+          }
+          try {
+            openedStream = await openStream();
+          } catch (retryError) {
+            const retryPublicError = getPublicError(retryError);
+            if (retryPublicError.code === 'AUTHENTICATION_REQUIRED') {
+              expireAuthSession(streamToken);
+            }
+            throw retryPublicError;
+          }
+        }
+
+        delete this.pendingCreates[command.threadId];
+        const { reservation } = openedStream;
+        activeRunId = reservation.runId;
+        const state = this.ensure(reservation.runId, reservation.threadId);
+        state.idempotencyKey = idempotencyKey;
+        state.status = 'creating';
+        const started = { reservation, idempotencyKey, state };
+        const controllers = controllersFor(this);
+        controllers.get(reservation.runId)?.abort();
+        controllers.set(reservation.runId, controller);
+        this.setTransport(reservation.runId, 'connecting');
+
+        try {
+          onReserved?.(started);
+          await openedStream.connect();
+        } catch (error) {
+          const publicError = getPublicError(error);
+          if (publicError.code === 'AUTHENTICATION_REQUIRED') {
+            try {
+              await this.connect(reservation.runId, streamToken);
+            } catch {
+              // connect() owns refreshed-token expiry and transport error projection.
+            }
+            return started;
+          }
+          this.setTransport(reservation.runId, 'closed', 0, publicError);
+          return started;
+        } finally {
+          if (controllers.get(reservation.runId) === controller) {
+            controllers.delete(reservation.runId);
+            const current = this.byId[reservation.runId];
+            if (current && current.transportStatus !== 'closed') {
+              this.setTransport(reservation.runId, 'closed');
+            }
+          }
+        }
+        return started;
+      } catch (error) {
+        throw getPublicError(error);
+      }
     },
 
     async get(runId: string, token?: string): Promise<RunRecord> {

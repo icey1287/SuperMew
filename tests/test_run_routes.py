@@ -50,10 +50,18 @@ def _run_record(
 
 
 def _reservation(*, run_id: str = "run_123") -> RunReservation:
+    created_event = new_run_event(
+        sequence=1,
+        run_id=run_id,
+        thread_id="thread-1",
+        event_type="run.created",
+        data={"status": "queued"},
+    )
     return RunReservation(
         run=_run_record(run_id=run_id),
         created=True,
         thread_version=2,
+        created_event=created_event,
     )
 
 
@@ -355,8 +363,34 @@ def test_create_run_stream_returns_reserved_run_identity() -> None:
 
     assert response.status_code == 200
     assert response.headers["x-run-id"] == "run_created"
+    assert response.headers["x-thread-version"] == "2"
     assert response.headers["content-type"].startswith("text/event-stream")
     assert reserve_run.await_args.kwargs["user"] is user
     assert reserve_run.await_args.kwargs["thread_id"] == "thread-1"
     assert reserve_run.await_args.kwargs["request"].message == "run code"
     assert subscriptions == [{"username": "alice", "run_id": "run_created", "after": 9}]
+
+
+def test_create_run_stream_emits_the_reserved_event_without_reading_it_back() -> None:
+    app, _ = _app()
+    reserve_run = AsyncMock(return_value=_reservation(run_id="run_created"))
+    subscriptions: list[dict[str, object]] = []
+
+    async def subscribe(*, username: str, run_id: str, after: int):
+        subscriptions.append({"username": username, "run_id": run_id, "after": after})
+        if False:
+            yield None
+
+    with (
+        patch.object(routes, "_reserve_run", reserve_run),
+        patch.object(routes.event_bus, "subscribe", subscribe),
+        TestClient(app) as client,
+    ):
+        response = client.post(
+            "/v1/threads/thread-1/runs/stream",
+            json=_run_request(),
+        )
+
+    assert "event: run.created" in response.text
+    assert '"sequence":1' in response.text
+    assert subscriptions == [{"username": "alice", "run_id": "run_created", "after": 1}]

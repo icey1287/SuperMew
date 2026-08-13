@@ -744,28 +744,28 @@ export const useChatStore = defineStore('chat', {
 
         try {
           const thread = threadStore.threads.find((item) => item.thread_id === threadId);
-          const createPromise = runsStore.create({
-            threadId,
-            message: executionMessage.message,
-            token: authStore.token,
-            expectedThreadVersion: thread?.version,
-            multitaskStrategy: 'reject',
-            onDisconnect: 'continue',
-            approvedTools: executionMessage.approvedTools,
-          });
+          const startPromise = runsStore.start(
+            {
+              threadId,
+              message: executionMessage.message,
+              token: authStore.token,
+              expectedThreadVersion: thread?.version,
+              multitaskStrategy: 'reject',
+              onDisconnect: 'continue',
+              approvedTools: executionMessage.approvedTools,
+            },
+            ({ reservation, state }) => {
+              capabilityStore.clearApprovalConfirmation();
+              const runId = reservation.runId;
+              userMessage.runId = runId;
+              assistantMessage.runId = runId;
+              if (thread) thread.version = reservation.threadVersion;
+              this.attachRunProjection(runId, threadId);
+              this.projectRunState(state);
+            }
+          );
           this.mergeCachedThreadsIntoHistory();
-          const created = await createPromise;
-          capabilityStore.clearApprovalConfirmation();
-          const runId = created.response.run.id;
-          userMessage.id = created.response.run.user_message_id;
-          userMessage.runId = runId;
-          assistantMessage.id = created.response.run.assistant_message_id;
-          assistantMessage.runId = runId;
-          assistantMessage.status = created.response.run.status;
-          if (thread) thread.version = created.response.thread_version;
-          this.attachRunProjection(runId, threadId);
-          this.projectRunState(created.state);
-          await this.connectRun(runId, authStore.token);
+          await startPromise;
         } catch (error) {
           const publicError = getPublicError(error);
           if (options.approvalConfirmed && !assistantMessage.runId) {

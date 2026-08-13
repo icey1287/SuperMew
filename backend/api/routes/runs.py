@@ -5,6 +5,7 @@ from starlette.concurrency import run_in_threadpool
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import User
 from backend.events.bus import event_bus
+from backend.events.generated.run_event_v1 import RunEventV1
 from backend.events.journal import journal
 from backend.events.sse import format_sse_event, format_sse_heartbeat
 from backend.infra.auth import get_current_user
@@ -97,26 +98,43 @@ def _event_cursor(after: int, last_event_id: str | None) -> int:
         ) from exc
 
 
-def _stream_response(*, username: str, run_id: str, after: int) -> StreamingResponse:
+def _stream_response(
+    *,
+    username: str,
+    run_id: str,
+    after: int,
+    reservation_headers: dict[str, str] | None = None,
+    initial_events: tuple[RunEventV1, ...] = (),
+) -> StreamingResponse:
     async def generate():
+        cursor = after
+        for event in initial_events:
+            if event.sequence <= cursor:
+                continue
+            yield format_sse_event(event)
+            cursor = event.sequence
         async for event in event_bus.subscribe(
             username=username,
             run_id=run_id,
-            after=after,
+            after=cursor,
         ):
             yield (
                 format_sse_event(event) if event is not None else format_sse_heartbeat()
             )
 
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "X-Run-ID": run_id,
+    }
+    if reservation_headers:
+        headers.update(reservation_headers)
+
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "X-Run-ID": run_id,
-        },
+        headers=headers,
     )
 
 
@@ -254,4 +272,8 @@ async def create_run_stream(
         username=current_user.username,
         run_id=reservation.run.id,
         after=_event_cursor(0, last_event_id),
+        reservation_headers={
+            "X-Thread-Version": str(reservation.thread_version),
+        },
+        initial_events=(reservation.created_event,) if reservation.created_event else (),
     )

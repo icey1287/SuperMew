@@ -1,5 +1,6 @@
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
 import { isThreadId, requireThreadId } from '@/threads/threadId';
+import type { RunCreateRequest, RunStreamReservation } from '@/types/runs';
 import { getPublicError, getPublicErrorFromResponse, type PublicRequestError } from '@/utils/api';
 
 type UnknownRecord = Record<string, unknown>;
@@ -88,6 +89,23 @@ export interface RunEventStreamOptions {
   pauseWhen?: (event: RuntimeRunEvent) => boolean;
 }
 
+export interface CreateRunEventStreamOptions {
+  threadId: string;
+  request: RunCreateRequest;
+  token: string;
+  signal?: AbortSignal;
+  onEvent: (event: RuntimeRunEvent) => void;
+  onOpen?: (lastSequence: number) => void;
+  onReconnect?: (attempt: number, lastSequence: number, error: PublicRequestError) => void;
+  onCursor?: (lastSequence: number) => void;
+  pauseWhen?: (event: RuntimeRunEvent) => boolean;
+}
+
+export interface CreatedRunEventStream {
+  reservation: RunStreamReservation;
+  connect: () => Promise<number>;
+}
+
 function reconnectDelayMs(attempt: number, error: PublicRequestError): number {
   const exponential = Math.min(5000, 250 * 2 ** Math.min(attempt, 4));
   const retryAfter = Math.max((error.retryAfterSeconds || 0) * 1000, 0);
@@ -116,23 +134,50 @@ async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
   }
 }
 
-export async function connectRunEventStream(options: RunEventStreamOptions): Promise<number> {
+function requiredHeader(response: Response, name: string): string {
+  const value = response.headers.get(name)?.trim();
+  if (!value) throw protocolError();
+  return value;
+}
+
+function integerHeader(response: Response, name: string, minimum: number): number {
+  const value = Number(requiredHeader(response, name));
+  if (!Number.isInteger(value) || value < minimum) throw protocolError();
+  return value;
+}
+
+function reservationFromResponse(response: Response, threadId: string): RunStreamReservation {
+  return {
+    runId: requiredHeader(response, 'X-Run-ID'),
+    threadId: requireThreadId(threadId),
+    threadVersion: integerHeader(response, 'X-Thread-Version', 0),
+  };
+}
+
+async function connectKnownRunEventStream(
+  options: RunEventStreamOptions,
+  initialResponse?: Response
+): Promise<number> {
   requireThreadId(options.threadId);
   let lastSequence = Math.max(options.after || 0, 0);
   let reconnectAttempt = 0;
+  let nextResponse = initialResponse;
 
   while (!options.signal?.aborted) {
     let reconnectError: PublicRequestError;
     let callbackFailure: unknown;
     let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
-      const response = await fetch(`/v1/runs/${encodeURIComponent(options.runId)}/stream`, {
-        headers: {
-          Authorization: `Bearer ${options.token}`,
-          'Last-Event-ID': String(lastSequence),
-        },
-        signal: options.signal,
-      });
+      const response =
+        nextResponse ||
+        (await fetch(`/v1/runs/${encodeURIComponent(options.runId)}/stream`, {
+          headers: {
+            Authorization: `Bearer ${options.token}`,
+            'Last-Event-ID': String(lastSequence),
+          },
+          signal: options.signal,
+        }));
+      nextResponse = undefined;
       if (!response.ok) {
         throw await getPublicErrorFromResponse(response);
       }
@@ -192,4 +237,50 @@ export async function connectRunEventStream(options: RunEventStreamOptions): Pro
     await waitForReconnect(reconnectDelayMs(reconnectAttempt, reconnectError), options.signal);
   }
   return lastSequence;
+}
+
+export function connectRunEventStream(options: RunEventStreamOptions): Promise<number> {
+  return connectKnownRunEventStream(options);
+}
+
+export async function createRunEventStream(
+  options: CreateRunEventStreamOptions
+): Promise<CreatedRunEventStream> {
+  const threadId = requireThreadId(options.threadId);
+  const response = await fetch(`/v1/threads/${encodeURIComponent(threadId)}/runs/stream`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${options.token}`,
+      'Content-Type': 'application/json',
+      'Last-Event-ID': '0',
+    },
+    body: JSON.stringify(options.request),
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    throw await getPublicErrorFromResponse(response);
+  }
+  if (!response.body) {
+    throw getPublicError(new TypeError('event stream response has no body'));
+  }
+
+  const reservation = reservationFromResponse(response, threadId);
+  return {
+    reservation,
+    connect: () =>
+      connectKnownRunEventStream(
+        {
+          runId: reservation.runId,
+          threadId,
+          token: options.token,
+          signal: options.signal,
+          onEvent: options.onEvent,
+          onOpen: options.onOpen,
+          onReconnect: options.onReconnect,
+          onCursor: options.onCursor,
+          pauseWhen: options.pauseWhen,
+        },
+        response
+      ),
+  };
 }

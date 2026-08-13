@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { connectRunEventStream, SseFrameDecoder } from './runEventStream';
+import { connectRunEventStream, createRunEventStream, SseFrameDecoder } from './runEventStream';
 import type { RuntimeRunEvent } from './runEventReducer';
 
 function event(
@@ -92,6 +92,34 @@ describe('SseFrameDecoder', () => {
 });
 
 describe('connectRunEventStream', () => {
+  it('creates and consumes a Run through one POST before using GET only for recovery', async () => {
+    const response = streamResponse([event(1)]);
+    response.headers.set('X-Run-ID', 'run_1');
+    response.headers.set('X-Thread-Version', '2');
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetchMock);
+    const opened = await createRunEventStream({
+      threadId: 'thread-1',
+      request: { message: 'hello', idempotency_key: 'run-key' },
+      token: 'token',
+      onEvent: vi.fn(),
+    });
+    await opened.connect();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe('/v1/threads/thread-1/runs/stream');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message: 'hello',
+      idempotency_key: 'run-key',
+    });
+    expect(opened.reservation).toEqual({
+      runId: 'run_1',
+      threadId: 'thread-1',
+      threadVersion: 2,
+    });
+  });
+
   it('sends Bearer and Last-Event-ID, reports open, and stops on terminal', async () => {
     const cancel = vi.fn(async () => undefined);
     const fetchMock = vi.fn().mockResolvedValue(streamResponse([event(4)], cancel));

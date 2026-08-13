@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as authSession from '@/auth/session';
-import { connectRunEventStream } from '@/events/runEventStream';
+import { connectRunEventStream, createRunEventStream } from '@/events/runEventStream';
 import type { RuntimeRunEvent } from '@/events/runEventReducer';
 import {
   cancelRun,
@@ -24,6 +24,7 @@ vi.mock('@/runs/runClient', () => ({
 
 vi.mock('@/events/runEventStream', () => ({
   connectRunEventStream: vi.fn(),
+  createRunEventStream: vi.fn(),
 }));
 
 function event(
@@ -122,6 +123,61 @@ describe('durable runs store', () => {
     expect(store.byId.run_1.status).toBe('completed');
   });
 
+  it('retries create-stream authentication once with the same idempotency key', async () => {
+    authSession.installAuthSession({
+      access_token: 'expired-create-token',
+      username: 'alice',
+      role: 'user',
+    });
+    const refresh = vi.spyOn(authSession, 'refreshAuthSession').mockResolvedValue({
+      access_token: 'fresh-create-token',
+      username: 'alice',
+      role: 'user',
+    });
+    const reservation = {
+      runId: 'run_1',
+      threadId: 'thread-1',
+      threadVersion: 2,
+    };
+    vi.mocked(createRunEventStream)
+      .mockRejectedValueOnce({ response: { status: 401 } })
+      .mockResolvedValueOnce({
+        reservation,
+        connect: async () => 0,
+      });
+    const store = useRunsStore();
+
+    await store.start({ threadId: 'thread-1', message: 'hello', token: 'expired-create-token' });
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(createRunEventStream).mock.calls.map(([options]) => ({
+        token: options.token,
+        idempotencyKey: options.request.idempotency_key,
+      }))
+    ).toEqual([
+      { token: 'expired-create-token', idempotencyKey: 'run_generated_key' },
+      { token: 'fresh-create-token', idempotencyKey: 'run_generated_key' },
+    ]);
+  });
+
+  it('surfaces the second create-stream failure after an authentication refresh', async () => {
+    const refresh = vi.spyOn(authSession, 'refreshAuthSession').mockResolvedValue({
+      access_token: 'fresh-create-token',
+      username: 'alice',
+      role: 'user',
+    });
+    vi.mocked(createRunEventStream)
+      .mockRejectedValueOnce({ response: { status: 401 } })
+      .mockRejectedValueOnce(new TypeError('offline after refresh'));
+    const store = useRunsStore();
+
+    await expect(
+      store.start({ threadId: 'thread-1', message: 'hello', token: 'expired-create-token' })
+    ).rejects.toMatchObject({ code: 'NETWORK_UNAVAILABLE', retryable: true });
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it('reuses the same create idempotency key after an uncertain transport failure', async () => {
     vi.mocked(createRun)
       .mockRejectedValueOnce(new TypeError('secret socket detail'))
@@ -180,29 +236,33 @@ describe('durable runs store', () => {
     expect(createRun).toHaveBeenCalledOnce();
   });
 
-  it('uses the two-step create then GET stream flow and projects terminal state', async () => {
-    vi.mocked(createRun).mockResolvedValue({
-      run: runRecord(),
-      created: true,
-      thread_version: 2,
-    });
-    vi.mocked(connectRunEventStream).mockImplementation(async (options) => {
-      options.onOpen?.(0);
-      options.onEvent(
-        event(1, 'run.created', {
-          status: 'pending',
-          user_message_id: 11,
-          assistant_message_id: 12,
-        })
-      );
-      options.onEvent(
-        event(2, 'message.completed', {
-          content: 'answer',
-          rag_trace: { retrieval_outcome: 'ANSWERABLE' },
-        })
-      );
-      options.onEvent(event(3, 'run.completed'));
-      return 3;
+  it('uses one create-stream request and projects terminal state', async () => {
+    vi.mocked(createRunEventStream).mockImplementation(async (options) => {
+      const reservation = {
+        runId: 'run_1',
+        threadId: 'thread-1',
+        threadVersion: 2,
+      };
+      return {
+        reservation,
+        connect: async () => {
+          options.onEvent(
+            event(1, 'run.created', {
+              status: 'pending',
+              user_message_id: 11,
+              assistant_message_id: 12,
+            })
+          );
+          options.onEvent(
+            event(2, 'message.completed', {
+              content: 'answer',
+              rag_trace: { retrieval_outcome: 'ANSWERABLE' },
+            })
+          );
+          options.onEvent(event(3, 'run.completed'));
+          return 3;
+        },
+      };
     });
     const store = useRunsStore();
 
@@ -212,15 +272,16 @@ describe('durable runs store', () => {
       token: 'token',
     });
 
-    expect(vi.mocked(createRun).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(connectRunEventStream).mock.invocationCallOrder[0]
-    );
-    expect(connectRunEventStream).toHaveBeenCalledWith(
+    expect(createRun).not.toHaveBeenCalled();
+    expect(connectRunEventStream).not.toHaveBeenCalled();
+    expect(createRunEventStream).toHaveBeenCalledWith(
       expect.objectContaining({
-        runId: 'run_1',
         threadId: 'thread-1',
         token: 'token',
-        after: 0,
+        request: expect.objectContaining({
+          message: 'hello',
+          idempotency_key: 'run_generated_key',
+        }),
       })
     );
     expect(store.byId.run_1).toMatchObject({

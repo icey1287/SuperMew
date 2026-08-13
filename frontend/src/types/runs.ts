@@ -44,6 +44,12 @@ export interface RunCreateResponse {
   thread_version: number;
 }
 
+export interface RunStreamReservation {
+  runId: string;
+  threadId: string;
+  threadVersion: number;
+}
+
 export interface RunResumeRequest {
   hitl_token: string;
   answer: string;
