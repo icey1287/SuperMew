@@ -93,6 +93,7 @@ class _ControlService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.apply_calls = 0
+        self.apply_skill_calls = 0
         self.web_enabled = True
 
     def control_plane(self) -> dict:
@@ -130,6 +131,9 @@ class _ControlService:
 
     def apply_runtime(self) -> None:
         self.apply_calls += 1
+
+    def apply_skills(self) -> None:
+        self.apply_skill_calls += 1
 
 
 def _app(
@@ -315,6 +319,7 @@ def test_admin_can_manage_skills_tools_sql_and_keyless_web() -> None:
         "delete_skill",
         "delete_http_tool",
     ]
-    assert service.apply_calls == 8
+    assert service.apply_calls == 5
+    assert service.apply_skill_calls == 3
     assert service.calls[4][1]["dsn_secret_name"] == "ANALYTICS_READER_DSN"
     assert service.calls[5][1]["enabled"] is False

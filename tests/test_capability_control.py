@@ -119,6 +119,35 @@ def test_saved_configuration_is_applied_to_current_runtime(capability_control):
     assert capability_control.active_settings.web_research.enabled is True
 
 
+def test_skill_changes_reuse_active_tool_and_external_runtimes(capability_control):
+    executor = type("Executor", (), {"runtime_builder": None})()
+    runtime = capability_control.apply_runtime(executor=executor)
+    original_factory = runtime.factory
+    original_tools = runtime.tools
+    original_custom_http = runtime.custom_http_runtime
+    original_sql = runtime.sql_runtime
+    original_web = runtime.web_runtime
+
+    capability_control.create_skill(
+        username="admin",
+        name="release-summary",
+        description="Summarize public release notes.",
+        instructions="# Release Summary\nAnswer directly without tools.",
+        allowed_tools=(),
+    )
+    applied = capability_control.apply_skills(executor=executor)
+
+    assert applied is runtime
+    assert runtime.tools is original_tools
+    assert runtime.custom_http_runtime is original_custom_http
+    assert runtime.sql_runtime is original_sql
+    assert runtime.web_runtime is original_web
+    assert runtime.factory is not original_factory
+    assert executor.runtime_builder is runtime.factory
+    assert "release-summary" in runtime.skills.names
+    assert runtime._closed is False
+
+
 def test_referenced_custom_tool_cannot_be_disabled_or_deleted(capability_control):
     tool = capability_control.create_http_tool(username="admin", **_http_payload())
     capability_control.create_skill(
