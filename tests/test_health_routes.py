@@ -235,14 +235,17 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         sql_runtime = SimpleNamespace(readiness=lambda: next(sql_snapshots))
+        capabilities = SimpleNamespace(
+            active_settings=None,
+            active_runtime=SimpleNamespace(
+                sql_runtime=sql_runtime,
+                web_runtime=None,
+            ),
+        )
         with (
             patch.object(health, "provider_runtime", runtime),
             patch.object(health, "document_catalog", _catalog()),
-            patch.object(
-                health,
-                "get_sql_assistant_runtime",
-                return_value=sql_runtime,
-            ),
+            patch.object(health, "capability_control_service", capabilities),
         ):
             unavailable = await health.ready()
             ready = await health.ready()
@@ -281,14 +284,17 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         web_runtime = SimpleNamespace(readiness=lambda: next(snapshots))
+        capabilities = SimpleNamespace(
+            active_settings=None,
+            active_runtime=SimpleNamespace(
+                sql_runtime=None,
+                web_runtime=web_runtime,
+            ),
+        )
         with (
             patch.object(health, "provider_runtime", runtime),
             patch.object(health, "document_catalog", _catalog()),
-            patch.object(
-                health,
-                "get_web_research_runtime",
-                return_value=web_runtime,
-            ),
+            patch.object(health, "capability_control_service", capabilities),
         ):
             unavailable = await health.ready()
             ready = await health.ready()

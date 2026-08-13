@@ -7,13 +7,17 @@ import os
 import re
 import socket
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
+from typing import Iterator, cast
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from backend.agent.factory import AgentRuntimeFactory, runtime_factory
+from backend.agent.factory import AgentRuntimeFactory
 from backend.agent.runtime import AgentRuntimeInput, AgentRuntimeResult
+from backend.capabilities.control_service import capability_control_service
 from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
@@ -244,7 +248,10 @@ class RunAgentExecutor:
         self,
         *,
         run_service: RunService = service,
-        runtime_builder: AgentRuntimeFactory = runtime_factory,
+        runtime_builder: AgentRuntimeFactory
+        | Callable[[], AbstractContextManager[AgentRuntimeFactory]] = (
+            capability_control_service.acquire_factory
+        ),
         events: PersistentEventBus = event_bus,
         manager: RunExecutionManager = execution_manager,
         worker_id: str | None = None,
@@ -275,8 +282,17 @@ class RunAgentExecutor:
         self._dispatcher_stop = asyncio.Event()
         self._dispatcher_task: asyncio.Task[None] | None = None
 
-    def _runtime_tool_ceiling(self) -> frozenset[str]:
-        ceiling: object = getattr(self.runtime_builder, "tool_ceiling", frozenset())
+    @contextmanager
+    def _runtime_scope(self) -> Iterator[AgentRuntimeFactory]:
+        if hasattr(self.runtime_builder, "create"):
+            yield cast(AgentRuntimeFactory, self.runtime_builder)
+            return
+        with self.runtime_builder() as runtime_factory:
+            yield runtime_factory
+
+    @staticmethod
+    def _runtime_tool_ceiling(runtime_factory: AgentRuntimeFactory) -> frozenset[str]:
+        ceiling: object = getattr(runtime_factory, "tool_ceiling", frozenset())
         if isinstance(ceiling, (set, frozenset, tuple, list)):
             return frozenset(str(name) for name in ceiling)
         return frozenset()
@@ -377,12 +393,17 @@ class RunAgentExecutor:
             raise
 
         async def runner(token: CancellationToken) -> RunExecutionOutcome:
-            snapshot = await self._load_execution_snapshot(
-                username=username,
-                run_id=claimed.id,
-                fencing_token=claimed.fencing_token,
-            )
-            return await self._run_runtime(snapshot=snapshot, token=token)
+            with self._runtime_scope() as runtime_factory:
+                snapshot = await self._load_execution_snapshot(
+                    username=username,
+                    run_id=claimed.id,
+                    fencing_token=claimed.fencing_token,
+                )
+                return await self._run_runtime(
+                    snapshot=snapshot,
+                    token=token,
+                    runtime_factory=runtime_factory,
+                )
 
         await self._execute_claimed(claimed, runner)
         await self._dispatch_next(username=username, thread_id=claimed.thread_id)
@@ -396,56 +417,58 @@ class RunAgentExecutor:
         answer: str,
         idempotency_key: str,
     ) -> None:
-        consumed = await asyncio.to_thread(
-            self.checkpoint_runner.checkpoints.consume_resume,
-            username=username,
-            run_id=run_id,
-            hitl_token=hitl_token,
-            answer=answer,
-            idempotency_key=idempotency_key,
-            worker_id=self.worker_id,
-            preflight=self.runtime_builder.validate_resume_access,
-        )
-        if not consumed.should_resume:
-            return
-        lease = RunLease(id=run_id, fencing_token=consumed.fencing_token)
-
-        async def runner(token: CancellationToken) -> RunExecutionOutcome:
-            snapshot = await self._load_execution_snapshot(
+        with self._runtime_scope() as runtime_factory:
+            consumed = await asyncio.to_thread(
+                self.checkpoint_runner.checkpoints.consume_resume,
                 username=username,
                 run_id=run_id,
-                fencing_token=consumed.fencing_token,
+                hitl_token=hitl_token,
+                answer=answer,
+                idempotency_key=idempotency_key,
+                worker_id=self.worker_id,
+                preflight=runtime_factory.validate_resume_access,
             )
-            self.runtime_builder.validate_resume_access(_resume_access_state(snapshot))
-            rag_outcome = await self._resume_checkpoint(
-                snapshot=snapshot,
-                consumed=consumed,
-                token=token,
-            )
-            if rag_outcome.pause is not None:
-                return RunExecutionOutcome(
-                    kind="waiting_input",
-                    fencing_token=rag_outcome.fencing_token,
-                )
-            trace = dict(rag_outcome.result.get("rag_trace") or {})
-            prompt = _resume_answer_prompt(rag_outcome.result, consumed.answer)
-            if prompt is None:
-                return RunExecutionOutcome(
-                    kind="completed",
-                    content=retrieval_user_message(rag_outcome.result)
-                    or "当前没有可用于回答的可靠证据。",
-                    rag_trace=trace,
-                    fencing_token=rag_outcome.fencing_token,
-                )
-            return await self._run_runtime(
-                snapshot=snapshot,
-                token=token,
-                user_text=prompt,
-                disable_tools=True,
-                initial_rag_trace=trace,
-            )
+            if not consumed.should_resume:
+                return
+            lease = RunLease(id=run_id, fencing_token=consumed.fencing_token)
 
-        await self._execute_claimed(lease, runner)
+            async def runner(token: CancellationToken) -> RunExecutionOutcome:
+                snapshot = await self._load_execution_snapshot(
+                    username=username,
+                    run_id=run_id,
+                    fencing_token=consumed.fencing_token,
+                )
+                runtime_factory.validate_resume_access(_resume_access_state(snapshot))
+                rag_outcome = await self._resume_checkpoint(
+                    snapshot=snapshot,
+                    consumed=consumed,
+                    token=token,
+                )
+                if rag_outcome.pause is not None:
+                    return RunExecutionOutcome(
+                        kind="waiting_input",
+                        fencing_token=rag_outcome.fencing_token,
+                    )
+                trace = dict(rag_outcome.result.get("rag_trace") or {})
+                prompt = _resume_answer_prompt(rag_outcome.result, consumed.answer)
+                if prompt is None:
+                    return RunExecutionOutcome(
+                        kind="completed",
+                        content=retrieval_user_message(rag_outcome.result)
+                        or "当前没有可用于回答的可靠证据。",
+                        rag_trace=trace,
+                        fencing_token=rag_outcome.fencing_token,
+                    )
+                return await self._run_runtime(
+                    snapshot=snapshot,
+                    token=token,
+                    runtime_factory=runtime_factory,
+                    user_text=prompt,
+                    disable_tools=True,
+                    initial_rag_trace=trace,
+                )
+
+            await self._execute_claimed(lease, runner)
         await self._dispatch_next(username=username, thread_id=consumed.thread_id)
 
     async def _load_execution_snapshot(
@@ -572,6 +595,7 @@ class RunAgentExecutor:
         *,
         snapshot: RunExecutionSnapshot,
         token: CancellationToken,
+        runtime_factory: AgentRuntimeFactory,
         user_text: str | None = None,
         disable_tools: bool = False,
         initial_rag_trace: dict | None = None,
@@ -618,15 +642,16 @@ class RunAgentExecutor:
 
         pinned_skill = _pinned_skill(snapshot.run)
         effective_user_text = user_text or snapshot.user_text
+        tool_ceiling = self._runtime_tool_ceiling(runtime_factory)
         routed_skill = None
         if (
             not disable_tools
             and pinned_skill is None
-            and "web_search" in self._runtime_tool_ceiling()
+            and "web_search" in tool_ceiling
         ):
             routed_skill = _routed_skill_for_user_text(effective_user_text)
 
-        runtime = self.runtime_builder.create(
+        runtime = runtime_factory.create(
             request_context,
             persistent_note=snapshot.persistent_note,
             user_db_id=snapshot.user_db_id,
@@ -635,7 +660,7 @@ class RunAgentExecutor:
             channel=snapshot.channel,
             run_id=snapshot.run.id,
             allowed_tools=(
-                frozenset() if disable_tools else self._runtime_tool_ceiling()
+                frozenset() if disable_tools else tool_ceiling
             ),
             deadline_seconds=remaining_deadline,
             approval_grant=(
@@ -679,6 +704,7 @@ class RunAgentExecutor:
                 trace_queue,
                 pump_stop,
                 pump_error,
+                getattr(runtime_factory, "tools", None),
             ),
             name=f"run-trace-events:{snapshot.run.id}",
         )
@@ -771,6 +797,7 @@ class RunAgentExecutor:
         trace_queue: asyncio.Queue,
         stop_event: asyncio.Event,
         error_event: asyncio.Event,
+        registry: object | None,
     ) -> None:
         while True:
             try:
@@ -787,7 +814,7 @@ class RunAgentExecutor:
                         stage == "tool.failed"
                         and item.get("error_code") == "TOOL_POLICY_DENIED"
                     ):
-                        await self._record_tool_audit(run, stage, item)
+                        await self._record_tool_audit(run, stage, item, registry)
                 if event_type is not None:
                     public_item = _public_tool_event_data(stage, item)
                     await self._publish_owned(
@@ -831,9 +858,9 @@ class RunAgentExecutor:
         run: RunRecord,
         stage: str,
         item: dict,
+        registry: object | None,
     ) -> None:
         tool_name = str(item.get("tool_name") or "unknown")
-        registry = getattr(self.runtime_builder, "tools", None)
         descriptor = (
             registry.descriptor(tool_name)
             if registry is not None and hasattr(registry, "descriptor")

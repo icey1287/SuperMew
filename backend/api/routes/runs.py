@@ -10,7 +10,7 @@ from backend.events.journal import journal
 from backend.events.sse import format_sse_event, format_sse_heartbeat
 from backend.infra.auth import get_current_user
 from backend.core.settings import get_settings
-from backend.capabilities.runtime import active_tool_registry
+from backend.capabilities.control_service import capability_control_service
 from backend.runs.agent_executor import run_agent_executor
 from backend.runs.cancellation import cancellation_registry
 from backend.runs.resume import resume_coordinator
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/v1", tags=["runs"])
 
 
 async def _reserve_run(*, user: User, thread_id: ThreadId, request: RunCreateRequest):
-    tool_registry = active_tool_registry()
+    tool_registry = capability_control_service.tools
     approved_tools = frozenset(request.approved_tools)
     if approved_tools and user.role != "admin":
         raise AppError(

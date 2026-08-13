@@ -313,7 +313,6 @@ def test_context_close_clears_ledger_and_returns_only_stable_failure():
 
 
 def test_web_tools_register_search_and_fetch_results_without_minting_fetch_ids(
-    monkeypatch,
 ):
     search_evidence = _evidence(content="Search result content.")
     fetched_evidence = _evidence(content="Fetched full page content.")
@@ -326,15 +325,12 @@ def test_web_tools_register_search_and_fetch_results_without_minting_fetch_ids(
             assert url == search_evidence.canonical_url
             return _result(fetched_evidence)
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
-    )
+    runtime = Runtime()
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="tool-ledger")
 
     try:
-        search = make_web_search(ctx)
-        fetch = make_web_fetch(ctx)
+        search = make_web_search(ctx, runtime=runtime)
+        fetch = make_web_fetch(ctx, runtime=runtime)
         search_result = search.invoke({"query": "public evidence"})
         assert ToolResultV1.model_validate(search_result).success is True
         assert ctx.web_evidence_count() == 1
@@ -350,7 +346,7 @@ def test_web_tools_register_search_and_fetch_results_without_minting_fetch_ids(
         ctx.close()
 
 
-def test_failed_web_tool_attempt_still_enables_terminal_validation(monkeypatch):
+def test_failed_web_tool_attempt_still_enables_terminal_validation():
     class Runtime:
         def search(self, query, *, limit, deadline_at, cancellation_probe):
             raise WebResearchError(
@@ -358,14 +354,12 @@ def test_failed_web_tool_attempt_still_enables_terminal_validation(monkeypatch):
                 retryable=True,
             )
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="failed-tool")
 
     try:
-        result = make_web_search(ctx).invoke({"query": "public evidence"})
+        result = make_web_search(ctx, runtime=Runtime()).invoke(
+            {"query": "public evidence"}
+        )
         assert ToolResultV1.model_validate(result).success is False
         assert ctx.web_research_requires_terminal_validation() is True
         assert ctx.web_evidence_count() == 0

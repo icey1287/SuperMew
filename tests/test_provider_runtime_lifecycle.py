@@ -38,9 +38,8 @@ class _CapabilityControl:
     def build_runtime(self):
         return self.runtime
 
-    def apply_runtime(self, runtime, *, executor):
+    def apply_runtime(self, runtime):
         runtime.start()
-        executor.runtime_builder = runtime.factory
         self.active = True
         return runtime
 

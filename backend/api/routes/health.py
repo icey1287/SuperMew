@@ -10,8 +10,6 @@ from backend.api.resources import (
 from backend.capabilities.control_service import capability_control_service
 from backend.providers.runtime import provider_runtime
 from backend.sandbox import get_sandbox_runtime
-from backend.sql_assistant.runtime import get_sql_assistant_runtime
-from backend.web_research.runtime import get_web_research_runtime
 
 
 router = APIRouter(tags=["health"])
@@ -40,9 +38,11 @@ async def ready() -> JSONResponse:
     sql_catalog_hash = None
     if sql_enabled:
         try:
-            sql_snapshot = get_sql_assistant_runtime().readiness()
-            sql_ready = bool(sql_snapshot.ready)
-            sql_catalog_hash = sql_snapshot.catalog_hash
+            runtime = capability_control_service.active_runtime
+            if runtime is not None and runtime.sql_runtime is not None:
+                sql_snapshot = runtime.sql_runtime.readiness()
+                sql_ready = bool(sql_snapshot.ready)
+                sql_catalog_hash = sql_snapshot.catalog_hash
         except Exception:
             sql_ready = False
     web_enabled = bool(
@@ -56,9 +56,11 @@ async def ready() -> JSONResponse:
     web_search_ready = False
     if web_enabled:
         try:
-            web_snapshot = get_web_research_runtime().readiness()
-            web_ready = bool(web_snapshot.get("ready"))
-            web_search_ready = bool(web_snapshot.get("search_ready"))
+            runtime = capability_control_service.active_runtime
+            if runtime is not None and runtime.web_runtime is not None:
+                web_snapshot = runtime.web_runtime.readiness()
+                web_ready = bool(web_snapshot.get("ready"))
+                web_search_ready = bool(web_snapshot.get("search_ready"))
         except Exception:
             web_ready = False
     sandbox_enabled = bool(

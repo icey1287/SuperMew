@@ -12,7 +12,11 @@ from backend.capabilities.control_service import CapabilityControlService
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import get_settings
 from backend.db.models import Base, User
+from backend.runs.request_context import RunRequestContext
 from backend.skills import SkillAccess
+from backend.tools.contracts import ToolResultV1
+from backend.tools.registry import ToolAccess
+from backend.web_research.contracts import WebResearchResult
 
 
 @pytest.fixture()
@@ -109,14 +113,102 @@ def test_custom_http_tool_and_skill_are_loaded_into_runtime(capability_control):
 def test_saved_configuration_is_applied_to_current_runtime(capability_control):
     capability_control.update_web_research(username="admin", enabled=True)
 
-    executor = type("Executor", (), {"runtime_builder": None})()
-    runtime = capability_control.apply_runtime(executor=executor)
+    capability_control.apply_runtime()
     state = capability_control.control_plane()
 
     assert state["web_research"]["enabled"] is True
     assert "revision" not in state
-    assert executor.runtime_builder is runtime.factory
     assert capability_control.active_settings.web_research.enabled is True
+
+
+def test_skill_changes_publish_one_snapshot_and_reuse_runtime_resources(
+    capability_control,
+):
+    original = capability_control.apply_runtime()
+    capability_control.create_skill(
+        username="admin",
+        name="release-summary",
+        description="Summarize public release notes.",
+        instructions="# Release Summary\nAnswer directly without tools.",
+        allowed_tools=(),
+    )
+
+    updated = capability_control.apply_runtime()
+
+    assert updated is capability_control.active_runtime
+    assert updated is not original
+    assert updated.resources is original.resources
+    assert updated.tools is original.tools
+    with capability_control.acquire_factory() as active_factory:
+        assert updated.factory is active_factory
+    assert "release-summary" in updated.skills.names
+    assert original.resources._closed is False
+
+
+def test_tool_changes_replace_runtime_resources(capability_control):
+    original = capability_control.apply_runtime()
+    with capability_control.acquire_factory():
+        capability_control.create_http_tool(username="admin", **_http_payload())
+        updated = capability_control.apply_runtime()
+
+        assert original.resources._retired is True
+        assert original.resources._closed is False
+
+    assert updated is capability_control.active_runtime
+    assert updated.resources is not original.resources
+    assert updated.tools is not original.tools
+    assert "release_lookup" in updated.tools.names
+    assert original.resources._closed is True
+
+
+def test_published_tool_runtime_stays_pinned_until_the_run_releases_it(
+    capability_control,
+    monkeypatch,
+):
+    class WebRuntime:
+        def __init__(self, label):
+            self.label = label
+            self.closed = False
+            self.searches = 0
+
+        def start(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            self.searches += 1
+            return WebResearchResult(evidence=(), citations=(), truncated=False)
+
+        def fetch(self, url, *, deadline_at, cancellation_probe):
+            raise AssertionError(f"unexpected fetch from {self.label}: {url}")
+
+    old_web = WebRuntime("old")
+    new_web = WebRuntime("new")
+    runtimes = iter((old_web, new_web))
+    monkeypatch.setattr(
+        "backend.capabilities.control_service.build_web_research_runtime",
+        lambda _settings: next(runtimes),
+    )
+    capability_control.update_web_research(username="admin", enabled=True)
+    capability_control.apply_runtime()
+
+    with capability_control.acquire_factory() as old_factory:
+        capability_control.create_http_tool(username="admin", **_http_payload())
+        capability_control.apply_runtime()
+
+        result = _invoke_web_search(old_factory.tools, thread_id="old-runtime")
+        assert result.success is True
+        assert old_web.searches == 1
+        assert new_web.searches == 0
+        assert old_web.closed is False
+
+    assert old_web.closed is True
+    with capability_control.acquire_factory() as new_factory:
+        result = _invoke_web_search(new_factory.tools, thread_id="new-runtime")
+        assert result.success is True
+    assert new_web.searches == 1
 
 
 def test_referenced_custom_tool_cannot_be_disabled_or_deleted(capability_control):
@@ -140,6 +232,26 @@ def test_referenced_custom_tool_cannot_be_disabled_or_deleted(capability_control
     with pytest.raises(AppError) as deleted:
         capability_control.delete_http_tool(username="admin", name=tool.name)
     assert deleted.value.code == ErrorCode.CONFLICT
+
+
+def _invoke_web_search(registry, *, thread_id):
+    context = RunRequestContext.for_sync(user_id="admin", thread_id=thread_id)
+    try:
+        session = registry.bind(
+            context,
+            ToolAccess(
+                roles=frozenset({"admin"}),
+                available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
+                caller_allowed_tools=frozenset({"web_search"}),
+                allowed_network_policies=frozenset({"restricted"}),
+            ),
+        )
+        session.apply_skill({"web_search"})
+        session.search("public web evidence")
+        payload = session.resolve("web_search").invoke({"query": "public facts"})
+        return ToolResultV1.model_validate_json(payload)
+    finally:
+        context.close()
 
 
 def test_sql_configuration_uses_secret_reference_without_returning_dsn(

@@ -48,16 +48,6 @@ SQL_QUERY_METADATA_KEYS = frozenset(
 )
 
 
-def get_sql_assistant_runtime() -> SqlAssistantRuntime:
-    """Resolve the process-wide lazy runtime without capturing it in a Run."""
-
-    from backend.sql_assistant.runtime import (
-        get_sql_assistant_runtime as resolve_runtime,
-    )
-
-    return resolve_runtime()
-
-
 def _json_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, bool)):
         return value
@@ -129,8 +119,15 @@ def _sql_failure(error: Exception) -> ToolResultV1 | None:
     )
 
 
-def make_sql_schema(_ctx: RunRequestContext) -> BaseTool:
-    """Build a request-owned schema Adapter over the shared SQL runtime."""
+def make_sql_schema(
+    _ctx: RunRequestContext,
+    *,
+    runtime: SqlAssistantRuntime | None = None,
+) -> BaseTool:
+    """Build a request-owned schema Adapter over one SQL runtime snapshot."""
+
+    if runtime is None:
+        raise RuntimeError("SQL runtime is not configured")
 
     @tool("sql_schema")
     def sql_schema(tables: list[str] | None = None) -> ToolResultV1:
@@ -140,7 +137,7 @@ def make_sql_schema(_ctx: RunRequestContext) -> BaseTool:
             normalized_tables = tuple(
                 dict.fromkeys(table.casefold() for table in (tables or ()))
             )
-            result = get_sql_assistant_runtime().describe_schema(normalized_tables)
+            result = runtime.describe_schema(normalized_tables)
         except Exception as exc:
             failure = _sql_failure(exc)
             if failure is None:
@@ -151,8 +148,15 @@ def make_sql_schema(_ctx: RunRequestContext) -> BaseTool:
     return sql_schema
 
 
-def make_sql_query(ctx: RunRequestContext) -> BaseTool:
-    """Build a request-owned query Adapter with Run deadline and cancellation."""
+def make_sql_query(
+    ctx: RunRequestContext,
+    *,
+    runtime: SqlAssistantRuntime | None = None,
+) -> BaseTool:
+    """Build a request-owned query Adapter over one SQL runtime snapshot."""
+
+    if runtime is None:
+        raise RuntimeError("SQL runtime is not configured")
 
     @tool("sql_query")
     def sql_query(sql: str) -> ToolResultV1:
@@ -160,7 +164,7 @@ def make_sql_query(ctx: RunRequestContext) -> BaseTool:
 
         deadline_at, cancellation_probe = ctx.provider_runtime()
         try:
-            result = get_sql_assistant_runtime().query(
+            result = runtime.query(
                 sql,
                 deadline_at=deadline_at,
                 cancellation_probe=cancellation_probe,
@@ -179,7 +183,6 @@ __all__ = [
     "SqlAssistantRuntime",
     "SQL_QUERY_METADATA_KEYS",
     "SQL_SCHEMA_METADATA_KEYS",
-    "get_sql_assistant_runtime",
     "make_sql_query",
     "make_sql_schema",
 ]

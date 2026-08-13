@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -20,12 +24,12 @@ from backend.capabilities.control_repository import CapabilityControlRepository
 from backend.core.errors import AppError, ErrorCode
 from backend.core.settings import AppSettings, SqlAssistantSettings, get_settings
 from backend.skills import SkillDefinition, SkillManifest, SkillRegistry
-from backend.sql_assistant.runtime import (
-    SqlAssistantRuntime,
-    clear_sql_assistant_runtime,
-    install_sql_assistant_runtime,
+from backend.sql_assistant.runtime import SqlAssistantRuntime
+from backend.tools.catalog import (
+    build_default_tool_registry,
+    configured_secret_names,
+    tool_registry,
 )
-from backend.tools.catalog import build_default_tool_registry, configured_secret_names
 from backend.tools.custom_http import (
     CustomHttpToolRuntime,
     register_custom_http_tools,
@@ -35,8 +39,6 @@ from backend.tools.registry import ToolRegistry
 from backend.web_research.runtime import (
     WebResearchRuntime,
     build_web_research_runtime,
-    clear_web_research_runtime,
-    install_web_research_runtime,
 )
 
 
@@ -44,58 +46,93 @@ _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+]
 
 
 @dataclass(slots=True)
+class CapabilityResources:
+    custom_http_runtime: CustomHttpToolRuntime
+    sql_runtime: SqlAssistantRuntime | None
+    web_runtime: WebResearchRuntime | None
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    _leases: int = 0
+    _retired: bool = False
+    _started: bool = False
+    _closed: bool = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            if self._closed or self._retired:
+                raise RuntimeError("capability runtime is closed")
+            sql_started = False
+            web_started = False
+            try:
+                if self.sql_runtime is not None:
+                    self.sql_runtime.start()
+                    sql_started = True
+                if self.web_runtime is not None:
+                    self.web_runtime.start()
+                    web_started = True
+                self._started = True
+            except BaseException:
+                if web_started and self.web_runtime is not None:
+                    self.web_runtime.close()
+                if sql_started and self.sql_runtime is not None:
+                    self.sql_runtime.close()
+                self.custom_http_runtime.close()
+                self._closed = True
+                raise
+
+    def acquire(self) -> None:
+        with self._lock:
+            if not self._started or self._closed or self._retired:
+                raise RuntimeError("capability runtime is not available")
+            self._leases += 1
+
+    def release(self) -> None:
+        with self._lock:
+            if self._leases <= 0:
+                raise RuntimeError("capability runtime lease is not active")
+            self._leases -= 1
+            should_close = self._retired and self._leases == 0
+        if should_close:
+            _close_quietly(self)
+
+    def close(self) -> None:
+        with self._lock:
+            self._retired = True
+            if self._closed or self._leases:
+                return
+            if self.web_runtime is not None:
+                self.web_runtime.close()
+            if self.sql_runtime is not None:
+                self.sql_runtime.close()
+            self.custom_http_runtime.close()
+            self._started = False
+            self._closed = True
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityRuntime:
     settings: AppSettings
     tools: ToolRegistry
     skills: SkillRegistry
     factory: AgentRuntimeFactory
     catalog: CapabilityCatalog
-    custom_http_runtime: CustomHttpToolRuntime
-    sql_runtime: SqlAssistantRuntime | None
-    web_runtime: WebResearchRuntime | None
-    _started: bool = False
-    _closed: bool = False
+    resources: CapabilityResources
+    custom_tools: tuple[ManagedHttpToolRecord, ...]
+
+    @property
+    def sql_runtime(self) -> SqlAssistantRuntime | None:
+        return self.resources.sql_runtime
+
+    @property
+    def web_runtime(self) -> WebResearchRuntime | None:
+        return self.resources.web_runtime
 
     def start(self) -> None:
-        if self._started:
-            return
-        if self._closed:
-            raise RuntimeError("capability runtime is closed")
-        sql_started = False
-        web_started = False
-        try:
-            if self.sql_runtime is not None:
-                self.sql_runtime.start()
-                sql_started = True
-                install_sql_assistant_runtime(self.sql_runtime)
-            if self.web_runtime is not None:
-                self.web_runtime.start()
-                web_started = True
-                install_web_research_runtime(self.web_runtime)
-            self._started = True
-        except BaseException:
-            if web_started and self.web_runtime is not None:
-                clear_web_research_runtime(self.web_runtime)
-                self.web_runtime.close()
-            if sql_started and self.sql_runtime is not None:
-                clear_sql_assistant_runtime(self.sql_runtime)
-                self.sql_runtime.close()
-            self.custom_http_runtime.close()
-            self._closed = True
-            raise
+        self.resources.start()
 
     def close(self) -> None:
-        if self._closed:
-            return
-        if self.web_runtime is not None:
-            clear_web_research_runtime(self.web_runtime)
-            self.web_runtime.close()
-        if self.sql_runtime is not None:
-            clear_sql_assistant_runtime(self.sql_runtime)
-            self.sql_runtime.close()
-        self.custom_http_runtime.close()
-        self._started = False
-        self._closed = True
+        self.resources.close()
 
 
 class CapabilityControlService:
@@ -109,12 +146,47 @@ class CapabilityControlService:
     ) -> None:
         self.repository = repository or CapabilityControlRepository()
         self.settings = settings or get_settings()
-        self._active_settings: AppSettings | None = None
+        self._apply_lock = threading.RLock()
         self._active_runtime: CapabilityRuntime | None = None
+        self._fallback_catalog = CapabilityCatalog(
+            skills=runtime_factory.skills,
+            tools=tool_registry,
+            secret_names_provider=configured_secret_names,
+        )
+
+    @property
+    def active_runtime(self) -> CapabilityRuntime | None:
+        with self._apply_lock:
+            return self._active_runtime
 
     @property
     def active_settings(self) -> AppSettings | None:
-        return self._active_settings
+        current = self.active_runtime
+        return None if current is None else current.settings
+
+    @contextmanager
+    def acquire_factory(self) -> Iterator[AgentRuntimeFactory]:
+        current: CapabilityRuntime | None
+        with self._apply_lock:
+            current = self._active_runtime
+            factory = runtime_factory if current is None else current.factory
+            if current is not None:
+                current.resources.acquire()
+        try:
+            yield factory
+        finally:
+            if current is not None:
+                current.resources.release()
+
+    @property
+    def catalog(self) -> CapabilityCatalog:
+        current = self.active_runtime
+        return self._fallback_catalog if current is None else current.catalog
+
+    @property
+    def tools(self) -> ToolRegistry:
+        current = self.active_runtime
+        return tool_registry if current is None else current.tools
 
     def ensure_defaults(self) -> None:
         self.repository.ensure_defaults(
@@ -126,34 +198,20 @@ class CapabilityControlService:
     def apply_runtime(
         self,
         runtime: CapabilityRuntime | None = None,
-        *,
-        executor: Any | None = None,
     ) -> CapabilityRuntime:
-        from backend.capabilities.runtime import install_runtime_capabilities
-
-        if executor is None:
-            from backend.runs.agent_executor import run_agent_executor
-
-            executor = run_agent_executor
-
-        current = runtime or self.build_runtime()
-        current.start()
-        previous = self._active_runtime
-        executor.runtime_builder = current.factory
-        install_runtime_capabilities(
-            catalog=current.catalog,
-            tools=current.tools,
-        )
-        self._active_runtime = current
-        self._active_settings = current.settings
-        if previous is not None and previous is not current:
-            _close_quietly(previous)
-        return current
+        with self._apply_lock:
+            current = runtime or self.build_runtime(previous=self._active_runtime)
+            current.start()
+            previous = self._active_runtime
+            self._active_runtime = current
+            if previous is not None and previous.resources is not current.resources:
+                _close_quietly(previous)
+            return current
 
     def close_runtime(self) -> None:
-        runtime = self._active_runtime
-        self._active_runtime = None
-        self._active_settings = None
+        with self._apply_lock:
+            runtime = self._active_runtime
+            self._active_runtime = None
         if runtime is not None:
             runtime.close()
 
@@ -352,7 +410,10 @@ class CapabilityControlService:
             username=username,
         )
 
-    def build_runtime(self) -> CapabilityRuntime:
+    def build_runtime(
+        self,
+        previous: CapabilityRuntime | None = None,
+    ) -> CapabilityRuntime:
         sql_record = self.repository.sql_config()
         sql_settings = self._sql_settings(sql_record)
         web_settings = self.settings.web_research.model_copy(
@@ -365,6 +426,14 @@ class CapabilityControlService:
             }
         )
         runtime_settings.validate_startup()
+        custom_tools = tuple(self.repository.list_http_tools())
+
+        if (
+            previous is not None
+            and previous.settings == runtime_settings
+            and previous.custom_tools == custom_tools
+        ):
+            return self._build_runtime_projection(previous)
 
         custom_http_runtime: CustomHttpToolRuntime | None = None
         sql_runtime: SqlAssistantRuntime | None = None
@@ -389,37 +458,15 @@ class CapabilityControlService:
                 sql_assistant_settings=sql_settings,
                 web_research_settings=web_settings,
                 sandbox_settings=runtime_settings.sandbox,
+                sql_runtime=sql_runtime,
+                web_runtime=web_runtime,
                 freeze=False,
             )
-            custom_tools = self.repository.list_http_tools()
             register_custom_http_tools(registry, custom_tools, custom_http_runtime)
             registry.freeze()
-            skills = self._build_skill_registry(registry)
-            skill_secret_names = frozenset(
-                secret
-                for record in self.repository.list_skills()
-                if record.enabled
-                for secret in record.required_secrets
-            )
-            secret_provider = partial(
-                configured_secret_names,
-                sql_assistant_settings=sql_settings,
-                web_research_settings=web_settings,
-                sandbox_settings=runtime_settings.sandbox,
-                additional_secret_names=skill_secret_names,
-            )
-            factory = AgentRuntimeFactory(
+            skills, factory, catalog = self._build_projection(
+                tools=registry,
                 settings=runtime_settings,
-                models=runtime_factory.models,
-                agent_builder=runtime_factory.agent_builder,
-                tools=registry,
-                skills=skills,
-                secret_names_provider=secret_provider,
-            )
-            catalog = CapabilityCatalog(
-                skills=skills,
-                tools=registry,
-                secret_names_provider=secret_provider,
             )
             if custom_http_runtime is None:
                 raise RuntimeError("custom HTTP runtime was not constructed")
@@ -429,9 +476,12 @@ class CapabilityControlService:
                 skills=skills,
                 factory=factory,
                 catalog=catalog,
-                custom_http_runtime=custom_http_runtime,
-                sql_runtime=sql_runtime,
-                web_runtime=web_runtime,
+                resources=CapabilityResources(
+                    custom_http_runtime=custom_http_runtime,
+                    sql_runtime=sql_runtime,
+                    web_runtime=web_runtime,
+                ),
+                custom_tools=custom_tools,
             )
         except BaseException:
             _close_quietly(web_runtime)
@@ -439,9 +489,67 @@ class CapabilityControlService:
             _close_quietly(custom_http_runtime)
             raise
 
-    def _build_skill_registry(self, tools: ToolRegistry) -> SkillRegistry:
+    def _build_runtime_projection(self, previous: CapabilityRuntime) -> CapabilityRuntime:
+        skills, factory, catalog = self._build_projection(
+            tools=previous.tools,
+            settings=previous.settings,
+        )
+        return CapabilityRuntime(
+            settings=previous.settings,
+            tools=previous.tools,
+            skills=skills,
+            factory=factory,
+            catalog=catalog,
+            resources=previous.resources,
+            custom_tools=previous.custom_tools,
+        )
+
+    def _build_projection(
+        self,
+        *,
+        tools: ToolRegistry,
+        settings: AppSettings,
+    ) -> tuple[SkillRegistry, AgentRuntimeFactory, CapabilityCatalog]:
+        skill_records = tuple(self.repository.list_skills())
+        skills = self._build_skill_registry(tools, skill_records)
+        skill_secret_names = frozenset(
+            secret
+            for record in skill_records
+            if record.enabled
+            for secret in record.required_secrets
+        )
+        secret_provider = partial(
+            configured_secret_names,
+            sql_assistant_settings=settings.sql_assistant,
+            web_research_settings=settings.web_research,
+            sandbox_settings=settings.sandbox,
+            additional_secret_names=skill_secret_names,
+        )
+        factory = AgentRuntimeFactory(
+            settings=settings,
+            models=runtime_factory.models,
+            agent_builder=runtime_factory.agent_builder,
+            tools=tools,
+            skills=skills,
+            secret_names_provider=secret_provider,
+        )
+        return (
+            skills,
+            factory,
+            CapabilityCatalog(
+                skills=skills,
+                tools=tools,
+                secret_names_provider=secret_provider,
+            ),
+        )
+
+    def _build_skill_registry(
+        self,
+        tools: ToolRegistry,
+        records: tuple[ManagedSkillRecord, ...],
+    ) -> SkillRegistry:
         definitions: list[SkillDefinition] = []
-        for record in self.repository.list_skills():
+        for record in records:
             if not record.enabled:
                 continue
             manifest = SkillManifest(
@@ -497,7 +605,7 @@ class CapabilityControlService:
         payload: dict[str, Any],
         *,
         version: str,
-        created_at=None,
+        created_at: datetime | None = None,
     ) -> ManagedHttpToolRecord:
         try:
             endpoint = validate_custom_http_endpoint(
@@ -644,9 +752,7 @@ def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
-def _placeholder_time():
-    from datetime import UTC, datetime
-
+def _placeholder_time() -> datetime:
     return datetime.now(UTC)
 
 
@@ -665,6 +771,7 @@ capability_control_service = CapabilityControlService()
 
 
 __all__ = [
+    "CapabilityResources",
     "CapabilityRuntime",
     "CapabilityControlService",
     "capability_control_service",

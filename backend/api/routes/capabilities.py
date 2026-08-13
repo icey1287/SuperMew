@@ -6,7 +6,6 @@ from backend.capabilities.control_service import (
     CapabilityControlService,
     capability_control_service,
 )
-from backend.capabilities.runtime import runtime_capability_catalog
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import User
 from backend.infra.auth import get_current_user
@@ -27,7 +26,7 @@ router = APIRouter(prefix="/v1", tags=["capabilities"])
 
 
 def get_capability_catalog() -> CapabilityCatalog:
-    return runtime_capability_catalog
+    return capability_control_service.catalog
 
 
 def get_capability_control_service() -> CapabilityControlService:

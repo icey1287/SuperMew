@@ -814,39 +814,6 @@ def build_web_research_runtime(
     except BaseException:
         resolver.close()
         raise
-_runtime_lock = threading.RLock()
-_installed_runtime: WebResearchRuntime | None = None
-
-
-def install_web_research_runtime(runtime: WebResearchRuntime) -> None:
-    """Install the process runtime from the application composition root."""
-
-    if not isinstance(runtime, WebResearchRuntime):
-        raise TypeError("runtime must be WebResearchRuntime")
-    global _installed_runtime
-    with _runtime_lock:
-        _installed_runtime = runtime
-
-
-def clear_web_research_runtime(runtime: WebResearchRuntime | None = None) -> None:
-    """Clear one installed runtime without closing a replacement instance."""
-
-    global _installed_runtime
-    with _runtime_lock:
-        if runtime is None or _installed_runtime is runtime:
-            _installed_runtime = None
-
-
-def get_web_research_runtime() -> WebResearchRuntime:
-    """Resolve the request-independent runtime used by Tool Adapters."""
-
-    with _runtime_lock:
-        runtime = _installed_runtime
-    if runtime is None:
-        raise WebResearchError(WebResearchErrorCode.RUNTIME_NOT_CONFIGURED)
-    return runtime
-
-
 def _raise_if_cancelled(cancellation_probe: CancellationProbe | None) -> None:
     if cancellation_probe is None:
         return
@@ -999,10 +966,7 @@ __all__ = [
     "AppWebResearchSettingsLike",
     "TavilyKeylessWebSearchAdapter",
     "build_web_research_runtime",
-    "clear_web_research_runtime",
     "DisabledWebSearchAdapter",
-    "get_web_research_runtime",
-    "install_web_research_runtime",
     "WebResearchError",
     "WebResearchErrorCode",
     "WebResearchRuntime",

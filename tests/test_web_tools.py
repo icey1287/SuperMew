@@ -97,7 +97,7 @@ def test_feature_flag_and_runtime_capability_intersection_fail_closed():
     )
 
 
-def test_tool_envelope_budget_does_not_reuse_http_response_budget(monkeypatch):
+def test_tool_envelope_budget_does_not_reuse_http_response_budget():
     settings = WebResearchSettings(
         _env_file=None,
         WEB_RESEARCH_ENABLED=True,
@@ -112,11 +112,10 @@ def test_tool_envelope_budget_does_not_reuse_http_response_budget(monkeypatch):
         def search(self, query, *, limit, deadline_at, cancellation_probe):
             return result
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
+    registry = build_default_tool_registry(
+        web_research_settings=settings,
+        web_runtime=Runtime(),
     )
-    registry = build_default_tool_registry(web_research_settings=settings)
     assert registry.descriptor("web_search").result_size_limit == 145_536
 
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-envelope")
@@ -133,7 +132,7 @@ def test_tool_envelope_budget_does_not_reuse_http_response_budget(monkeypatch):
     ctx.close()
 
 
-def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
+def test_web_search_passes_run_controls_and_mints_fetch_capability():
     calls: list[dict] = []
     result = _result()
 
@@ -149,11 +148,6 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
             )
             return result
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
-    )
-
     def cancelled() -> bool:
         return False
 
@@ -162,7 +156,10 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
         deadline_at=1234.5,
         cancellation_probe=cancelled,
     )
-    registry = build_default_tool_registry(web_research_settings=_settings())
+    registry = build_default_tool_registry(
+        web_research_settings=_settings(),
+        web_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search", "web_fetch"})
     session.search("public web evidence")
@@ -192,7 +189,7 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability(monkeypatch):
     ctx.close()
 
 
-def test_repeated_web_searches_share_one_run_evidence_budget(monkeypatch):
+def test_repeated_web_searches_share_one_run_evidence_budget():
     settings = WebResearchSettings(
         _env_file=None,
         WEB_RESEARCH_ENABLED=True,
@@ -210,12 +207,11 @@ def test_repeated_web_searches_share_one_run_evidence_budget(monkeypatch):
                 content=(f"evidence-{calls}-" + ("x" * 2_600)),
             )
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-cumulative")
-    registry = build_default_tool_registry(web_research_settings=settings)
+    registry = build_default_tool_registry(
+        web_research_settings=settings,
+        web_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})
     session.search("public web evidence")
@@ -239,7 +235,7 @@ def test_repeated_web_searches_share_one_run_evidence_budget(monkeypatch):
     ctx.close()
 
 
-def test_web_fetch_accepts_only_run_local_search_evidence(monkeypatch):
+def test_web_fetch_accepts_only_run_local_search_evidence():
     calls: list[dict] = []
     search_result = _result()
     fetched_result = _result(
@@ -261,13 +257,12 @@ def test_web_fetch_accepts_only_run_local_search_evidence(monkeypatch):
             )
             return fetched_result
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-fetch")
     ctx.configure_provider_runtime(deadline_at=55.0, cancellation_probe=lambda: False)
-    registry = build_default_tool_registry(web_research_settings=_settings())
+    registry = build_default_tool_registry(
+        web_research_settings=_settings(),
+        web_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search", "web_fetch"})
     session.search("public web evidence fetch")
@@ -293,7 +288,7 @@ def test_web_fetch_accepts_only_run_local_search_evidence(monkeypatch):
     ctx.close()
 
 
-def test_web_runtime_stable_error_is_preserved_without_sensitive_details(monkeypatch):
+def test_web_runtime_stable_error_is_preserved_without_sensitive_details():
     class Runtime:
         def search(self, query, *, limit, deadline_at, cancellation_probe):
             raise WebResearchError(
@@ -302,12 +297,11 @@ def test_web_runtime_stable_error_is_preserved_without_sensitive_details(monkeyp
                 safe_details={"source_count": 0},
             )
 
-    monkeypatch.setattr(
-        "backend.tools.web.get_web_research_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-failure")
-    registry = build_default_tool_registry(web_research_settings=_settings())
+    registry = build_default_tool_registry(
+        web_research_settings=_settings(),
+        web_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"web_search"})
     session.search("public web evidence")

@@ -85,7 +85,7 @@ def test_disabled_or_secretless_sql_assistant_is_not_authorized():
     )
 
 
-def test_sql_query_adapter_passes_run_deadline_and_cancellation(monkeypatch):
+def test_sql_query_adapter_passes_run_deadline_and_cancellation():
     calls: list[dict] = []
 
     class Runtime:
@@ -114,11 +114,6 @@ def test_sql_query_adapter_passes_run_deadline_and_cancellation(monkeypatch):
             }
 
     runtime = Runtime()
-    monkeypatch.setattr(
-        "backend.tools.sql.get_sql_assistant_runtime",
-        lambda: runtime,
-    )
-
     def cancelled() -> bool:
         return False
 
@@ -127,7 +122,10 @@ def test_sql_query_adapter_passes_run_deadline_and_cancellation(monkeypatch):
         deadline_at=1234.5,
         cancellation_probe=cancelled,
     )
-    registry = build_default_tool_registry(sql_assistant_settings=_settings())
+    registry = build_default_tool_registry(
+        sql_assistant_settings=_settings(),
+        sql_runtime=runtime,
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_schema", "sql_query"})
     session.search("read-only PostgreSQL query")
@@ -151,7 +149,7 @@ def test_sql_query_adapter_passes_run_deadline_and_cancellation(monkeypatch):
     ctx.close()
 
 
-def test_sql_schema_adapter_passes_only_requested_qualified_tables(monkeypatch):
+def test_sql_schema_adapter_passes_only_requested_qualified_tables():
     calls: list[tuple[str, ...]] = []
 
     class Runtime:
@@ -182,12 +180,11 @@ def test_sql_schema_adapter_passes_only_requested_qualified_tables(monkeypatch):
                 },
             }
 
-    monkeypatch.setattr(
-        "backend.tools.sql.get_sql_assistant_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-schema")
-    registry = build_default_tool_registry(sql_assistant_settings=_settings())
+    registry = build_default_tool_registry(
+        sql_assistant_settings=_settings(),
+        sql_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_schema", "sql_query"})
     session.search("authorized SQL schema")
@@ -202,17 +199,16 @@ def test_sql_schema_adapter_passes_only_requested_qualified_tables(monkeypatch):
     ctx.close()
 
 
-def test_sql_runtime_exception_is_redacted_by_registry(monkeypatch):
+def test_sql_runtime_exception_is_redacted_by_registry():
     class Runtime:
         def query(self, sql, *, deadline_at, cancellation_probe):
             raise RuntimeError("postgresql://reader:private-password@db/analytics")
 
-    monkeypatch.setattr(
-        "backend.tools.sql.get_sql_assistant_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-failure")
-    registry = build_default_tool_registry(sql_assistant_settings=_settings())
+    registry = build_default_tool_registry(
+        sql_assistant_settings=_settings(),
+        sql_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_query"})
     session.search("read-only query")
@@ -226,7 +222,7 @@ def test_sql_runtime_exception_is_redacted_by_registry(monkeypatch):
     ctx.close()
 
 
-def test_sql_runtime_stable_error_is_preserved_without_internal_message(monkeypatch):
+def test_sql_runtime_stable_error_is_preserved_without_internal_message():
     class Runtime:
         def query(self, sql, *, deadline_at, cancellation_probe):
             raise SqlAssistantError(
@@ -234,12 +230,11 @@ def test_sql_runtime_stable_error_is_preserved_without_internal_message(monkeypa
                 retryable=True,
             )
 
-    monkeypatch.setattr(
-        "backend.tools.sql.get_sql_assistant_runtime",
-        lambda: Runtime(),
-    )
     ctx = RunRequestContext.for_sync(user_id="admin", thread_id="sql-timeout")
-    registry = build_default_tool_registry(sql_assistant_settings=_settings())
+    registry = build_default_tool_registry(
+        sql_assistant_settings=_settings(),
+        sql_runtime=Runtime(),
+    )
     session = registry.bind(ctx, _access())
     session.apply_skill({"sql_query"})
     session.search("read-only query")

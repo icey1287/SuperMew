@@ -23,11 +23,13 @@ from backend.tools.registry import (
 from backend.tools.sql import (
     SQL_QUERY_METADATA_KEYS,
     SQL_SCHEMA_METADATA_KEYS,
+    SqlAssistantRuntime,
     make_sql_query,
     make_sql_schema,
 )
 from backend.tools.web import (
     WEB_RESEARCH_METADATA_KEYS,
+    WebResearchRuntime,
     make_web_fetch,
     make_web_search,
 )
@@ -117,6 +119,8 @@ def build_default_tool_registry(
     sql_assistant_settings: SqlAssistantSettings | None = None,
     web_research_settings: WebResearchSettings | None = None,
     sandbox_settings: SandboxSettings | None = None,
+    sql_runtime: SqlAssistantRuntime | None = None,
+    web_runtime: WebResearchRuntime | None = None,
     freeze: bool = True,
 ) -> ToolRegistry:
     sql_settings = sql_assistant_settings or SqlAssistantSettings()
@@ -248,7 +252,7 @@ def build_default_tool_registry(
             resource_scope="private-data-read",
             observability_metadata_keys=SQL_SCHEMA_METADATA_KEYS,
         ),
-        make_sql_schema,
+        partial(make_sql_schema, runtime=sql_runtime),
         exposure=ToolExposure.DEFERRED,
     )
     registry.register(
@@ -279,7 +283,7 @@ def build_default_tool_registry(
             resource_scope="private-data-read",
             observability_metadata_keys=SQL_QUERY_METADATA_KEYS,
         ),
-        make_sql_query,
+        partial(make_sql_query, runtime=sql_runtime),
         exposure=ToolExposure.DEFERRED,
     )
     registry.register(
@@ -306,6 +310,7 @@ def build_default_tool_registry(
         ),
         partial(
             make_web_search,
+            runtime=web_runtime,
             default_results=web_settings.default_search_results,
             max_total_evidence_bytes=web_settings.max_total_evidence_bytes,
         ),
@@ -335,6 +340,7 @@ def build_default_tool_registry(
         ),
         partial(
             make_web_fetch,
+            runtime=web_runtime,
             max_total_evidence_bytes=web_settings.max_total_evidence_bytes,
         ),
         exposure=ToolExposure.DEFERRED,

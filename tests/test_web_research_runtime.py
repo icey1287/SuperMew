@@ -17,9 +17,6 @@ from backend.web_research.runtime import (
     WebResearchRuntimeConfig,
     WebSearchHit,
     build_web_research_runtime,
-    clear_web_research_runtime,
-    get_web_research_runtime,
-    install_web_research_runtime,
 )
 from backend.web_research.url_policy import WebUrlPolicy
 
@@ -334,21 +331,6 @@ def test_tavily_keyless_adapter_posts_bounded_json_without_an_api_key() -> None:
     assert client.calls[0][2]["body"] == (
         b'{"query":"safe query","search_depth":"basic","max_results":1}'
     )
-
-
-def test_process_runtime_is_installed_only_by_the_composition_root() -> None:
-    runtime = WebResearchRuntime(url_policy=_policy(), search_adapter=_Search(()))
-    runtime.start()
-    clear_web_research_runtime()
-    try:
-        with pytest.raises(WebResearchError) as raised:
-            get_web_research_runtime()
-        assert raised.value.code == WebResearchErrorCode.RUNTIME_NOT_CONFIGURED.value
-
-        install_web_research_runtime(runtime)
-        assert get_web_research_runtime() is runtime
-    finally:
-        clear_web_research_runtime(runtime)
 
 
 def test_lifecycle_readiness_matches_start_and_close_state() -> None:

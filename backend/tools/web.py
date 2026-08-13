@@ -45,16 +45,6 @@ _WEB_TOOL_VERSION = "1.0.0"
 _MAX_WEB_TOOL_DURATION_MS = 999_999
 
 
-def get_web_research_runtime() -> WebResearchRuntime:
-    """Resolve the installed runtime without capturing it in a Run."""
-
-    from backend.web_research.runtime import (
-        get_web_research_runtime as resolve_runtime,
-    )
-
-    return resolve_runtime()
-
-
 def _tool_result(result: WebResearchResult) -> ToolResultV1:
     if not isinstance(result, WebResearchResult):
         raise TypeError("Web runtime returned an invalid result contract")
@@ -257,10 +247,14 @@ def _web_failure(error: Exception) -> ToolResultV1 | None:
 def make_web_search(
     ctx: RunRequestContext,
     *,
+    runtime: WebResearchRuntime | None = None,
     default_results: int = 5,
     max_total_evidence_bytes: int = 3_072,
 ) -> BaseTool:
     """Build a request-owned search Adapter and mint Run-local fetch capabilities."""
+
+    if runtime is None:
+        raise RuntimeError("Web Research runtime is not configured")
 
     @tool("web_search")
     def web_search(query: str, max_results: int = default_results) -> ToolResultV1:
@@ -274,7 +268,7 @@ def make_web_search(
         ) < _registered_tool_result_size(empty, tool_name="web_search"):
             return _tool_result(empty)
         try:
-            result = get_web_research_runtime().search(
+            result = runtime.search(
                 query,
                 limit=max_results,
                 deadline_at=deadline_at,
@@ -301,9 +295,13 @@ def make_web_search(
 def make_web_fetch(
     ctx: RunRequestContext,
     *,
+    runtime: WebResearchRuntime | None = None,
     max_total_evidence_bytes: int = 3_072,
 ) -> BaseTool:
     """Build a request-owned fetch Adapter over search-minted capabilities."""
+
+    if runtime is None:
+        raise RuntimeError("Web Research runtime is not configured")
 
     @tool("web_fetch")
     def web_fetch(evidence_id: str) -> ToolResultV1:
@@ -323,7 +321,7 @@ def make_web_fetch(
             )
         deadline_at, cancellation_probe = ctx.provider_runtime()
         try:
-            result = get_web_research_runtime().fetch(
+            result = runtime.fetch(
                 url,
                 deadline_at=deadline_at,
                 cancellation_probe=cancellation_probe,
@@ -348,7 +346,6 @@ def make_web_fetch(
 __all__ = [
     "WEB_RESEARCH_METADATA_KEYS",
     "WebResearchRuntime",
-    "get_web_research_runtime",
     "make_web_fetch",
     "make_web_search",
 ]
