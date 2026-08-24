@@ -85,7 +85,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         utils._milvus_manager = store
 
         with self.assertRaises(ProviderError) as raised:
-            utils.retrieve_documents("query", top_k=1)
+            utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(ProviderCode.EMBEDDING_UNAVAILABLE, raised.exception.code)
         self.assertEqual(1, embedding.calls)
@@ -114,7 +114,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         utils._milvus_manager = store
 
         with self.assertRaises(ProviderError) as raised:
-            utils.retrieve_documents("query", top_k=1)
+            utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(ProviderCode.VECTOR_STORE_UNAVAILABLE, raised.exception.code)
         self.assertEqual(2, store.hybrid_calls)
@@ -131,7 +131,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         utils._milvus_manager = Store()
 
         with self.assertRaises(ProviderError) as raised:
-            utils.retrieve_documents("query", top_k=1)
+            utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(ProviderCode.VECTOR_STORE_UNAVAILABLE, raised.exception.code)
 
@@ -148,7 +148,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         utils._embedding_service = _HealthyEmbedding()
         utils._milvus_manager = Store()
 
-        result = utils.retrieve_documents("query", top_k=1)
+        result = utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual([], result["docs"])
         self.assertTrue(result["meta"]["retrieval_empty"])
@@ -221,7 +221,7 @@ class RagFaultInjectionTests(unittest.TestCase):
             retryable=False,
             attempts=1,
         )
-        result = utils.retrieve_documents("query", top_k=1)
+        result = utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(1, len(result["docs"]))
         self.assertEqual("RERANK_INVALID_RESPONSE", result["meta"]["rerank_error_code"])
@@ -247,7 +247,7 @@ class RagFaultInjectionTests(unittest.TestCase):
             retryable=True,
             attempts=2,
         )
-        result = utils.retrieve_documents("query", top_k=1)
+        result = utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(1, len(result["docs"]))
         self.assertFalse(result["meta"]["retrieval_empty"])
@@ -264,7 +264,7 @@ class RagFaultInjectionTests(unittest.TestCase):
 
         utils._milvus_manager = Store()
         utils._rerank_stage = _RerankStageStub(enabled=False)
-        result = utils.retrieve_documents("query", top_k=1)
+        result = utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(1, len(result["docs"]))
         self.assertFalse(result["meta"]["retrieval_empty"])
@@ -302,7 +302,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         )
 
         with patch.object(utils.time, "monotonic", clock.monotonic):
-            result = utils.retrieve_documents("query", top_k=1)
+            result = utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual([], result["docs"])
         self.assertEqual(1, len(dense_timeouts))

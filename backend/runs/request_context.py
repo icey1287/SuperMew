@@ -31,6 +31,17 @@ _WEB_EVIDENCE_ID = re.compile(r"web_ev_[0-9a-f]{64}")
 _MAX_WEB_EVIDENCE_ITEMS = 64
 
 
+def _optional_tenant_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("tenant_id must be a string")
+    tenant_id = value.strip()
+    if not tenant_id:
+        raise ValueError("tenant_id must not be empty")
+    return tenant_id
+
+
 @dataclass(frozen=True, slots=True)
 class _WebFetchAuthorization:
     canonical_url: str
@@ -46,6 +57,7 @@ class RunRequestContext:
     output_queue: Optional[asyncio.Queue] = None
     loop: Optional[asyncio.AbstractEventLoop] = None
 
+    _tenant_id: str | None = field(default=None, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _active: bool = True
     _rag_trace: Optional[dict] = None
@@ -79,12 +91,14 @@ class RunRequestContext:
         thread_id: str,
         output_queue: asyncio.Queue,
         model_snapshot: ModelCatalogSnapshot | None = None,
+        tenant_id: str | None = None,
     ) -> RunRequestContext:
         return cls(
             user_id=user_id,
             thread_id=thread_id,
             output_queue=output_queue,
             loop=asyncio.get_running_loop(),
+            _tenant_id=_optional_tenant_id(tenant_id),
             _model_snapshot=model_snapshot,
         )
 
@@ -95,12 +109,26 @@ class RunRequestContext:
         user_id: str,
         thread_id: str,
         model_snapshot: ModelCatalogSnapshot | None = None,
+        tenant_id: str | None = None,
     ) -> RunRequestContext:
         return cls(
             user_id=user_id,
             thread_id=thread_id,
+            _tenant_id=_optional_tenant_id(tenant_id),
             _model_snapshot=model_snapshot,
         )
+
+    @property
+    def tenant_id(self) -> str | None:
+        """Return the immutable tenant bound when this request was created."""
+
+        return self._tenant_id
+
+    def require_tenant_id(self) -> str:
+        tenant_id = self._tenant_id
+        if tenant_id is None:
+            raise ValueError("tenant_id is required for tenant-scoped operations")
+        return tenant_id
 
     def configure_model_snapshot(self, snapshot: ModelCatalogSnapshot) -> None:
         with self._lock:

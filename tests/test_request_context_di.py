@@ -12,6 +12,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tenant_binding_is_normalized_immutable_and_fail_closed(self):
+        context = RunRequestContext.for_sync(
+            user_id="a",
+            thread_id="s1",
+            tenant_id=" tenant-a ",
+        )
+        tenantless = RunRequestContext.for_sync(user_id="b", thread_id="s2")
+        try:
+            self.assertEqual("tenant-a", context.tenant_id)
+            self.assertEqual("tenant-a", context.require_tenant_id())
+            with self.assertRaises(AttributeError):
+                context.tenant_id = "tenant-b"
+            with self.assertRaisesRegex(ValueError, "tenant_id"):
+                tenantless.require_tenant_id()
+        finally:
+            context.close()
+            tenantless.close()
+
     async def test_two_request_contexts_do_not_share_rag_steps(self):
         queue_a = asyncio.Queue()
         queue_b = asyncio.Queue()

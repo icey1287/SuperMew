@@ -69,7 +69,7 @@ class DocumentRetrievalScope:
     def resolve(
         self,
         *,
-        tenant_id: str = "default",
+        tenant_id: str,
         knowledge_base_id: str | None = None,
         leaf_chunk_level: int = 3,
     ) -> RetrievalSnapshot:

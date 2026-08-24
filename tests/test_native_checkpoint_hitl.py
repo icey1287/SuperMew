@@ -15,6 +15,7 @@ from backend.db.models import Base, Message, Run, RunCheckpoint, RunEvent, User
 from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
     HitlCheckpointRepository,
+    _assert_checkpoint_tenant,
 )
 from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
@@ -72,6 +73,7 @@ class NativeCheckpointGraphTests(unittest.TestCase):
         pipeline, _ = self._pipeline(clarify_rounds=0)
         state = pipeline._initial_state(
             "丹瑾是什么属性？",
+            tenant_id="tenant-a",
             runtime_context_id="ragctx_test",
         )
 
@@ -83,17 +85,59 @@ class NativeCheckpointGraphTests(unittest.TestCase):
             any(isinstance(value, RunRequestContext) for value in state.values())
         )
 
+    def test_durable_resume_rejects_a_different_or_missing_tenant_context(self):
+        context_a = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-1",
+            tenant_id="tenant-a",
+        )
+        context_b = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-1",
+            tenant_id="tenant-b",
+        )
+        tenantless = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-1",
+        )
+        try:
+            self.assertEqual(
+                "tenant-a",
+                _assert_checkpoint_tenant({"tenant_id": "tenant-a"}, context_a),
+            )
+            with self.assertRaises(AppError) as mismatched:
+                _assert_checkpoint_tenant({"tenant_id": "tenant-a"}, context_b)
+            with self.assertRaises(AppError) as missing_context:
+                _assert_checkpoint_tenant({"tenant_id": "tenant-a"}, tenantless)
+            with self.assertRaises(AppError) as missing_checkpoint:
+                _assert_checkpoint_tenant({}, context_a)
+        finally:
+            context_a.close()
+            context_b.close()
+            tenantless.close()
+
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, mismatched.exception.code)
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, missing_context.exception.code)
+        self.assertEqual(
+            ErrorCode.RUN_STATE_CONFLICT, missing_checkpoint.exception.code
+        )
+
     def test_new_graph_instance_resumes_without_repeating_completed_nodes(self):
         pipeline, calls = self._pipeline(clarify_rounds=1)
         saver = InMemorySaver()
         config = {"configurable": {"thread_id": "run_native_resume"}}
-        context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
+        context = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-1",
+            tenant_id="tenant-a",
+        )
         try:
             graph = pipeline.build_rag_graph(checkpointer=saver)
             with pipeline.bind_rag_runtime_context(context) as runtime_context_id:
                 paused = graph.invoke(
                     pipeline._initial_state(
                         self.QUESTION,
+                        tenant_id=context.require_tenant_id(),
                         runtime_context_id=runtime_context_id,
                     ),
                     config=config,
@@ -124,13 +168,18 @@ class NativeCheckpointGraphTests(unittest.TestCase):
         pipeline, calls = self._pipeline(clarify_rounds=2)
         saver = InMemorySaver()
         config = {"configurable": {"thread_id": "run_multi_hitl"}}
-        context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
+        context = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-1",
+            tenant_id="tenant-a",
+        )
         try:
             graph1 = pipeline.build_rag_graph(checkpointer=saver)
             with pipeline.bind_rag_runtime_context(context) as runtime_context_id:
                 first = graph1.invoke(
                     pipeline._initial_state(
                         self.QUESTION,
+                        tenant_id=context.require_tenant_id(),
                         runtime_context_id=runtime_context_id,
                     ),
                     config=config,
@@ -420,6 +469,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         context = RunRequestContext.for_sync(
             user_id="alice",
             thread_id="thread-runner",
+            tenant_id="default",
         )
         runner1 = CheckpointedRagRunner(
             saver_factory=saver_factory,

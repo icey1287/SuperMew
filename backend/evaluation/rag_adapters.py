@@ -84,6 +84,7 @@ class LiveRagEvalAdapter:
 
         load_env()
         from backend.agent.models import model_registry
+        from backend.core.settings import get_settings
         from backend.runs.request_context import RunRequestContext
         from backend.providers.core import ProviderError
         from backend.providers.runtime import provider_runtime
@@ -114,6 +115,7 @@ class LiveRagEvalAdapter:
                     user_id=self.user_id,
                     thread_id=f"rag_eval_{case.id}",
                     model_snapshot=model_registry.environment_snapshot(),
+                    tenant_id=get_settings().app.default_tenant_id,
                 )
                 ctx.configure_provider_runtime(
                     deadline_at=started_at + self.timeout_seconds,
@@ -356,7 +358,9 @@ def live_rag_profile_snapshot(*, profile_id: str, index_id: str) -> dict[str, An
     from backend.agent.models import model_registry
 
     try:
-        snapshot = utils.resolve_retrieval_snapshot()
+        snapshot = utils.resolve_retrieval_snapshot(
+            tenant_id=settings.app.default_tenant_id,
+        )
     except Exception as exc:
         raise RagEvalExecutionError(
             "live RAG profile could not resolve the effective document index"

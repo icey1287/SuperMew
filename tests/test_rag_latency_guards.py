@@ -190,7 +190,7 @@ class RagLatencyGuardTests(unittest.TestCase):
             }
         )
 
-        result = utils.retrieve_documents("query", top_k=1)
+        result = utils.retrieve_documents("query", top_k=1, tenant_id="default")
 
         self.assertEqual(1, embedding_service.calls)
         self.assertEqual("dense_fallback", result["meta"]["retrieval_mode"])
@@ -220,7 +220,11 @@ class RagLatencyGuardTests(unittest.TestCase):
         embedding = SemanticEmbedding()
         utils._embedding_service = embedding
 
-        result = utils.retrieve_documents("query text", top_k=1)
+        result = utils.retrieve_documents(
+            "query text",
+            top_k=1,
+            tenant_id="default",
+        )
 
         self.assertEqual(1, len(embedding.calls))
         self.assertEqual("query text", embedding.calls[0][0])

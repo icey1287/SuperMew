@@ -58,7 +58,7 @@ def test_candidate_is_invisible_and_snapshot_keeps_old_current():
     catalog = FakeCatalog([document], index_id="index-v1")
     scope = DocumentRetrievalScope(catalog)
 
-    before = scope.resolve()
+    before = scope.resolve(tenant_id="default")
     before_target = before.targets[0]
     assert before_target.document_version_ids == ("version-v1",)
     assert "version-v2" not in before_target.filter_expr
@@ -66,7 +66,7 @@ def test_candidate_is_invisible_and_snapshot_keeps_old_current():
     document.current_version = _version("version-v2")
     document.pending_version = None
     catalog.index_id = "index-v2"
-    after = scope.resolve()
+    after = scope.resolve(tenant_id="default")
 
     assert before.index_id == "index-v1"
     assert before_target.document_version_ids == ("version-v1",)
@@ -119,7 +119,7 @@ def test_catalog_scope_and_index_identity_come_from_one_atomic_snapshot():
     ]
     catalog = FakeCatalog(documents)
 
-    snapshot = DocumentRetrievalScope(catalog).resolve()
+    snapshot = DocumentRetrievalScope(catalog).resolve(tenant_id="default")
 
     assert catalog.snapshot_calls == 1
     assert snapshot.catalog_document_count == 3
@@ -132,7 +132,7 @@ def test_catalog_failure_is_not_converted_to_empty_scope():
             raise RuntimeError("postgres unavailable")
 
     with pytest.raises(RuntimeError, match="postgres unavailable"):
-        DocumentRetrievalScope(BrokenCatalog([])).resolve()
+        DocumentRetrievalScope(BrokenCatalog([])).resolve(tenant_id="default")
 
 
 def test_invalid_collection_name_fails_closed():
@@ -141,4 +141,13 @@ def test_invalid_collection_name_fails_closed():
     )
 
     with pytest.raises(ValueError, match="invalid Milvus collection"):
-        DocumentRetrievalScope(catalog).resolve()
+        DocumentRetrievalScope(catalog).resolve(tenant_id="default")
+
+
+def test_scope_requires_an_explicit_nonempty_tenant():
+    scope = DocumentRetrievalScope(FakeCatalog([]))
+
+    with pytest.raises(TypeError, match="tenant_id"):
+        scope.resolve()
+    with pytest.raises(ValueError, match="tenant_id"):
+        scope.resolve(tenant_id=" ")

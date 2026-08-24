@@ -151,6 +151,7 @@ class ComplexityResult(BaseModel):
 
 
 class RAGState(TypedDict):
+    tenant_id: str
     original_question: str
     question: str
     query: str
@@ -310,11 +311,21 @@ def _provider_deadline(run_deadline: float | None, timeout_seconds: float) -> fl
     )
 
 
+def _required_tenant_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("tenant_id is required for RAG retrieval")
+    tenant_id = value.strip()
+    if not tenant_id:
+        raise ValueError("tenant_id is required for RAG retrieval")
+    return tenant_id
+
+
 def _retrieve_for_state(state: RAGState, query: str) -> dict:
     deadline, cancellation = _provider_runtime(state)
     return retrieve_documents(
         query,
         top_k=RETRIEVAL_TOP_K,
+        tenant_id=_required_tenant_id(state.get("tenant_id")),
         deadline=deadline,
         cancellation=cancellation,
     )
@@ -347,12 +358,16 @@ def _initial_state(
     question: str,
     ctx: RunRequestContext | None = None,
     *,
+    tenant_id: str | None = None,
     runtime_context_id: str | None = None,
     model_snapshot: ModelCatalogSnapshot | dict | None = None,
     is_sub_agent: bool = False,
     rag_step_group: Optional[str] = None,
     rag_step_group_label: Optional[str] = None,
 ) -> dict:
+    if tenant_id is None and ctx is not None:
+        tenant_id = ctx.require_tenant_id()
+    tenant_id = _required_tenant_id(tenant_id)
     if runtime_context_id is None and ctx is not None:
         runtime_context_id = register_rag_runtime_context(ctx)
     if model_snapshot is None and ctx is not None:
@@ -360,6 +375,7 @@ def _initial_state(
     if isinstance(model_snapshot, ModelCatalogSnapshot):
         model_snapshot = model_snapshot.model_dump(mode="json")
     return {
+        "tenant_id": tenant_id,
         "original_question": question,
         "question": question,
         "query": question,
@@ -988,6 +1004,7 @@ def _fanout_sub_questions(state: RAGState):
             "rag_sub_agent",
             _initial_state(
                 sq,
+                tenant_id=state.get("tenant_id"),
                 runtime_context_id=state.get("runtime_context_id"),
                 model_snapshot=state.get("model_snapshot"),
                 is_sub_agent=True,
@@ -1384,6 +1401,31 @@ def resume_rag_from_hitl(
     graph = build_rag_graph(checkpointer=saver)
     config = {"configurable": {"thread_id": checkpoint_thread_id}}
     snapshot = graph.get_state(config)
+    try:
+        checkpoint_tenant_id = _required_tenant_id(snapshot.values.get("tenant_id"))
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint 缺少 tenant 上下文",
+            status_code=409,
+            stage="hitl_resume",
+        ) from exc
+    try:
+        request_tenant_id = ctx.require_tenant_id()
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL 恢复缺少 tenant 上下文",
+            status_code=409,
+            stage="hitl_resume",
+        ) from exc
+    if checkpoint_tenant_id != request_tenant_id:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint tenant 不匹配",
+            status_code=409,
+            stage="hitl_resume",
+        )
     runtime_context_id = snapshot.values.get("runtime_context_id")
     with bind_rag_runtime_context(ctx, runtime_context_id):
         result = graph.invoke(Command(resume=user_answer), config=config)
@@ -1410,6 +1452,7 @@ def run_rag_graph(question: str, ctx: RunRequestContext) -> dict:
         result = graph.invoke(
             _initial_state(
                 question,
+                tenant_id=ctx.require_tenant_id(),
                 runtime_context_id=runtime_context_id,
                 model_snapshot=ctx.model_catalog_snapshot(),
             ),

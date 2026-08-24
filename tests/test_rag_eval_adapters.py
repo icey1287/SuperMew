@@ -436,6 +436,7 @@ def test_rag_source_fingerprint_is_stable_and_content_addressed():
 
 def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
     settings = SimpleNamespace(
+        app=SimpleNamespace(default_tenant_id="tenant-a"),
         models=SimpleNamespace(
             answer_model="answer",
             fast_model="fast",
@@ -471,7 +472,7 @@ def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
         ),
     )
     utils = SimpleNamespace(
-        resolve_retrieval_snapshot=lambda: snapshot,
+        resolve_retrieval_snapshot=lambda **_kwargs: snapshot,
         RETRIEVAL_TOP_K=8,
         RETRIEVAL_CANDIDATE_MULTIPLIER=3,
         _RETRIEVAL_CANDIDATE_K_RAW="",

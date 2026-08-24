@@ -32,6 +32,35 @@ def _jsonable(value):
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
+def _assert_checkpoint_tenant(
+    state: dict,
+    context: RunRequestContext,
+) -> str:
+    checkpoint_tenant = state.get("tenant_id")
+    if not isinstance(checkpoint_tenant, str) or not checkpoint_tenant.strip():
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint 缺少 tenant 上下文",
+            status_code=409,
+        )
+    checkpoint_tenant = checkpoint_tenant.strip()
+    try:
+        context_tenant = context.require_tenant_id()
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL 恢复缺少 tenant 上下文",
+            status_code=409,
+        ) from exc
+    if checkpoint_tenant != context_tenant:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint tenant 不匹配",
+            status_code=409,
+        )
+    return checkpoint_tenant
+
+
 @dataclass(frozen=True)
 class CheckpointPause:
     run_id: str
@@ -515,6 +544,7 @@ class CheckpointedRagRunner:
                 result = graph.invoke(
                     _initial_state(
                         question,
+                        tenant_id=context.require_tenant_id(),
                         runtime_context_id=runtime_context_id,
                         model_snapshot=context.model_catalog_snapshot(),
                     ),
@@ -576,6 +606,7 @@ class CheckpointedRagRunner:
                     "HITL checkpoint 状态不存在",
                     status_code=409,
                 )
+            _assert_checkpoint_tenant(dict(snapshot.values), context)
             result = dict(snapshot.values)
             latest_checkpoint_id = snapshot.config["configurable"].get("checkpoint_id")
             if (

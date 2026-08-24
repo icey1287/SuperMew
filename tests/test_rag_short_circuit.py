@@ -1,11 +1,13 @@
 import importlib.util
 import hashlib
+import inspect
 import sys
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from backend.core.errors import AppError, ErrorCode
 from backend.runs.request_context import RunRequestContext
 from backend.providers import ProviderCode, ProviderError, ProviderOperation
 
@@ -68,9 +70,25 @@ def load_pipeline(
 
     fake_utils = types.ModuleType("backend.rag.utils")
     fake_utils.RETRIEVAL_TOP_K = 5
-    fake_utils.retrieve_documents = lambda query, top_k=5, **kwargs: retrieve_documents(
-        query, top_k=top_k
+    retrieve_parameters = inspect.signature(retrieve_documents).parameters
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in retrieve_parameters.values()
     )
+
+    def fake_retrieve_documents(query, top_k=5, **kwargs):
+        forwarded = (
+            kwargs
+            if accepts_kwargs
+            else {
+                key: value
+                for key, value in kwargs.items()
+                if key in retrieve_parameters
+            }
+        )
+        return retrieve_documents(query, top_k=top_k, **forwarded)
+
+    fake_utils.retrieve_documents = fake_retrieve_documents
     rewrite_impl = rewrite_query_once or (
         lambda query: {
             "rewrite_method": "step_back",
@@ -150,7 +168,144 @@ def _meta(count):
 
 class RagShortCircuitTests(unittest.TestCase):
     def _ctx(self):
-        return RunRequestContext.for_sync(user_id="u", thread_id="s")
+        return RunRequestContext.for_sync(
+            user_id="u",
+            thread_id="s",
+            tenant_id="tenant-a",
+        )
+
+    def test_two_tenants_keep_initial_retrieval_scoped_to_their_context(self):
+        seen_tenants = []
+
+        def retrieve(query, top_k=5, *, tenant_id):
+            del query, top_k
+            seen_tenants.append(tenant_id)
+            return {
+                "docs": [_doc(f"evidence for {tenant_id}", chunk_id=tenant_id)],
+                "meta": _meta(1),
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
+        )
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 1.0,
+            }
+        )
+
+        results = {}
+        for tenant_id in ("tenant-a", "tenant-b"):
+            ctx = RunRequestContext.for_sync(
+                user_id="u",
+                thread_id=f"thread-{tenant_id}",
+                tenant_id=tenant_id,
+            )
+            try:
+                results[tenant_id] = pipeline.run_rag_graph("scoped question", ctx)
+            finally:
+                ctx.close()
+
+        self.assertEqual(["tenant-a", "tenant-b"], seen_tenants)
+        self.assertEqual(
+            "evidence for tenant-a",
+            results["tenant-a"]["docs"][0]["text"],
+        )
+        self.assertEqual(
+            "evidence for tenant-b",
+            results["tenant-b"]["docs"][0]["text"],
+        )
+
+    def test_rag_fails_closed_when_request_context_has_no_tenant(self):
+        calls = []
+        pipeline = load_pipeline(
+            retrieve_documents=lambda query, top_k=5, **kwargs: calls.append(
+                (query, top_k, kwargs)
+            )
+        )
+        ctx = RunRequestContext.for_sync(user_id="u", thread_id="tenantless")
+        try:
+            with self.assertRaisesRegex(ValueError, "tenant_id"):
+                pipeline.run_rag_graph("scoped question", ctx)
+        finally:
+            ctx.close()
+
+        self.assertEqual([], calls)
+
+    def test_hitl_resume_rejects_a_context_from_another_tenant(self):
+        seen_tenants = []
+        grade_calls = 0
+
+        def retrieve(query, top_k=5, *, tenant_id):
+            del top_k
+            seen_tenants.append(tenant_id)
+            return {
+                "docs": [_doc(f"{tenant_id}: {query}", chunk_id=query)],
+                "meta": _meta(1),
+            }
+
+        def grade(schema, prompt):
+            del schema, prompt
+            nonlocal grade_calls
+            grade_calls += 1
+            if grade_calls == 1:
+                return {
+                    "relevance": "strong",
+                    "answerability": "partial",
+                    "ambiguity": "missing_slot",
+                    "route": "clarify",
+                    "confidence": 0.8,
+                    "missing_slots": ["角色名"],
+                    "hitl_prompt": "请补充角色名",
+                }
+            return {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 1.0,
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {"complexity": "simple", "reason": "unit"}
+        )
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
+        ctx_a = RunRequestContext.for_sync(
+            user_id="u",
+            thread_id="thread-a",
+            tenant_id="tenant-a",
+        )
+        ctx_b = RunRequestContext.for_sync(
+            user_id="u",
+            thread_id="thread-b",
+            tenant_id="tenant-b",
+        )
+        try:
+            paused = pipeline.run_rag_graph("这个角色是什么属性？", ctx_a)
+            with self.assertRaises(AppError) as raised:
+                pipeline.resume_rag_from_hitl(
+                    paused["hitl_resume_state"],
+                    "丹瑾",
+                    ctx_b,
+                )
+            resumed = pipeline.resume_rag_from_hitl(
+                paused["hitl_resume_state"],
+                "丹瑾",
+                ctx_a,
+            )
+        finally:
+            ctx_a.close()
+            ctx_b.close()
+
+        self.assertEqual(ErrorCode.RUN_STATE_CONFLICT, raised.exception.code)
+        self.assertEqual("answerable", resumed["retrieval_status"])
+        self.assertEqual(["tenant-a", "tenant-a"], seen_tenants)
 
     def test_simple_no_retrieval_short_circuits_without_rewrite(self):
         calls = {"retrieve": 0, "step_back": 0}

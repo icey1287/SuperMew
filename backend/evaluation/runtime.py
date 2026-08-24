@@ -9,6 +9,7 @@ from pydantic import Field
 
 from backend.agent.models import ModelRegistry, ModelRole, model_registry
 from backend.agent.runtime import extract_message_content
+from backend.core.settings import get_settings
 from backend.evaluation.rag import (
     RagEvalCase,
     RagEvalObservation,
@@ -82,6 +83,7 @@ class RagEvaluationRuntime:
             user_id="rag_evaluation_worker",
             thread_id=f"{job_id}:{case.id}",
             model_snapshot=model_snapshot,
+            tenant_id=get_settings().app.default_tenant_id,
         )
         context.configure_provider_runtime(
             deadline_at=deadline,

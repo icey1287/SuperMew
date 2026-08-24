@@ -134,15 +134,25 @@ _VECTOR_POLICY = ProviderPolicy(max_attempts=2)
 _MODEL_POLICY = ProviderPolicy(max_attempts=2)
 
 
+def _required_tenant_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("tenant_id is required for document retrieval")
+    tenant_id = value.strip()
+    if not tenant_id:
+        raise ValueError("tenant_id is required for document retrieval")
+    return tenant_id
+
+
 def resolve_retrieval_snapshot(
     *,
-    tenant_id: str = "default",
+    tenant_id: str,
     knowledge_base_id: str | None = None,
     deadline: float | None = None,
     cancellation: Callable[[], bool] | None = None,
 ) -> RetrievalSnapshot:
     """读取一次不可变 Catalog 检索快照；故障保持 typed Provider 语义。"""
 
+    tenant_id = _required_tenant_id(tenant_id)
     catalog_deadline = _bounded_deadline(deadline, VECTOR_TIMEOUT_SECONDS)
 
     def _resolve() -> RetrievalSnapshot:
@@ -154,6 +164,7 @@ def resolve_retrieval_snapshot(
         if (
             not isinstance(getattr(snapshot, "tenant_id", None), str)
             or not snapshot.tenant_id.strip()
+            or snapshot.tenant_id.strip() != tenant_id
             or not isinstance(getattr(snapshot, "index_id", None), str)
             or not snapshot.index_id.strip()
             or not isinstance(getattr(snapshot, "targets", None), (list, tuple))
@@ -701,11 +712,12 @@ def retrieve_documents(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
     *,
-    tenant_id: str = "default",
+    tenant_id: str,
     knowledge_base_id: str | None = None,
     deadline: float | None = None,
     cancellation: Callable[[], bool] | None = None,
 ) -> Dict[str, Any]:
+    tenant_id = _required_tenant_id(tenant_id)
     snapshot = resolve_retrieval_snapshot(
         tenant_id=tenant_id,
         knowledge_base_id=knowledge_base_id,

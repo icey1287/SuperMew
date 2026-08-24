@@ -385,6 +385,10 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             "default",
             self.runtime_factory.create_kwargs[0]["tenant_id"],
         )
+        self.assertEqual(
+            "default",
+            self.runtime_factory.create_kwargs[0]["request_context"].tenant_id,
+        )
         self.assertEqual("run", self.runtime_factory.create_kwargs[0]["channel"])
         self.assertIsNone(self.runtime_factory.create_kwargs[0]["approval_grant"])
         self.assertEqual(
@@ -500,6 +504,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         grant = create_kwargs["approval_grant"]
         self.assertIsInstance(grant, RunToolApprovalGrant)
         self.assertEqual("tenant-a", create_kwargs["tenant_id"])
+        self.assertEqual("tenant-a", create_kwargs["request_context"].tenant_id)
         self.assertEqual("run", create_kwargs["channel"])
         self.assertTrue(
             grant.allows(

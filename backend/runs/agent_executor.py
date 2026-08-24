@@ -499,6 +499,7 @@ class RunAgentExecutor:
             thread_id=snapshot.run.thread_id,
             output_queue=output_queue,
             model_snapshot=snapshot.model_snapshot,
+            tenant_id=snapshot.tenant_id,
         )
         remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
         context.configure_provider_runtime(
@@ -607,6 +608,7 @@ class RunAgentExecutor:
             thread_id=snapshot.run.thread_id,
             output_queue=output_queue,
             model_snapshot=snapshot.model_snapshot,
+            tenant_id=snapshot.tenant_id,
         )
         remaining_deadline = _remaining_deadline(snapshot.run.deadline_at)
         request_context.configure_provider_runtime(

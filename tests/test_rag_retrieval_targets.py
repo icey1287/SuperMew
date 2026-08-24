@@ -32,9 +32,9 @@ def _target(
     )
 
 
-def _snapshot(*targets, index_id="index-current"):
+def _snapshot(*targets, index_id="index-current", tenant_id="tenant-a"):
     return SimpleNamespace(
-        tenant_id="tenant-a",
+        tenant_id=tenant_id,
         index_id=index_id,
         targets=tuple(targets),
     )
@@ -138,6 +138,33 @@ def test_versioned_only_uses_snapshot_index_and_exact_target_filter():
     assert result["meta"]["retrieval_target_count"] == 1
 
 
+def test_retrieval_requires_an_explicit_nonempty_tenant_before_catalog_access():
+    utils = _utils()
+    scope = Scope(_snapshot(index_id="unused"))
+    utils._document_retrieval_scope = scope
+
+    with pytest.raises(TypeError, match="tenant_id"):
+        utils.retrieve_documents("question", top_k=1)
+    with pytest.raises(ValueError, match="tenant_id"):
+        utils.retrieve_documents("question", top_k=1, tenant_id=" ")
+
+    assert scope.calls == []
+
+
+def test_catalog_snapshot_cannot_switch_the_requested_tenant():
+    utils = _utils()
+    scope = Scope(_snapshot(index_id="foreign-index", tenant_id="tenant-b"))
+    embedding = Embedding()
+    utils._document_retrieval_scope = scope
+    utils._embedding_service = embedding
+
+    with pytest.raises(ProviderError) as raised:
+        utils.retrieve_documents("question", top_k=1, tenant_id="tenant-a")
+
+    assert raised.value.code == ProviderCode.VECTOR_STORE_UNAVAILABLE
+    assert embedding.calls == []
+
+
 def test_zero_target_snapshot_short_circuits_without_embedding_or_milvus():
     utils = _utils()
     embedding = Embedding()
@@ -150,7 +177,7 @@ def test_zero_target_snapshot_short_circuits_without_embedding_or_milvus():
 
     utils._milvus_manager = ForbiddenMilvus()
 
-    result = utils.retrieve_documents("question", top_k=2)
+    result = utils.retrieve_documents("question", top_k=2, tenant_id="tenant-a")
 
     assert result["docs"] == []
     assert result["meta"]["retrieval_mode"] == "catalog_empty"
@@ -182,7 +209,7 @@ def test_multiple_catalog_collections_are_routed_and_deduplicated():
         }
     )
 
-    result = utils.retrieve_documents("question", top_k=5)
+    result = utils.retrieve_documents("question", top_k=5, tenant_id="tenant-a")
 
     assert [item["chunk_id"] for item in result["docs"]] == [
         "versioned-1",
@@ -210,7 +237,7 @@ def test_multi_collection_hybrid_fallback_is_isolated_to_one_target():
         {"catalog_a": first_store, "catalog_b": second_store}
     )
 
-    result = utils.retrieve_documents("question", top_k=3)
+    result = utils.retrieve_documents("question", top_k=3, tenant_id="tenant-a")
 
     assert [item["chunk_id"] for item in result["docs"]] == ["a-1", "b-1"]
     assert first_store.dense_calls == []
@@ -237,7 +264,7 @@ def test_multi_collection_requires_an_adapter_that_can_route_targets():
     utils._milvus_manager = store
 
     with pytest.raises(ProviderError) as raised:
-        utils.retrieve_documents("question", top_k=1)
+        utils.retrieve_documents("question", top_k=1, tenant_id="tenant-a")
 
     assert raised.value.code == ProviderCode.VECTOR_STORE_UNAVAILABLE
     assert store.calls == 0
@@ -251,7 +278,7 @@ def test_required_missing_collection_is_typed_provider_failure():
     utils._milvus_manager = RoutedStore({"required": store})
 
     with pytest.raises(ProviderError) as raised:
-        utils.retrieve_documents("question", top_k=1)
+        utils.retrieve_documents("question", top_k=1, tenant_id="tenant-a")
 
     assert raised.value.code == ProviderCode.VECTOR_STORE_UNAVAILABLE
     assert store.has_calls == 2
@@ -266,7 +293,7 @@ def test_optional_missing_catalog_collection_is_a_healthy_skip():
         {"archive_catalog_v1": TargetStore(exists=False)}
     )
 
-    result = utils.retrieve_documents("question", top_k=1)
+    result = utils.retrieve_documents("question", top_k=1, tenant_id="tenant-a")
 
     assert result["docs"] == []
     assert result["meta"]["retrieval_mode"] == "catalog_empty"
@@ -282,7 +309,7 @@ def test_catalog_failure_is_typed_before_embedding_and_never_becomes_empty():
     utils._embedding_service = embedding
 
     with pytest.raises(ProviderError) as raised:
-        utils.retrieve_documents("question", top_k=1)
+        utils.retrieve_documents("question", top_k=1, tenant_id="tenant-a")
 
     assert raised.value.code == ProviderCode.VECTOR_STORE_UNAVAILABLE
     assert len(scope.calls) == 2
@@ -313,7 +340,7 @@ def test_parent_expansion_failure_is_typed_and_retried():
     utils._parent_chunk_store = parent_store
 
     with pytest.raises(ProviderError) as raised:
-        utils.retrieve_documents("question", top_k=2)
+        utils.retrieve_documents("question", top_k=2, tenant_id="tenant-a")
 
     assert raised.value.code == ProviderCode.VECTOR_STORE_UNAVAILABLE
     assert parent_store.calls == 2
@@ -352,7 +379,7 @@ def test_parent_expansion_observes_shared_retrieval_deadline(monkeypatch):
     monkeypatch.setattr(utils.time, "monotonic", clock.monotonic)
 
     with pytest.raises(ProviderError) as raised:
-        utils.retrieve_documents("question", top_k=2)
+        utils.retrieve_documents("question", top_k=2, tenant_id="tenant-a")
 
     assert raised.value.code == ProviderCode.PROVIDER_TIMEOUT
 
@@ -382,5 +409,6 @@ def test_parent_expansion_observes_cancellation_after_store_call():
         utils.retrieve_documents(
             "question",
             top_k=2,
+            tenant_id="tenant-a",
             cancellation=lambda: cancelled,
         )
