@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from backend.capabilities.control_repository import CapabilityControlRepository
 from backend.capabilities.control_service import CapabilityControlService
 from backend.core.errors import AppError, ErrorCode
-from backend.core.settings import get_settings
+from backend.core.settings import StorageSettings, get_settings
 from backend.db.models import Base, User
 from backend.runs.request_context import RunRequestContext
 from backend.skills import SkillAccess
@@ -30,9 +30,17 @@ def capability_control():
     Base.metadata.create_all(engine)
     with factory.begin() as db:
         db.add(User(username="admin", password_hash="hash", role="admin"))
+    settings = get_settings().model_copy(
+        update={
+            "storage": StorageSettings(
+                _env_file=None,
+                DATABASE_URL="postgresql://app_user:app-password@db/supermew",
+            )
+        }
+    )
     service = CapabilityControlService(
         CapabilityControlRepository(factory),
-        settings=get_settings(),
+        settings=settings,
     )
     service.ensure_defaults()
     try:

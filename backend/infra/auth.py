@@ -2,8 +2,10 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 from collections.abc import Generator
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import InvalidTokenError
@@ -17,6 +19,15 @@ from backend.infra.database import SessionLocal
 _settings = get_settings().security
 ADMIN_INVITE_CODE = _settings.admin_invite_code.get_secret_value()
 PBKDF2_ROUNDS = _settings.password_pbkdf2_rounds
+
+_BCRYPT_SHA256_V1_RE = re.compile(
+    r"^\$bcrypt-sha256\$(?P<type>2[ab]),(?P<rounds>\d{1,2})"
+    r"\$(?P<salt>[^$]{22})\$(?P<digest>[^$]{31})$"
+)
+_BCRYPT_SHA256_V2_RE = re.compile(
+    r"^\$bcrypt-sha256\$v=2,t=(?P<type>2b),r=(?P<rounds>\d{1,2})"
+    r"\$(?P<salt>[^$]{22})\$(?P<digest>[^$]{31})$"
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -33,21 +44,33 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
     if not plain_password or not password_hash:
         return False
 
-    if not password_hash.startswith("pbkdf2_sha256$"):
-        return False
-    try:
-        _, rounds, salt_b64, digest_b64 = password_hash.split("$", 3)
-        salt = base64.b64decode(salt_b64.encode("ascii"))
-        expected = base64.b64decode(digest_b64.encode("ascii"))
-        calculated = hashlib.pbkdf2_hmac(
-            "sha256",
-            plain_password.encode("utf-8"),
-            salt,
-            int(rounds),
-        )
-        return hmac.compare_digest(calculated, expected)
-    except Exception:
-        return False
+    if password_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds, salt_b64, digest_b64 = password_hash.split("$", 3)
+            salt = base64.b64decode(salt_b64.encode("ascii"))
+            expected = base64.b64decode(digest_b64.encode("ascii"))
+            calculated = hashlib.pbkdf2_hmac(
+                "sha256",
+                plain_password.encode("utf-8"),
+                salt,
+                int(rounds),
+            )
+            return hmac.compare_digest(calculated, expected)
+        except Exception:
+            return False
+
+    if password_hash.startswith("$2"):
+        try:
+            return bcrypt.checkpw(
+                plain_password.encode("utf-8")[:72],
+                password_hash.encode("ascii"),
+            )
+        except (TypeError, ValueError, UnicodeError):
+            return False
+    if password_hash.startswith("$bcrypt-sha256$"):
+        return _verify_legacy_bcrypt_sha256(plain_password, password_hash)
+
+    return False
 
 
 def get_password_hash(password: str) -> str:
@@ -66,12 +89,46 @@ def get_password_hash(password: str) -> str:
     return f"pbkdf2_sha256${PBKDF2_ROUNDS}${salt_b64}${digest_b64}"
 
 
+def _verify_legacy_bcrypt_sha256(plain_password: str, password_hash: str) -> bool:
+    match = _BCRYPT_SHA256_V2_RE.fullmatch(password_hash)
+    version = 2
+    if match is None:
+        match = _BCRYPT_SHA256_V1_RE.fullmatch(password_hash)
+        version = 1
+    if match is None:
+        return False
+
+    try:
+        rounds = int(match.group("rounds"))
+        if not 4 <= rounds <= 31:
+            return False
+        salt = match.group("salt")
+        password_bytes = plain_password.encode("utf-8")
+        if version == 1:
+            digest = hashlib.sha256(password_bytes).digest()
+        else:
+            digest = hmac.new(
+                salt.encode("ascii"),
+                password_bytes,
+                hashlib.sha256,
+            ).digest()
+        prehash = base64.b64encode(digest)
+        bcrypt_hash = (
+            f"${match.group('type')}${rounds:02d}${salt}{match.group('digest')}"
+        ).encode("ascii")
+        return bcrypt.checkpw(prehash, bcrypt_hash)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+
+
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = db.query(User).filter(User.username == username).first()
     if not user:
         return None
     if not verify_password(password, user.password_hash):
         return None
+    if not user.password_hash.startswith("pbkdf2_sha256$"):
+        user.password_hash = get_password_hash(password)
     return user
 
 

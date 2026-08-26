@@ -47,7 +47,7 @@ def _direct_client_host(request: Request) -> str:
 
 
 async def enforce_auth_username_rate_limit(request: Request) -> None:
-    """Consume the IP+username policy before a synchronous PBKDF2 handler runs."""
+    """Consume the IP+username policy before synchronous password hashing runs."""
 
     limiter = cast(
         AuthRateLimiter | None,
