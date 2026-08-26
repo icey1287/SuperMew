@@ -177,31 +177,16 @@ test('discovers Skills, enters Web Research, and renders Tool timeline plus Arti
   let createRequest: Record<string, unknown> | null = null;
   const runId = 'run_web_product';
 
-  await page.route('**/v1/threads/*/runs', async (route) => {
+  await page.route('**/v1/threads/*/runs/stream', async (route) => {
     createRequest = route.request().postDataJSON();
     const threadId = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[3]);
     await route.fulfill({
-      status: 201,
-      json: {
-        run: {
-          id: runId,
-          thread_id: threadId,
-          status: 'queued',
-          idempotency_key: String(createRequest?.idempotency_key || ''),
-          user_message_id: 201,
-          assistant_message_id: 202,
-          on_disconnect: 'continue',
-        },
-        created: true,
-        thread_version: 1,
-      },
-    });
-  });
-  await page.route(`**/v1/runs/${runId}/stream`, async (route) => {
-    const threadId =
-      new URL(route.request().url()).searchParams.get('thread_id') || 'thread_capability_1';
-    await route.fulfill({
+      status: 200,
       contentType: 'text/event-stream',
+      headers: {
+        'X-Run-ID': runId,
+        'X-Thread-Version': '1',
+      },
       body: sseBody(runId, threadId, [
         ['run.created', { status: 'queued', user_message_id: 201, assistant_message_id: 202 }],
         ['run.started', {}],
@@ -294,30 +279,17 @@ test('opens the command palette and binds Sandbox approval to the created Run', 
   let createRequest: Record<string, unknown> | null = null;
   const runId = 'run_sandbox_product';
 
-  await page.route('**/v1/threads/*/runs', async (route) => {
+  await page.route('**/v1/threads/*/runs/stream', async (route) => {
     createRequest = route.request().postDataJSON();
     const threadId = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[3]);
     await route.fulfill({
-      status: 201,
-      json: {
-        run: {
-          id: runId,
-          thread_id: threadId,
-          status: 'queued',
-          idempotency_key: String(createRequest?.idempotency_key || ''),
-          user_message_id: 301,
-          assistant_message_id: 302,
-          on_disconnect: 'continue',
-        },
-        created: true,
-        thread_version: 1,
-      },
-    });
-  });
-  await page.route(`**/v1/runs/${runId}/stream`, async (route) => {
-    await route.fulfill({
+      status: 200,
       contentType: 'text/event-stream',
-      body: sseBody(runId, 'thread_capability_1', [
+      headers: {
+        'X-Run-ID': runId,
+        'X-Thread-Version': '1',
+      },
+      body: sseBody(runId, threadId, [
         ['run.created', { status: 'queued', user_message_id: 301, assistant_message_id: 302 }],
         ['run.started', {}],
         ['tool.started', { tool_name: 'sandbox_execute', tool_call_id: 'call_sandbox' }],
@@ -369,30 +341,16 @@ test('keeps the live Tool timeline reachable on a narrow screen before message o
   await mockAuthenticatedShell(page, 'user');
   const runId = 'run_web_mobile_live';
 
-  await page.route('**/v1/threads/*/runs', async (route) => {
-    const request = route.request().postDataJSON() as Record<string, unknown>;
+  await page.route('**/v1/threads/*/runs/stream', async (route) => {
     const threadId = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[3]);
     await route.fulfill({
-      status: 201,
-      json: {
-        run: {
-          id: runId,
-          thread_id: threadId,
-          status: 'queued',
-          idempotency_key: String(request.idempotency_key || ''),
-          user_message_id: 401,
-          assistant_message_id: 402,
-          on_disconnect: 'continue',
-        },
-        created: true,
-        thread_version: 1,
-      },
-    });
-  });
-  await page.route(`**/v1/runs/${runId}/stream`, async (route) => {
-    await route.fulfill({
+      status: 200,
       contentType: 'text/event-stream',
-      body: sseBody(runId, 'thread_capability_1', [
+      headers: {
+        'X-Run-ID': runId,
+        'X-Thread-Version': '1',
+      },
+      body: sseBody(runId, threadId, [
         ['run.created', { status: 'queued', user_message_id: 401, assistant_message_id: 402 }],
         ['run.started', {}],
         ['tool.started', { tool_name: 'web_search', tool_call_id: 'call_mobile_web' }],
