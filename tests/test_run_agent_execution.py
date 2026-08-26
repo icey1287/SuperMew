@@ -22,7 +22,7 @@ from backend.rag.checkpoint_runner import (
     CheckpointedRagRunner,
     HitlCheckpointRepository,
 )
-from backend.runs.agent_executor import RunAgentExecutor
+from backend.runs.agent_executor import RunAgentExecutor, _MessageDeltaBatcher
 from backend.runs.cancellation import CancellationRegistry, RunExecutionManager
 from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
@@ -119,15 +119,17 @@ class FakeRuntime:
                 await asyncio.sleep(0)
             if self.factory.delay_seconds:
                 await asyncio.sleep(self.factory.delay_seconds)
-            for index, chunk in enumerate(("你", "好")):
+            for index, chunk in enumerate(self.factory.chunks):
                 yield AgentRuntimeEvent(type="content", content=chunk)
                 if index == 0 and self.factory.release_after_first is not None:
                     self.factory.first_chunk_published.set()
                     await self.factory.release_after_first.wait()
+                if self.factory.failure_after_chunk is not None:
+                    raise self.factory.failure_after_chunk
             yield AgentRuntimeEvent(
                 type="completed",
                 result=AgentRuntimeResult(
-                    content="你好",
+                    content="".join(self.factory.chunks),
                     rag_trace=None,
                     hitl_resume_state=None,
                     runtime_trace=(),
@@ -149,6 +151,8 @@ class FakeRuntimeFactory:
         self.emit_tool_trace = False
         self.emit_rag_warning = False
         self.failure: Exception | None = None
+        self.failure_after_chunk: Exception | None = None
+        self.chunks = ("你", "好")
         self.skill_to_activate: ActivatedSkill | None = None
         self.tool_ceiling = frozenset({"search_knowledge_base"})
         self.validation_requests = []
@@ -266,6 +270,38 @@ class CheckpointRuntimeFactory:
         )
 
 
+class MessageDeltaBatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_flushes_on_size_time_window_and_close(self):
+        published: list[str] = []
+        published_event = asyncio.Event()
+
+        async def publish(content: str) -> None:
+            published.append(content)
+            published_event.set()
+
+        batcher = _MessageDeltaBatcher(
+            run_id="run_batch_test",
+            publish=publish,
+            max_characters=5,
+            flush_seconds=0.01,
+        )
+
+        batcher.append("ab")
+        batcher.append("cde")
+        await asyncio.wait_for(published_event.wait(), timeout=1)
+        self.assertEqual(["abcde"], published)
+
+        published_event.clear()
+        batcher.append("time")
+        await asyncio.wait_for(published_event.wait(), timeout=1)
+        self.assertEqual(["abcde", "time"], published)
+
+        published_event.clear()
+        batcher.append("tail")
+        await batcher.close()
+        self.assertEqual(["abcde", "time", "tail"], published)
+
+
 class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.engine = create_engine(
@@ -360,15 +396,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 "run.created",
                 "run.started",
                 "message.delta",
-                "message.delta",
                 "message.completed",
                 "run.completed",
             ],
             [item.type.value for item in events],
         )
-        self.assertEqual(list(range(1, 7)), [item.sequence for item in events])
+        self.assertEqual(list(range(1, 6)), [item.sequence for item in events])
         self.assertEqual(
-            ["你", "好"],
+            ["你好"],
             [item.data["content"] for item in events if item.type == "message.delta"],
         )
         self.assertEqual("打个招呼", self.runtime_factory.requests[0].user_text)
@@ -410,7 +445,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(repeated_task)
         await repeated_task
         self.assertEqual(
-            6,
+            5,
             len(
                 self.journal.read_after(
                     username="alice",
@@ -418,6 +453,84 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 )
             ),
         )
+
+    async def test_failure_flushes_buffered_delta_before_terminal_events(self):
+        self.runtime_factory.failure_after_chunk = RuntimeError("provider failed")
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-delta-failure",
+            message="输出后失败",
+            idempotency_key="delta-failure-1",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        events = self.journal.read_after(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        event_types = [item.type.value for item in events]
+        self.assertLess(
+            event_types.index("message.delta"),
+            event_types.index("message.completed"),
+        )
+        self.assertEqual("run.failed", event_types[-1])
+        delta = next(item for item in events if item.type.value == "message.delta")
+        self.assertEqual("你", delta.data["content"])
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == reservation.run.id).one()
+            assistant = (
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
+            )
+            self.assertEqual("你", assistant.content)
+            self.assertEqual("incomplete", assistant.status)
+
+    async def test_cancellation_flushes_buffered_delta_and_partial_content(self):
+        self.runtime_factory.release_after_first = asyncio.Event()
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-delta-cancel",
+            message="输出后取消",
+            idempotency_key="delta-cancel-1",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await self.runtime_factory.first_chunk_published.wait()
+        self.service.request_cancel(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        await self.registry.request_cancel(reservation.run.id, propagate=False)
+        await task
+
+        events = self.journal.read_after(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        event_types = [item.type.value for item in events]
+        self.assertLess(
+            event_types.index("message.delta"),
+            event_types.index("message.completed"),
+        )
+        self.assertEqual("run.cancelled", event_types[-1])
+        delta = next(item for item in events if item.type.value == "message.delta")
+        self.assertEqual("你", delta.data["content"])
+        with self.Session() as db:
+            run = db.query(Run).filter(Run.id == reservation.run.id).one()
+            assistant = (
+                db.query(Message).filter(Message.id == run.assistant_message_id).one()
+            )
+            self.assertEqual("你", assistant.content)
+            self.assertEqual("incomplete", assistant.status)
 
     async def test_plain_language_web_intent_routes_web_research_before_runtime_build(
         self,
@@ -854,6 +967,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(task)
         await self.runtime_factory.first_chunk_published.wait()
+        for _ in range(100):
+            emitted = self.journal.read_after(
+                username="alice",
+                run_id=reservation.run.id,
+            )
+            if any(item.type.value == "message.delta" for item in emitted):
+                break
+            await asyncio.sleep(0.002)
         running = self.service.get_run(
             username="alice",
             run_id=reservation.run.id,

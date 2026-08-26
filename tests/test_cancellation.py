@@ -23,11 +23,13 @@ from tests.support import static_model_control
 class FakeCancellationTransport:
     def __init__(self):
         self.requested = set()
+        self.is_requested_calls = []
 
     async def request(self, run_id):
         self.requested.add(run_id)
 
     async def is_requested(self, run_id):
+        self.is_requested_calls.append(run_id)
         return run_id in self.requested
 
     async def close(self):
@@ -152,6 +154,17 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await registry.request_cancel("run_remote", propagate=True))
         token = await registry.register("run_remote")
         self.assertTrue(token.cancelled)
+
+    async def test_checkpoint_uses_local_signal_without_repolling_transport(self):
+        transport = FakeCancellationTransport()
+        registry = CancellationRegistry(transport=transport)
+        token = await registry.register("run_local_hot_path")
+
+        await token.checkpoint()
+        await token.checkpoint()
+        await token.checkpoint()
+
+        self.assertEqual(["run_local_hot_path"], transport.is_requested_calls)
 
     async def test_cancellation_reason_keeps_the_highest_priority(self):
         token = await self.registry.register("run_priority")

@@ -7,7 +7,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from typing import Iterator, cast
@@ -70,6 +70,88 @@ _WARNING_TRACE_STAGES = {
     "web.citation_rejected",
     "web.context_rejected",
 }
+
+_MESSAGE_DELTA_BATCH_CHARACTERS = 512
+_MESSAGE_DELTA_FLUSH_SECONDS = 0.05
+
+
+class _MessageDeltaBatcher:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        publish: Callable[[str], Awaitable[None]],
+        max_characters: int = _MESSAGE_DELTA_BATCH_CHARACTERS,
+        flush_seconds: float = _MESSAGE_DELTA_FLUSH_SECONDS,
+    ) -> None:
+        self._publish = publish
+        self._max_characters = max(1, max_characters)
+        self._flush_seconds = max(0.001, flush_seconds)
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._closed = False
+        self._task = asyncio.create_task(
+            self._run(),
+            name=f"run-message-deltas:{run_id}",
+        )
+
+    def append(self, content: str) -> None:
+        if not content:
+            return
+        if self._closed:
+            raise RuntimeError("message delta batcher is closed")
+        if self._task.done():
+            self._task.result()
+        self._queue.put_nowait(content)
+
+    async def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            if not self._task.done():
+                self._queue.put_nowait(None)
+        await self._task
+
+    async def _run(self) -> None:
+        chunks: list[str] = []
+        character_count = 0
+        flush_deadline: float | None = None
+        loop = asyncio.get_running_loop()
+
+        async def flush() -> None:
+            nonlocal character_count, flush_deadline
+            if not chunks:
+                return
+            content = "".join(chunks)
+            chunks.clear()
+            character_count = 0
+            flush_deadline = None
+            await self._publish(content)
+
+        while True:
+            try:
+                if flush_deadline is None:
+                    item = await self._queue.get()
+                else:
+                    remaining = flush_deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    item = await asyncio.wait_for(
+                        self._queue.get(),
+                        timeout=remaining,
+                    )
+            except TimeoutError:
+                await flush()
+                continue
+
+            if item is None:
+                await flush()
+                return
+            if not chunks:
+                flush_deadline = loop.time() + self._flush_seconds
+            chunks.append(item)
+            character_count += len(item)
+            if character_count >= self._max_characters:
+                await flush()
+
 
 _EXPLICIT_WEB_INTENT = re.compile(
     r"(?:联网|上网|网上|网页|网络).{0,12}(?:查|查询|搜索|检索|搜|找)"
@@ -646,11 +728,7 @@ class RunAgentExecutor:
         effective_user_text = user_text or snapshot.user_text
         tool_ceiling = self._runtime_tool_ceiling(runtime_factory)
         routed_skill = None
-        if (
-            not disable_tools
-            and pinned_skill is None
-            and "web_search" in tool_ceiling
-        ):
+        if not disable_tools and pinned_skill is None and "web_search" in tool_ceiling:
             routed_skill = _routed_skill_for_user_text(effective_user_text)
 
         runtime = runtime_factory.create(
@@ -661,9 +739,7 @@ class RunAgentExecutor:
             tenant_id=snapshot.tenant_id,
             channel=snapshot.channel,
             run_id=snapshot.run.id,
-            allowed_tools=(
-                frozenset() if disable_tools else tool_ceiling
-            ),
+            allowed_tools=(frozenset() if disable_tools else tool_ceiling),
             deadline_seconds=remaining_deadline,
             approval_grant=(
                 RunToolApprovalGrant(
@@ -691,6 +767,26 @@ class RunAgentExecutor:
         result: AgentRuntimeResult | None = None
         pump_stop = asyncio.Event()
         pump_error = asyncio.Event()
+
+        async def publish_delta(content: str) -> None:
+            await self._flush_event_queues(
+                output_queue,
+                trace_queue,
+                pump_error,
+            )
+            await self._publish_owned(
+                snapshot.run,
+                event_type=RunEventType.MESSAGE_DELTA,
+                data={
+                    "message_id": snapshot.run.assistant_message_id,
+                    "content": content,
+                },
+            )
+
+        delta_batcher = _MessageDeltaBatcher(
+            run_id=snapshot.run.id,
+            publish=publish_delta,
+        )
         pump_task = asyncio.create_task(
             self._pump_rag_steps(
                 snapshot.run,
@@ -719,21 +815,9 @@ class RunAgentExecutor:
             ):
                 await token.checkpoint()
                 if runtime_event.type == "content" and runtime_event.content:
-                    await asyncio.sleep(0)
-                    await self._flush_event_queues(
-                        output_queue,
-                        trace_queue,
-                        pump_error,
-                    )
                     token.append_partial(runtime_event.content)
-                    await self._publish_owned(
-                        snapshot.run,
-                        event_type=RunEventType.MESSAGE_DELTA,
-                        data={
-                            "message_id": snapshot.run.assistant_message_id,
-                            "content": runtime_event.content,
-                        },
-                    )
+                    delta_batcher.append(runtime_event.content)
+                    await asyncio.sleep(0)
                 elif runtime_event.result is not None:
                     result = runtime_event.result
             if result is None:
@@ -751,7 +835,17 @@ class RunAgentExecutor:
         finally:
             request_context.close()
             pump_stop.set()
-            await asyncio.gather(pump_task, trace_pump_task)
+            try:
+                await asyncio.gather(pump_task, trace_pump_task)
+            finally:
+                try:
+                    await delta_batcher.close()
+                except AppError as exc:
+                    if not (
+                        exc.code == ErrorCode.RUN_STATE_CONFLICT
+                        and token.reason == "ownership_lost"
+                    ):
+                        raise
 
     async def _pump_rag_steps(
         self,

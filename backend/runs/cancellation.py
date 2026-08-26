@@ -138,17 +138,10 @@ class CancellationToken:
         self.event.set()
 
     async def checkpoint(self) -> None:
+        # Remote requests are handled at registration, by pub/sub, and by the
+        # durable Run heartbeat. Streaming checkpoints only inspect local state.
         if self.event.is_set():
             raise asyncio.CancelledError
-        if self.transport is not None:
-            try:
-                if await self.transport.is_requested(self.run_id):
-                    self.request("user")
-                    raise asyncio.CancelledError
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
 
 
 @dataclass
