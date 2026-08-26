@@ -126,7 +126,7 @@ class EmbeddingSettings(_EnvSettings):
         validation_alias="EMBEDDING_MAX_CONCURRENCY",
     )
     query_microbatch_ms: float = Field(
-        default=20.0,
+        default=0.0,
         ge=0,
         le=1000,
         validation_alias="EMBEDDING_QUERY_MICROBATCH_MS",

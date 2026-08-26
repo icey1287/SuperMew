@@ -68,6 +68,12 @@ def make_settings(
 
 
 class SettingsSecurityTests(unittest.TestCase):
+    def test_embedding_query_microbatch_is_disabled_by_default(self):
+        self.assertEqual(
+            0.0,
+            EmbeddingSettings.model_fields["query_microbatch_ms"].default,
+        )
+
     def test_weak_jwt_secret_is_rejected(self):
         settings = make_settings(secret="change-this-secret")
         with self.assertRaisesRegex(ValueError, "JWT_SECRET_KEY"):

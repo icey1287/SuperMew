@@ -407,6 +407,23 @@ def test_catalog_hash_is_stable_across_registration_and_set_order():
     assert len(first.catalog_hash) == 64
 
 
+def test_catalog_hash_cache_is_invalidated_until_registry_freezes():
+    registry = ToolRegistry()
+    registry.register(_descriptor("sql_query"), _factory("sql_query"))
+
+    first_hash = registry.catalog_hash
+    assert registry._catalog_hash == first_hash
+
+    registry.register(_descriptor("web_search"), _factory("web_search"))
+    assert registry._catalog_hash is None
+
+    second_hash = registry.catalog_hash
+    registry.freeze()
+    assert second_hash != first_hash
+    assert registry.catalog_hash == second_hash
+    assert registry._catalog_hash == second_hash
+
+
 def test_duplicate_registration_is_rejected():
     registry = ToolRegistry()
     registry.register(_descriptor("sql_query"), _factory("sql_query"))

@@ -623,6 +623,7 @@ class ToolRegistry:
         self._registrations: dict[str, _RegisteredTool] = {}
         self._lock = threading.RLock()
         self._frozen = False
+        self._catalog_hash: str | None = None
 
     @property
     def is_frozen(self) -> bool:
@@ -661,6 +662,7 @@ class ToolRegistry:
                 ),
                 gate=threading.BoundedSemaphore(internal_descriptor.max_concurrency),
             )
+            self._catalog_hash = None
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -765,6 +767,8 @@ class ToolRegistry:
     @property
     def catalog_hash(self) -> str:
         with self._lock:
+            if self._catalog_hash is not None:
+                return self._catalog_hash
             records = [
                 registration.descriptor.catalog_record(exposure=registration.exposure)
                 for registration in sorted(
@@ -772,14 +776,15 @@ class ToolRegistry:
                     key=lambda item: item.descriptor.name,
                 )
             ]
-        encoded = json.dumps(
-            records,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+            encoded = json.dumps(
+                records,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            self._catalog_hash = hashlib.sha256(encoded).hexdigest()
+            return self._catalog_hash
 
 
 class ToolSession:
