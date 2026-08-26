@@ -1,10 +1,8 @@
 import asyncio
 import sys
 import unittest
-from contextlib import contextmanager
 from unittest.mock import patch
 
-from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -323,15 +321,8 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.events = PersistentEventBus(self.journal, transport=None)
         self.registry = CancellationRegistry(transport=None)
         self.manager = RunExecutionManager(self.service, self.registry)
-        self.saver = InMemorySaver()
-
-        @contextmanager
-        def saver_factory():
-            yield self.saver
-
         self.checkpoints = HitlCheckpointRepository(self.Session)
         self.checkpoint_runner = CheckpointedRagRunner(
-            saver_factory=saver_factory,
             checkpoint_repository=self.checkpoints,
         )
         self.runtime_factory = FakeRuntimeFactory()

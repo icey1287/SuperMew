@@ -1235,28 +1235,40 @@ def await_hitl_node(state: RAGState) -> RAGState:
             or state.get("question"),
         }
     )
-    clean_answer = str(answer or "").strip()
-    answers = [*(state.get("hitl_answers") or [])]
+    return resume_rag_state(state, answer)
+
+
+def checkpointless_hitl_node(_state: RAGState) -> RAGState:
+    """Stop the durable Run graph at HITL without creating graph checkpoints."""
+    return {}
+
+
+def resume_rag_state(state: dict, user_answer: str) -> dict:
+    """Resume a durable HITL state without relying on a LangGraph saver."""
+    resumed = dict(state)
+    clean_answer = str(user_answer or "").strip()
+    answers = [*(resumed.get("hitl_answers") or [])]
     if clean_answer:
         answers.append(clean_answer)
-    original_question = state.get("original_question") or state.get("question") or ""
+    original_question = (
+        resumed.get("original_question") or resumed.get("question") or ""
+    )
     clarification = "\n".join(f"- {item}" for item in answers)
     refined_question = (
         f"{original_question}\n\n用户澄清：\n{clarification}"
         if clarification
         else original_question
     )
-    rag_trace = dict(state.get("rag_trace") or {})
+    rag_trace = dict(resumed.get("rag_trace") or {})
     rag_trace.update(
         {
             "query": refined_question,
             "hitl_resumed": True,
             "hitl_answer": clean_answer,
-            "hitl_resume_from_status": state.get("retrieval_status"),
-            "hitl_resume_from_route": state.get("route"),
+            "hitl_resume_from_status": resumed.get("retrieval_status"),
+            "hitl_resume_from_route": resumed.get("route"),
         }
     )
-    resumed = dict(state)
     resumed.update(
         {
             "question": refined_question,
@@ -1267,6 +1279,10 @@ def await_hitl_node(state: RAGState) -> RAGState:
         }
     )
     resumed.update(_retrieve_resume_query(resumed))
+    if resumed.get("route") == "rewrite":
+        resumed.update(rewrite_question_node(resumed))
+        resumed.update(retrieve_rewritten(resumed))
+        resumed.update(grade_documents_node(resumed))
     return resumed
 
 
@@ -1275,7 +1291,7 @@ def await_hitl_node(state: RAGState) -> RAGState:
 # ---------------------------------------------------------------------------
 
 
-def build_rag_graph(checkpointer=None):
+def build_rag_graph(checkpointer=None, *, interrupt_on_hitl: bool = True):
     graph = StateGraph(RAGState)
 
     # 节点注册
@@ -1287,7 +1303,10 @@ def build_rag_graph(checkpointer=None):
     graph.add_node("retrieve_rewritten", retrieve_rewritten)
     graph.add_node("rag_sub_agent", rag_sub_agent)
     graph.add_node("synthesis", synthesis)
-    graph.add_node("await_hitl", await_hitl_node)
+    graph.add_node(
+        "await_hitl",
+        await_hitl_node if interrupt_on_hitl else checkpointless_hitl_node,
+    )
 
     # 入口：复杂度分类
     graph.set_entry_point("classify_complexity")
@@ -1317,15 +1336,18 @@ def build_rag_graph(checkpointer=None):
     )
     graph.add_edge("rewrite_question", "retrieve_rewritten")
     graph.add_edge("retrieve_rewritten", "grade_documents")
-    graph.add_conditional_edges(
-        "await_hitl",
-        _route_after_grade,
-        {
-            "rewrite_question": "rewrite_question",
-            "await_hitl": "await_hitl",
-            "end": END,
-        },
-    )
+    if interrupt_on_hitl:
+        graph.add_conditional_edges(
+            "await_hitl",
+            _route_after_grade,
+            {
+                "rewrite_question": "rewrite_question",
+                "await_hitl": "await_hitl",
+                "end": END,
+            },
+        )
+    else:
+        graph.add_edge("await_hitl", END)
 
     # 并行子 Agent → 合成
     graph.add_edge("rag_sub_agent", "synthesis")
@@ -1335,6 +1357,7 @@ def build_rag_graph(checkpointer=None):
 
 
 rag_graph = build_rag_graph()
+checkpointless_rag_graph = build_rag_graph(interrupt_on_hitl=False)
 _ephemeral_checkpointers: dict[str, InMemorySaver] = {}
 
 

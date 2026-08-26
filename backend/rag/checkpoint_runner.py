@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import uuid4
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.types import Command
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,17 +16,56 @@ from backend.db.models import Message, Thread, Run, RunCheckpoint, User, utcnow
 from backend.events.generated.run_event_v1 import RunEventType
 from backend.events.journal import append_event_in_session
 from backend.infra.database import SessionLocal
-from backend.rag.checkpointing import postgres_saver_factory
 from backend.rag.runtime_context import bind_rag_runtime_context
 from backend.runs.state import RunStatus
 
 
 SessionFactory = Callable[[], Session]
-SaverFactory = Callable[[], AbstractContextManager[BaseCheckpointSaver]]
+
+
+_RAG_TRACE_BULK_FIELDS = {
+    "retrieved_chunks",
+    "initial_retrieved_chunks",
+    "rewrite_retrieved_chunks",
+    "hitl_targeted_retrieved_chunks",
+    "sub_traces",
+}
 
 
 def _jsonable(value):
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _compact_hitl_state(state: dict) -> dict:
+    compact = dict(state)
+    for key in ("docs", "context", "sub_results"):
+        compact.pop(key, None)
+    trace = state.get("rag_trace")
+    if isinstance(trace, dict):
+        compact["rag_trace"] = {
+            key: value
+            for key, value in trace.items()
+            if key not in _RAG_TRACE_BULK_FIELDS
+        }
+    return _jsonable(compact)
+
+
+def _compact_resume_result(state: dict) -> dict:
+    compact = _compact_hitl_state(state)
+    compact["docs"] = _jsonable(state.get("docs") or [])
+    return compact
+
+
+def _restore_resume_result(state: dict) -> dict:
+    restored = dict(state)
+    docs = list(restored.get("docs") or [])
+    if docs:
+        trace = dict(restored.get("rag_trace") or {})
+        trace.setdefault("retrieved_chunks", docs)
+        if trace.get("hitl_resumed"):
+            trace.setdefault("hitl_targeted_retrieved_chunks", docs)
+        restored["rag_trace"] = trace
+    return restored
 
 
 def _assert_checkpoint_tenant(
@@ -78,6 +114,8 @@ class ConsumedResume:
     checkpoint_id: str
     thread_id: str
     answer: str
+    state: dict
+    next_nodes: tuple[str, ...]
     fencing_token: int
     already_consumed: bool
     should_resume: bool
@@ -294,6 +332,14 @@ class HitlCheckpointRepository:
                         status_code=404,
                     )
                 checkpoint, run, thread, user = row
+                latest_checkpoint_id = (
+                    db.query(RunCheckpoint.id)
+                    .filter(RunCheckpoint.run_id == run.id)
+                    .order_by(RunCheckpoint.id.desc())
+                    .limit(1)
+                    .scalar()
+                )
+                is_latest_checkpoint = checkpoint.id == latest_checkpoint_id
                 preflight(
                     ResumeAccessState(
                         user_db_id=user.id,
@@ -334,7 +380,7 @@ class HitlCheckpointRepository:
                         )
                     should_resume = False
                     started_now = False
-                    if worker_id:
+                    if worker_id and is_latest_checkpoint:
                         if run.status == RunStatus.PENDING.value:
                             run.status = RunStatus.RUNNING.value
                             run.owner_worker_id = worker_id
@@ -370,6 +416,8 @@ class HitlCheckpointRepository:
                         checkpoint_id=checkpoint.checkpoint_id,
                         thread_id=thread.thread_id,
                         answer=clean_answer,
+                        state=_jsonable(checkpoint.state_json),
+                        next_nodes=tuple(checkpoint.next_nodes_json or ()),
                         fencing_token=run.fencing_token,
                         already_consumed=True,
                         should_resume=should_resume,
@@ -433,6 +481,8 @@ class HitlCheckpointRepository:
                     checkpoint_id=checkpoint.checkpoint_id,
                     thread_id=thread.thread_id,
                     answer=clean_answer,
+                    state=_jsonable(checkpoint.state_json),
+                    next_nodes=tuple(checkpoint.next_nodes_json or ()),
                     fencing_token=run.fencing_token,
                     already_consumed=False,
                     should_resume=bool(worker_id),
@@ -443,6 +493,56 @@ class HitlCheckpointRepository:
                 "HITL 恢复请求发生幂等冲突",
                 status_code=409,
             ) from exc
+        finally:
+            db.close()
+
+    def record_resume_result(
+        self,
+        *,
+        run_id: str,
+        checkpoint_id: str,
+        worker_id: str,
+        fencing_token: int,
+        state: dict,
+    ) -> None:
+        db = self._session_factory()
+        try:
+            with db.begin():
+                row = (
+                    db.query(RunCheckpoint, Run)
+                    .join(Run, Run.id == RunCheckpoint.run_id)
+                    .filter(
+                        RunCheckpoint.run_id == run_id,
+                        RunCheckpoint.checkpoint_id == checkpoint_id,
+                    )
+                    .with_for_update()
+                    .first()
+                )
+                if not row:
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "HITL checkpoint 状态不存在",
+                        status_code=409,
+                    )
+                checkpoint, run = row
+                if run.fencing_token != fencing_token:
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "Run fencing token 已失效",
+                        status_code=409,
+                    )
+                if (
+                    run.status == RunStatus.RUNNING.value
+                    and run.owner_worker_id != worker_id
+                ):
+                    raise AppError(
+                        ErrorCode.RUN_STATE_CONFLICT,
+                        "当前 worker 不再拥有该 Run",
+                        status_code=409,
+                    )
+                checkpoint.state_json = _compact_resume_result(state)
+                checkpoint.next_nodes_json = []
+                checkpoint.updated_at = utcnow()
         finally:
             db.close()
 
@@ -490,40 +590,58 @@ class CheckpointedRagRunner:
     def __init__(
         self,
         *,
-        saver_factory: SaverFactory = postgres_saver_factory,
         checkpoint_repository: HitlCheckpointRepository | None = None,
     ) -> None:
-        self.saver_factory = saver_factory
         self.checkpoints = checkpoint_repository or HitlCheckpointRepository()
-
-    @staticmethod
-    def _config(run_id: str) -> dict:
-        return {"configurable": {"thread_id": run_id}}
 
     def _outcome(
         self,
         *,
-        graph,
         result: dict,
         run_id: str,
         worker_id: str,
         fencing_token: int,
+        resumed_checkpoint_id: str | None = None,
     ) -> RagRunOutcome:
-        interrupts = list(result.pop("__interrupt__", []) or [])
-        if not interrupts:
-            return RagRunOutcome(result=result, fencing_token=fencing_token)
-        snapshot = graph.get_state(self._config(run_id))
-        interrupt_value = dict(interrupts[0].value or {})
-        pause = self.checkpoints.record_pause(
-            run_id=run_id,
-            worker_id=worker_id,
-            fencing_token=fencing_token,
-            checkpoint_id=snapshot.config["configurable"]["checkpoint_id"],
-            interrupt_id=interrupts[0].id,
-            interrupt_value=interrupt_value,
-            state=dict(snapshot.values),
-            next_nodes=tuple(snapshot.next),
-        )
+        from backend.rag.pipeline import _is_hitl_result
+
+        pause = None
+        if _is_hitl_result(result):
+            trace = dict(result.get("rag_trace") or {})
+            hitl_round = len(result.get("hitl_answers") or [])
+            checkpoint_id = f"{run_id}:hitl:{hitl_round}"
+            interrupt_id = f"interrupt:{checkpoint_id}"
+            interrupt_value = {
+                "prompt": result.get("hitl_prompt")
+                or trace.get("hitl_prompt")
+                or "请补充一个关键信息后继续。",
+                "options": result.get("hitl_options")
+                or trace.get("hitl_options")
+                or [],
+                "route": result.get("route") or trace.get("route"),
+                "retrieval_status": result.get("retrieval_status")
+                or trace.get("retrieval_status"),
+                "original_question": result.get("original_question")
+                or result.get("question"),
+            }
+            pause = self.checkpoints.record_pause(
+                run_id=run_id,
+                worker_id=worker_id,
+                fencing_token=fencing_token,
+                checkpoint_id=checkpoint_id,
+                interrupt_id=interrupt_id,
+                interrupt_value=interrupt_value,
+                state=_compact_hitl_state(result),
+                next_nodes=("await_hitl",),
+            )
+        if resumed_checkpoint_id is not None:
+            self.checkpoints.record_resume_result(
+                run_id=run_id,
+                checkpoint_id=resumed_checkpoint_id,
+                worker_id=worker_id,
+                fencing_token=fencing_token,
+                state=result,
+            )
         return RagRunOutcome(result=result, fencing_token=fencing_token, pause=pause)
 
     def start(
@@ -535,28 +653,23 @@ class CheckpointedRagRunner:
         worker_id: str,
         fencing_token: int,
     ) -> RagRunOutcome:
-        from backend.rag.pipeline import _initial_state, build_rag_graph
+        from backend.rag.pipeline import _initial_state, checkpointless_rag_graph
 
-        with self.saver_factory() as saver:
-            graph = build_rag_graph(checkpointer=saver)
-            config = self._config(run_id)
-            with bind_rag_runtime_context(context) as runtime_context_id:
-                result = graph.invoke(
-                    _initial_state(
-                        question,
-                        tenant_id=context.require_tenant_id(),
-                        runtime_context_id=runtime_context_id,
-                        model_snapshot=context.model_catalog_snapshot(),
-                    ),
-                    config=config,
+        with bind_rag_runtime_context(context) as runtime_context_id:
+            result = checkpointless_rag_graph.invoke(
+                _initial_state(
+                    question,
+                    tenant_id=context.require_tenant_id(),
+                    runtime_context_id=runtime_context_id,
+                    model_snapshot=context.model_catalog_snapshot(),
                 )
-            return self._outcome(
-                graph=graph,
-                result=result,
-                run_id=run_id,
-                worker_id=worker_id,
-                fencing_token=fencing_token,
             )
+        return self._outcome(
+            result=result,
+            run_id=run_id,
+            worker_id=worker_id,
+            fencing_token=fencing_token,
+        )
 
     def resume(
         self,
@@ -594,42 +707,31 @@ class CheckpointedRagRunner:
         context: RunRequestContext,
         worker_id: str,
     ) -> RagRunOutcome:
-        from backend.rag.pipeline import build_rag_graph
+        from backend.rag.pipeline import resume_rag_state
 
-        with self.saver_factory() as saver:
-            graph = build_rag_graph(checkpointer=saver)
-            config = self._config(run_id)
-            snapshot = graph.get_state(config)
-            if not snapshot.values:
-                raise AppError(
-                    ErrorCode.RUN_STATE_CONFLICT,
-                    "HITL checkpoint 状态不存在",
-                    status_code=409,
-                )
-            _assert_checkpoint_tenant(dict(snapshot.values), context)
-            result = dict(snapshot.values)
-            latest_checkpoint_id = snapshot.config["configurable"].get("checkpoint_id")
-            if (
-                not consumed.should_resume
-                or latest_checkpoint_id != consumed.checkpoint_id
-            ):
-                return RagRunOutcome(
-                    result=result,
-                    fencing_token=consumed.fencing_token,
-                )
-            runtime_context_id = snapshot.values.get("runtime_context_id")
-            with bind_rag_runtime_context(context, runtime_context_id):
-                result = graph.invoke(
-                    Command(resume=consumed.answer),
-                    config=config,
-                )
-            return self._outcome(
-                graph=graph,
-                result=result,
-                run_id=run_id,
-                worker_id=worker_id,
+        state = dict(consumed.state)
+        if not state:
+            raise AppError(
+                ErrorCode.RUN_STATE_CONFLICT,
+                "HITL checkpoint 状态不存在",
+                status_code=409,
+            )
+        _assert_checkpoint_tenant(state, context)
+        if not consumed.should_resume or not consumed.next_nodes:
+            return RagRunOutcome(
+                result=_restore_resume_result(state),
                 fencing_token=consumed.fencing_token,
             )
+        runtime_context_id = state.get("runtime_context_id")
+        with bind_rag_runtime_context(context, runtime_context_id):
+            result = resume_rag_state(state, consumed.answer)
+        return self._outcome(
+            result=result,
+            run_id=run_id,
+            worker_id=worker_id,
+            fencing_token=consumed.fencing_token,
+            resumed_checkpoint_id=consumed.checkpoint_id,
+        )
 
 
 checkpoint_repository = HitlCheckpointRepository()

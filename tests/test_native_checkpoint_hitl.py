@@ -1,7 +1,6 @@
 import json
 import sys
 import unittest
-from contextlib import contextmanager
 from unittest.mock import patch
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -448,14 +447,45 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         self.assertTrue(first.created)
         self.assertTrue(second.created)
 
-    def test_runner_rebuild_uses_same_saver_to_resume_after_process_change(self):
+    def test_normal_runner_path_creates_no_durable_checkpoint(self):
+        pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=0)
+        reservation = self.run_service.create_run(
+            username="alice",
+            thread_id="thread-no-checkpoint",
+            message="丹瑾是什么属性？",
+            idempotency_key="request-no-checkpoint",
+        )
+        claimed = self.run_service.claim_run(
+            run_id=reservation.run.id,
+            worker_id="worker-normal",
+        )
+        context = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-no-checkpoint",
+            tenant_id="default",
+        )
+        runner = CheckpointedRagRunner(checkpoint_repository=self.checkpoints)
+        try:
+            with patch.dict(sys.modules, {"backend.rag.pipeline": pipeline}):
+                outcome = runner.start(
+                    run_id=claimed.id,
+                    question="丹瑾是什么属性？",
+                    context=context,
+                    worker_id="worker-normal",
+                    fencing_token=claimed.fencing_token,
+                )
+        finally:
+            context.close()
+
+        self.assertIsNone(outcome.pause)
+        self.assertEqual("answerable", outcome.result["retrieval_status"])
+        self.assertEqual(0, calls["complexity"])
+        self.assertEqual(1, len(calls["retrieve"]))
+        with self.Session() as db:
+            self.assertEqual(0, db.query(RunCheckpoint).count())
+
+    def test_runner_rebuild_resumes_from_run_checkpoint_after_process_change(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
-        saver = InMemorySaver()
-
-        @contextmanager
-        def saver_factory():
-            yield saver
-
         reservation = self.run_service.create_run(
             username="alice",
             thread_id="thread-runner",
@@ -472,15 +502,12 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
             tenant_id="default",
         )
         runner1 = CheckpointedRagRunner(
-            saver_factory=saver_factory,
             checkpoint_repository=self.checkpoints,
         )
         runner2 = CheckpointedRagRunner(
-            saver_factory=saver_factory,
             checkpoint_repository=self.checkpoints,
         )
         runner3 = CheckpointedRagRunner(
-            saver_factory=saver_factory,
             checkpoint_repository=self.checkpoints,
         )
         try:
@@ -491,6 +518,14 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
                     context=context,
                     worker_id="worker-start",
                     fencing_token=claimed.fencing_token,
+                )
+                with self.Session() as db:
+                    durable_state = db.query(RunCheckpoint).one().state_json
+                self.assertNotIn("docs", durable_state)
+                self.assertNotIn("context", durable_state)
+                self.assertNotIn("sub_results", durable_state)
+                self.assertNotIn(
+                    "retrieved_chunks", durable_state.get("rag_trace") or {}
                 )
                 accepted = self.coordinator.accept(
                     username="alice",
@@ -529,6 +564,87 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         self.assertEqual("answerable", replayed.result["retrieval_status"])
         self.assertEqual(1, calls["complexity"])
         self.assertEqual(2, len(calls["retrieve"]))
+
+    def test_runner_supports_two_cross_process_clarifications_and_replay(self):
+        pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=2)
+        reservation = self.run_service.create_run(
+            username="alice",
+            thread_id="thread-two-clarifications",
+            message=NativeCheckpointGraphTests.QUESTION,
+            idempotency_key="request-two-clarifications",
+        )
+        claimed = self.run_service.claim_run(
+            run_id=reservation.run.id,
+            worker_id="worker-start",
+        )
+        context = RunRequestContext.for_sync(
+            user_id="alice",
+            thread_id="thread-two-clarifications",
+            tenant_id="default",
+        )
+        runners = [
+            CheckpointedRagRunner(checkpoint_repository=self.checkpoints)
+            for _ in range(4)
+        ]
+        try:
+            with patch.dict(sys.modules, {"backend.rag.pipeline": pipeline}):
+                first = runners[0].start(
+                    run_id=claimed.id,
+                    question=NativeCheckpointGraphTests.QUESTION,
+                    context=context,
+                    worker_id="worker-start",
+                    fencing_token=claimed.fencing_token,
+                )
+                second = runners[1].resume(
+                    username="alice",
+                    run_id=claimed.id,
+                    hitl_token=first.pause.hitl_token,
+                    answer="角色是丹瑾",
+                    idempotency_key="resume-first",
+                    context=context,
+                    worker_id="worker-second",
+                    preflight=lambda _state: None,
+                )
+                completed = runners[2].resume(
+                    username="alice",
+                    run_id=claimed.id,
+                    hitl_token=second.pause.hitl_token,
+                    answer="查询当前版本",
+                    idempotency_key="resume-second",
+                    context=context,
+                    worker_id="worker-final",
+                    preflight=lambda _state: None,
+                )
+                replayed = runners[3].resume(
+                    username="alice",
+                    run_id=claimed.id,
+                    hitl_token=second.pause.hitl_token,
+                    answer="查询当前版本",
+                    idempotency_key="resume-second",
+                    context=context,
+                    worker_id="worker-final",
+                    preflight=lambda _state: None,
+                )
+        finally:
+            context.close()
+
+        self.assertIsNotNone(first.pause)
+        self.assertIsNotNone(second.pause)
+        self.assertNotEqual(first.pause.hitl_token, second.pause.hitl_token)
+        self.assertIsNone(completed.pause)
+        self.assertEqual("answerable", completed.result["retrieval_status"])
+        self.assertEqual(
+            ["角色是丹瑾", "查询当前版本"],
+            completed.result["hitl_answers"],
+        )
+        self.assertEqual(completed.result["docs"], replayed.result["docs"])
+        self.assertEqual(1, calls["complexity"])
+        self.assertEqual(3, len(calls["retrieve"]))
+        with self.Session() as db:
+            checkpoints = db.query(RunCheckpoint).order_by(RunCheckpoint.id).all()
+        self.assertEqual(2, len(checkpoints))
+        self.assertTrue(all(item.consumed_at is not None for item in checkpoints))
+        self.assertTrue(all(item.next_nodes_json == [] for item in checkpoints))
 
 
 class ResumeRouteContractTests(unittest.TestCase):
