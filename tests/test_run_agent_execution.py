@@ -946,40 +946,43 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_owned_event_append_rejects_stale_writer_after_terminal(self):
         self.runtime_factory.release_after_first = asyncio.Event()
+        delta_persisted = asyncio.Event()
+        publish = self.events.publish
+
+        async def observe_publish(**kwargs):
+            event = await publish(**kwargs)
+            if event.type.value == "message.delta":
+                delta_persisted.set()
+            return event
+
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-stale-writer",
             message="先输出一半",
             idempotency_key="stale-writer-1",
         )
-        task = await self.executor.spawn_once(
-            username="alice",
-            run_id=reservation.run.id,
-        )
-        self.assertIsNotNone(task)
-        await self.runtime_factory.first_chunk_published.wait()
-        for _ in range(100):
-            emitted = self.journal.read_after(
+        with patch.object(self.events, "publish", side_effect=observe_publish):
+            task = await self.executor.spawn_once(
                 username="alice",
                 run_id=reservation.run.id,
             )
-            if any(item.type.value == "message.delta" for item in emitted):
-                break
-            await asyncio.sleep(0.002)
-        running = self.service.get_run(
-            username="alice",
-            run_id=reservation.run.id,
-        )
+            self.assertIsNotNone(task)
+            await self.runtime_factory.first_chunk_published.wait()
+            await asyncio.wait_for(delta_persisted.wait(), timeout=2)
+            running = self.service.get_run(
+                username="alice",
+                run_id=reservation.run.id,
+            )
 
-        self.service.fail_run(
-            run_id=running.id,
-            error_code="ORPHAN_RUN",
-            message="运行已由新 owner 回收。",
-            fencing_token=running.fencing_token,
-            partial=True,
-        )
-        self.runtime_factory.release_after_first.set()
-        await task
+            self.service.fail_run(
+                run_id=running.id,
+                error_code="ORPHAN_RUN",
+                message="运行已由新 owner 回收。",
+                fencing_token=running.fencing_token,
+                partial=True,
+            )
+            self.runtime_factory.release_after_first.set()
+            await task
 
         events = self.journal.read_after(
             username="alice",
