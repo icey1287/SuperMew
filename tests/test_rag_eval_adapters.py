@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import sys
 import types
 from pathlib import Path
@@ -480,10 +481,26 @@ def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
         AUTO_MERGE_ENABLED=True,
         AUTO_MERGE_THRESHOLD=2,
     )
-    pipeline = SimpleNamespace(RAG_MODEL_TIMEOUT_SECONDS=15.0)
+    milvus_module = types.ModuleType("backend.indexing.milvus_client")
+    milvus_module.MilvusSettings = SimpleNamespace(
+        from_env=lambda: SimpleNamespace(
+            collection_name="catalog_v1",
+            uri="http://milvus.example.test",
+        )
+    )
+    models_module = types.ModuleType("backend.agent.models")
+    models_module.model_registry = SimpleNamespace(
+        environment_snapshot=lambda: SimpleNamespace(assignments={})
+    )
+    monkeypatch.setitem(sys.modules, "backend.indexing.milvus_client", milvus_module)
+    monkeypatch.setitem(sys.modules, "backend.agent.models", models_module)
 
-    def import_module(name):
-        return pipeline if name == "backend.rag.pipeline" else utils
+    real_import_module = importlib.import_module
+
+    def import_module(name, package=None):
+        if name == "backend.rag.utils":
+            return utils
+        return real_import_module(name, package)
 
     monkeypatch.setattr(
         "backend.evaluation.rag_adapters.importlib.import_module",

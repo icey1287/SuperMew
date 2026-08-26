@@ -130,28 +130,11 @@ test('projects a durable Run event stream into the chat UI', async ({ page }) =>
     }
     await route.fulfill({ json: { threads: [] } });
   });
-  await page.route('**/v1/threads/*/runs', async (route) => {
+  await page.route('**/v1/threads/*/runs/stream', async (route) => {
     createRequest = route.request().postDataJSON();
+    lastEventId = route.request().headers()['last-event-id'] || '';
     const url = new URL(route.request().url());
     expect(decodeURIComponent(url.pathname.split('/')[3])).toBe(createdThreadId);
-    await route.fulfill({
-      json: {
-        run: {
-          id: runId,
-          thread_id: createdThreadId,
-          status: 'queued',
-          idempotency_key: String(createRequest?.idempotency_key || ''),
-          user_message_id: 101,
-          assistant_message_id: 102,
-          on_disconnect: 'continue',
-        },
-        created: true,
-        thread_version: 1,
-      },
-    });
-  });
-  await page.route(`**/v1/runs/${runId}/stream`, async (route) => {
-    lastEventId = route.request().headers()['last-event-id'] || '';
     const events = [
       ['run.created', { status: 'queued', user_message_id: 101, assistant_message_id: 102 }],
       ['run.started', {}],
@@ -176,7 +159,11 @@ test('projects a durable Run event stream into the chat UI', async ({ page }) =>
     await route.fulfill({
       status: 200,
       contentType: 'text/event-stream',
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: {
+        'Cache-Control': 'no-cache',
+        'X-Run-ID': runId,
+        'X-Thread-Version': '1',
+      },
       body,
     });
   });
