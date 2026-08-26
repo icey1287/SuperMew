@@ -17,6 +17,7 @@ from backend.schemas.rag import HitlResumeState, normalize_rag_sub_trace
 from backend.rag.utils import (
     RETRIEVAL_TOP_K,
     retrieve_documents,
+    resolve_retrieval_snapshot,
     rewrite_query_once,
     dedupe_documents,
     retrieval_trace_fields,
@@ -322,10 +323,22 @@ def _required_tenant_id(value: object) -> str:
 
 def _retrieve_for_state(state: RAGState, query: str) -> dict:
     deadline, cancellation = _provider_runtime(state)
+    tenant_id = _required_tenant_id(state.get("tenant_id"))
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    retrieval_snapshot = None
+    if ctx is not None:
+        retrieval_snapshot = ctx.get_or_resolve_rag_retrieval_snapshot(
+            lambda: resolve_retrieval_snapshot(
+                tenant_id=tenant_id,
+                deadline=deadline,
+                cancellation=cancellation,
+            )
+        )
     return retrieve_documents(
         query,
         top_k=RETRIEVAL_TOP_K,
-        tenant_id=_required_tenant_id(state.get("tenant_id")),
+        tenant_id=tenant_id,
+        retrieval_snapshot=retrieval_snapshot,
         deadline=deadline,
         cancellation=cancellation,
     )

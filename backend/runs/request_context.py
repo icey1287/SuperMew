@@ -66,6 +66,7 @@ class RunRequestContext:
     _provider_deadline_at: Optional[float] = None
     _provider_cancellation_probe: Optional[Callable[[], bool]] = None
     _model_snapshot: ModelCatalogSnapshot | None = field(default=None, repr=False)
+    _rag_retrieval_snapshot: object | None = field(default=None, repr=False)
     _web_fetch_authorizations: dict[str, _WebFetchAuthorization] = field(
         default_factory=dict,
         repr=False,
@@ -146,6 +147,19 @@ class RunRequestContext:
     def model_snapshot_payload(self) -> dict | None:
         snapshot = self.model_catalog_snapshot()
         return snapshot.model_dump(mode="json") if snapshot is not None else None
+
+    def get_or_resolve_rag_retrieval_snapshot(
+        self,
+        resolver: Callable[[], object],
+    ) -> object:
+        """Resolve the immutable document snapshot once for this request."""
+
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("request context is closed")
+            if self._rag_retrieval_snapshot is None:
+                self._rag_retrieval_snapshot = resolver()
+            return self._rag_retrieval_snapshot
 
     def emit_rag_step(
         self,
@@ -479,6 +493,7 @@ class RunRequestContext:
             self._web_citation_ledger.clear()
             self._web_tool_result_budget_limit = None
             self._web_tool_result_bytes_claimed = 0
+            self._rag_retrieval_snapshot = None
             authority = self._destination_authority
             self._destination_authority = None
         if authority is not None:

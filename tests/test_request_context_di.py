@@ -30,6 +30,27 @@ class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
             context.close()
             tenantless.close()
 
+    async def test_rag_retrieval_snapshot_is_resolved_once_per_context(self):
+        context = RunRequestContext.for_sync(
+            user_id="a",
+            thread_id="s1",
+            tenant_id="tenant-a",
+        )
+        snapshot = object()
+        calls = 0
+
+        def resolve():
+            nonlocal calls
+            calls += 1
+            return snapshot
+
+        try:
+            self.assertIs(snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve))
+            self.assertIs(snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve))
+            self.assertEqual(1, calls)
+        finally:
+            context.close()
+
     async def test_two_request_contexts_do_not_share_rag_steps(self):
         queue_a = asyncio.Queue()
         queue_b = asyncio.Queue()

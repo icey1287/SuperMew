@@ -714,16 +714,21 @@ def retrieve_documents(
     *,
     tenant_id: str,
     knowledge_base_id: str | None = None,
+    retrieval_snapshot: RetrievalSnapshot | None = None,
     deadline: float | None = None,
     cancellation: Callable[[], bool] | None = None,
 ) -> Dict[str, Any]:
     tenant_id = _required_tenant_id(tenant_id)
-    snapshot = resolve_retrieval_snapshot(
-        tenant_id=tenant_id,
-        knowledge_base_id=knowledge_base_id,
-        deadline=deadline,
-        cancellation=cancellation,
-    )
+    snapshot = retrieval_snapshot
+    if snapshot is None:
+        snapshot = resolve_retrieval_snapshot(
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            deadline=deadline,
+            cancellation=cancellation,
+        )
+    elif snapshot.tenant_id != tenant_id:
+        raise ValueError("retrieval snapshot tenant does not match request tenant")
     candidate_k, candidate_config = resolve_candidate_k(top_k)
     if not snapshot.targets:
         return _finalize_retrieval(

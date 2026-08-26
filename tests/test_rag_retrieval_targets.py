@@ -138,6 +138,28 @@ def test_versioned_only_uses_snapshot_index_and_exact_target_filter():
     assert result["meta"]["retrieval_target_count"] == 1
 
 
+def test_pre_resolved_snapshot_skips_catalog_resolution():
+    utils = _utils()
+    target = _target("catalog_v1")
+    snapshot = _snapshot(target, index_id="request-snapshot")
+    scope = Scope(_snapshot(index_id="must-not-load"))
+    utils._document_retrieval_scope = scope
+    utils._embedding_service = Embedding()
+    utils._milvus_manager = RoutedStore(
+        {"catalog_v1": TargetStore(hybrid=[_doc("chunk-1", "evidence")])}
+    )
+
+    result = utils.retrieve_documents(
+        "question",
+        top_k=1,
+        tenant_id="tenant-a",
+        retrieval_snapshot=snapshot,
+    )
+
+    assert scope.calls == []
+    assert result["meta"]["retrieval_index_id"] == "request-snapshot"
+
+
 def test_retrieval_requires_an_explicit_nonempty_tenant_before_catalog_access():
     utils = _utils()
     scope = Scope(_snapshot(index_id="unused"))

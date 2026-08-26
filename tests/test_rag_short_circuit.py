@@ -53,6 +53,7 @@ def load_pipeline(
     *,
     retrieve_documents,
     rewrite_query_once=None,
+    resolve_retrieval_snapshot=None,
 ):
     # Keep LangGraph's contextvars and exception classes stable after patch.dict
     # restores sys.modules. Otherwise interrupt() can observe a second module copy.
@@ -89,6 +90,9 @@ def load_pipeline(
         return retrieve_documents(query, top_k=top_k, **forwarded)
 
     fake_utils.retrieve_documents = fake_retrieve_documents
+    fake_utils.resolve_retrieval_snapshot = resolve_retrieval_snapshot or (
+        lambda **_kwargs: object()
+    )
     rewrite_impl = rewrite_query_once or (
         lambda query: {
             "rewrite_method": "step_back",
@@ -420,6 +424,61 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertGreaterEqual(complexity_model_calls["count"], 1)
         self.assertEqual("complex", result.get("complexity"))
         self.assertEqual(2, result.get("rag_trace", {}).get("sub_agent_count"))
+
+    def test_complex_subquestions_share_one_catalog_snapshot_per_request(self):
+        catalog_calls = []
+        retrieval_snapshots = []
+        snapshot = types.SimpleNamespace(tenant_id="tenant-a")
+
+        def resolve_snapshot(**kwargs):
+            catalog_calls.append(kwargs)
+            return snapshot
+
+        def retrieve(
+            query,
+            top_k=5,
+            *,
+            tenant_id,
+            retrieval_snapshot,
+        ):
+            del top_k
+            self.assertEqual("tenant-a", tenant_id)
+            retrieval_snapshots.append(retrieval_snapshot)
+            return {"docs": [_doc(f"evidence for {query}", query)], "meta": _meta(1)}
+
+        pipeline = load_pipeline(
+            retrieve_documents=retrieve,
+            resolve_retrieval_snapshot=resolve_snapshot,
+        )
+        pipeline._get_complexity_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {
+                "complexity": "complex",
+                "reason": "comparison",
+                "sub_questions": ["question-a", "question-b", "question-c"],
+            }
+        )
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 0.9,
+            }
+        )
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph("compare three dimensions", ctx)
+        finally:
+            ctx.close()
+
+        self.assertEqual(3, result.get("rag_trace", {}).get("sub_agent_count"))
+        self.assertEqual(
+            [{"tenant_id": "tenant-a", "deadline": None, "cancellation": None}],
+            catalog_calls,
+        )
+        self.assertEqual([snapshot, snapshot, snapshot], retrieval_snapshots)
 
     def test_complexity_plan_includes_child_queries(self):
         model_schemas = []
