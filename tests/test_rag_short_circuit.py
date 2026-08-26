@@ -385,6 +385,37 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual("simple", result.get("complexity"))
         self.assertIn("fast_path", result.get("complexity_reason", ""))
 
+    def test_entity_version_attribute_query_skips_complexity_model(self):
+        def retrieve(query, top_k=5):
+            return {"docs": [_doc("Orion V2 外壳规格")], "meta": _meta(1)}
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        complexity_model = Mock(
+            return_value=FakeStructuredModel(
+                lambda schema, prompt: {"complexity": "simple", "reason": "model"}
+            )
+        )
+        pipeline._get_complexity_model = complexity_model
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(
+            lambda schema, prompt: {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 0.95,
+            }
+        )
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph("Orion V2 外壳标准色号", ctx)
+        finally:
+            ctx.close()
+
+        complexity_model.assert_not_called()
+        self.assertEqual("simple", result.get("complexity"))
+        self.assertIn("fast_path", result.get("complexity_reason", ""))
+
     def test_multi_dimension_keyword_query_still_uses_complexity_model(self):
         def retrieve(query, top_k=5):
             return {"docs": [_doc("comparison evidence")], "meta": _meta(1)}

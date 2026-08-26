@@ -946,7 +946,7 @@ def _simple_question_fast_path_reason(question: str) -> Optional[str]:
         return None
     if "、" in normalized:
         return None
-    if re.search(r"[\u4e00-\u9fff]", normalized) and normalized.count(" ") >= 2:
+    if re.search(r"[\u4e00-\u9fff]", normalized) and normalized.count(" ") >= 3:
         return None
     if sum(marker in normalized for marker in _QUERY_DIMENSION_MARKERS) >= 2:
         return None
