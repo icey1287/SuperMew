@@ -106,6 +106,8 @@ class RoutePolicyMatcherTests(unittest.TestCase):
             ("POST", "/auth/logout-all", AUTH_LOGOUT_POLICY),
             ("POST", "/v1/threads/thread_1/runs", THREAD_RUN_POLICY),
             ("POST", "/v1/threads/thread_1/runs/stream", THREAD_RUN_POLICY),
+            ("POST", "/chat", THREAD_RUN_POLICY),
+            ("POST", "/chat/stream", THREAD_RUN_POLICY),
             ("POST", "/v1/runs/run_1/resume", HITL_RESUME_POLICY),
             ("POST", "/documents/upload/async", DOCUMENT_UPLOAD_POLICY),
         )

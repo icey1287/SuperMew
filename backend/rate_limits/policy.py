@@ -101,6 +101,11 @@ DEFAULT_ROUTE_POLICY_RULES = (
     ),
     RoutePolicyRule(
         methods=frozenset({"POST"}),
+        path_pattern=re.compile(r"/chat(?:/stream)?/?"),
+        policy=THREAD_RUN_POLICY,
+    ),
+    RoutePolicyRule(
+        methods=frozenset({"POST"}),
         path_pattern=re.compile(r"/v1/runs/[^/]+/resume/?"),
         policy=HITL_RESUME_POLICY,
     ),
