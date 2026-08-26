@@ -45,8 +45,12 @@ class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
             return snapshot
 
         try:
-            self.assertIs(snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve))
-            self.assertIs(snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve))
+            self.assertIs(
+                snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve)
+            )
+            self.assertIs(
+                snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve)
+            )
             self.assertEqual(1, calls)
         finally:
             context.close()

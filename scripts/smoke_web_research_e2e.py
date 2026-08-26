@@ -52,7 +52,9 @@ def main() -> None:
             ready = client.get("/health/ready")
             ready.raise_for_status()
             web = ready.json().get("web_research") or {}
-            if not all(web.get(key) is True for key in ("enabled", "ready", "search_ready")):
+            if not all(
+                web.get(key) is True for key in ("enabled", "ready", "search_ready")
+            ):
                 raise RuntimeError("Web Research readiness is not healthy")
 
             registered = client.post(
@@ -60,9 +62,7 @@ def main() -> None:
                 json={"username": username, "password": password, "role": "user"},
             )
             registered.raise_for_status()
-            headers = {
-                "Authorization": f"Bearer {registered.json()['access_token']}"
-            }
+            headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
 
             created_thread = client.post(
                 "/v1/threads",

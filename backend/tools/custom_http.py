@@ -54,7 +54,9 @@ def validate_custom_http_endpoint(value: str) -> str:
         or parsed.password is not None
         or parsed.fragment
     ):
-        raise ValueError("endpoint must use public HTTPS without credentials or fragments")
+        raise ValueError(
+            "endpoint must use public HTTPS without credentials or fragments"
+        )
     host = parsed.hostname.casefold().rstrip(".")
     if host == "localhost" or host.endswith(_SPECIAL_SUFFIXES):
         raise ValueError("endpoint cannot target a special-use host")
@@ -62,7 +64,9 @@ def validate_custom_http_endpoint(value: str) -> str:
         address = ipaddress.ip_address(host)
     except ValueError:
         if "." not in host:
-            raise ValueError("endpoint must use a fully-qualified public host") from None
+            raise ValueError(
+                "endpoint must use a fully-qualified public host"
+            ) from None
     else:
         if not address.is_global:
             raise ValueError("endpoint cannot target a non-global IP address")
@@ -189,7 +193,9 @@ class CustomHttpToolRuntime:
             value = os.getenv(secret_name, "").strip()
             if not value:
                 raise _CustomToolConfigurationError
-            if len(value) > 4_096 or any(marker in value for marker in ("\r", "\n", "\x00")):
+            if len(value) > 4_096 or any(
+                marker in value for marker in ("\r", "\n", "\x00")
+            ):
                 raise _CustomToolConfigurationError
             headers[header_name] = value
         return headers
@@ -219,9 +225,7 @@ def register_custom_http_tools(
             network_policy="restricted",
             result_size_limit=profile.max_response_bytes + 65_536,
             resource_scope="public-web",
-            observability_metadata_keys=frozenset(
-                {"response_bytes", "status_code"}
-            ),
+            observability_metadata_keys=frozenset({"response_bytes", "status_code"}),
         )
         registry.register(
             descriptor,
@@ -270,9 +274,7 @@ def _append_query(endpoint: str, arguments: Mapping[str, object]) -> str:
                 allow_nan=False,
             )
         pairs.append((name, rendered))
-    return urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, urlencode(pairs), "")
-    )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(pairs), ""))
 
 
 __all__ = [

@@ -275,5 +275,7 @@ async def create_run_stream(
         reservation_headers={
             "X-Thread-Version": str(reservation.thread_version),
         },
-        initial_events=(reservation.created_event,) if reservation.created_event else (),
+        initial_events=(reservation.created_event,)
+        if reservation.created_event
+        else (),
     )

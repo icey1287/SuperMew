@@ -468,7 +468,7 @@ def test_transport_reads_body_when_server_closes_connection() -> None:
         response = transport.post(
             resolved,
             headers={"Content-Type": "application/json"},
-            body=b'{}',
+            body=b"{}",
             allowed_content_types=frozenset({"application/json"}),
             max_compressed_bytes=1024,
             max_response_bytes=1024,

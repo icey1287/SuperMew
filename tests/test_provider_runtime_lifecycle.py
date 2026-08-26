@@ -419,6 +419,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             sql_assistant=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
         )
+
         def start_runtime():
             events.append("sql.start")
             raise RuntimeError("sql startup failed")
@@ -474,6 +475,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             web_research=SimpleNamespace(enabled=True),
             validate_startup=lambda: None,
         )
+
         def start_runtime():
             events.append("web.start")
             raise RuntimeError("web startup failed")

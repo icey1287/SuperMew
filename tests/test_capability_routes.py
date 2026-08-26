@@ -262,9 +262,7 @@ def test_admin_can_manage_skills_tools_sql_and_keyless_web() -> None:
         "catalog_cache_ttl_seconds": 300,
     }
 
-    with TestClient(
-        _app(authenticated=True, control_service=service)
-    ) as client:
+    with TestClient(_app(authenticated=True, control_service=service)) as client:
         control = client.get("/v1/capabilities/control-plane")
         created_tool = client.post("/v1/capabilities/tools", json=tool_payload)
         updated_tool = client.put(
@@ -281,9 +279,7 @@ def test_admin_can_manage_skills_tools_sql_and_keyless_web() -> None:
             "/v1/capabilities/web-research",
             json={"enabled": False},
         )
-        deleted_skill = client.delete(
-            "/v1/capabilities/skills/release-research"
-        )
+        deleted_skill = client.delete("/v1/capabilities/skills/release-research")
         deleted_tool = client.delete("/v1/capabilities/tools/release_lookup")
 
     assert control.status_code == 200

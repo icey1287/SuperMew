@@ -233,7 +233,11 @@ def test_referenced_custom_tool_cannot_be_disabled_or_deleted(capability_control
         capability_control.update_http_tool(
             username="admin",
             name=tool.name,
-            **{key: value for key, value in _http_payload(enabled=False).items() if key != "name"},
+            **{
+                key: value
+                for key, value in _http_payload(enabled=False).items()
+                if key != "name"
+            },
         )
     assert disabled.value.code == ErrorCode.CONFLICT
 

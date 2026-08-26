@@ -315,9 +315,7 @@ def _remove_tool_call_bundle(
             calls = list(message.tool_calls or [])
             if any(str(call.get("id")) == tool_call_id for call in calls):
                 remaining_calls = [
-                    call
-                    for call in calls
-                    if str(call.get("id")) != tool_call_id
+                    call for call in calls if str(call.get("id")) != tool_call_id
                 ]
                 if remaining_calls or _message_text(message).strip():
                     retained.append(

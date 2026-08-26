@@ -212,7 +212,9 @@ class WebResearchRuntimeConfig:
             or endpoint_parts.query
             or endpoint_parts.path != "/search"
         ):
-            raise ValueError("tavily_endpoint must be the fixed Tavily HTTPS search URL")
+            raise ValueError(
+                "tavily_endpoint must be the fixed Tavily HTTPS search URL"
+            )
         object.__setattr__(self, "tavily_endpoint", endpoint)
         if (
             isinstance(self.request_timeout_seconds, bool)
@@ -351,11 +353,7 @@ class TavilyKeylessWebSearchAdapter:
             if not isinstance(url_value, str) or not url_value.strip():
                 continue
             title = raw.get("title") if isinstance(raw.get("title"), str) else ""
-            snippet = (
-                raw.get("content")
-                if isinstance(raw.get("content"), str)
-                else ""
-            )
+            snippet = raw.get("content") if isinstance(raw.get("content"), str) else ""
             try:
                 results.append(
                     WebSearchHit(
@@ -814,6 +812,8 @@ def build_web_research_runtime(
     except BaseException:
         resolver.close()
         raise
+
+
 def _raise_if_cancelled(cancellation_probe: CancellationProbe | None) -> None:
     if cancellation_probe is None:
         return

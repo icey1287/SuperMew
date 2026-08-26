@@ -194,7 +194,11 @@ def _validate_headers(
         name = str(raw_name).strip()
         folded = name.casefold()
         item = str(raw_value).strip()
-        if re.fullmatch(_HEADER_NAME, name) is None or folded in blocked or folded in seen:
+        if (
+            re.fullmatch(_HEADER_NAME, name) is None
+            or folded in blocked
+            or folded in seen
+        ):
             raise ValueError("headers contain an invalid or duplicate name")
         if not secret_refs and (
             folded in sensitive or any(marker in folded for marker in sensitive_markers)
@@ -202,7 +206,9 @@ def _validate_headers(
             raise ValueError("sensitive headers must use secret_headers")
         if secret_refs:
             if re.fullmatch(_SECRET_NAME, item) is None:
-                raise ValueError("secret_headers values must be environment Secret names")
+                raise ValueError(
+                    "secret_headers values must be environment Secret names"
+                )
         elif (
             not item
             or len(item) > 4_096

@@ -158,8 +158,7 @@ def _fit_web_result(
             )
             candidate = _research_result([*fitted, item], truncated=True)
             excess = (
-                _registered_tool_result_size(candidate, tool_name=tool_name)
-                - max_bytes
+                _registered_tool_result_size(candidate, tool_name=tool_name) - max_bytes
             )
             if excess <= 0:
                 fitted.append(item)

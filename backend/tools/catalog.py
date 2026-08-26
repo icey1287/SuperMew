@@ -392,7 +392,9 @@ def configured_secret_names(
         descriptor = registry.descriptor(name)
         if descriptor is not None:
             required.update(descriptor.required_secrets)
-    required.update(str(name).strip() for name in additional_secret_names if str(name).strip())
+    required.update(
+        str(name).strip() for name in additional_secret_names if str(name).strip()
+    )
     configured: set[str] = set()
     for name in required:
         if name == "SQL_ASSISTANT_DSN":

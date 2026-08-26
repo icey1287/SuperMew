@@ -489,7 +489,9 @@ class CapabilityControlService:
             _close_quietly(custom_http_runtime)
             raise
 
-    def _build_runtime_projection(self, previous: CapabilityRuntime) -> CapabilityRuntime:
+    def _build_runtime_projection(
+        self, previous: CapabilityRuntime
+    ) -> CapabilityRuntime:
         skills, factory, catalog = self._build_projection(
             tools=previous.tools,
             settings=previous.settings,
@@ -608,9 +610,7 @@ class CapabilityControlService:
         created_at: datetime | None = None,
     ) -> ManagedHttpToolRecord:
         try:
-            endpoint = validate_custom_http_endpoint(
-                str(payload.get("endpoint") or "")
-            )
+            endpoint = validate_custom_http_endpoint(str(payload.get("endpoint") or ""))
             values = dict(payload)
             values.update(
                 endpoint=endpoint,
@@ -749,7 +749,9 @@ def _next_patch(version: str) -> str:
 
 
 def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+    return tuple(
+        dict.fromkeys(str(value).strip() for value in values if str(value).strip())
+    )
 
 
 def _placeholder_time() -> datetime:
@@ -763,8 +765,6 @@ def _close_quietly(runtime: object | None) -> None:
         runtime.close()  # type: ignore[attr-defined]
     except BaseException:
         pass
-
-
 
 
 capability_control_service = CapabilityControlService()

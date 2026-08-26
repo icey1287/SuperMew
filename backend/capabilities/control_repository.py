@@ -173,8 +173,7 @@ class CapabilityControlRepository:
                         )
                     )
                 existing = {
-                    str(name)
-                    for (name,) in db.query(CapabilitySkillProfile.name).all()
+                    str(name) for (name,) in db.query(CapabilitySkillProfile.name).all()
                 }
                 for definition in default_skills:
                     manifest = definition.manifest

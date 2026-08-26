@@ -114,6 +114,7 @@ def test_sql_query_adapter_passes_run_deadline_and_cancellation():
             }
 
     runtime = Runtime()
+
     def cancelled() -> bool:
         return False
 

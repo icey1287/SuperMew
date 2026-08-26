@@ -867,7 +867,9 @@ async def test_describe_skill_returns_only_activation_acknowledgement():
     assert model.bound_tool_names[1] == ["search_knowledge_base"]
     next_message_text = "\n".join(_message_texts(model.received_messages[1]))
     assert next_message_text.count("# Knowledge Base") == 1
-    assert '<skill_catalog state="omitted" reason="active-skill" />' in next_message_text
+    assert (
+        '<skill_catalog state="omitted" reason="active-skill" />' in next_message_text
+    )
 
 
 async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(

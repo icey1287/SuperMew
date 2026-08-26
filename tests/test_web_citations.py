@@ -312,8 +312,7 @@ def test_context_close_clears_ledger_and_returns_only_stable_failure():
     assert evidence.evidence_id not in repr(captured.value)
 
 
-def test_web_tools_register_search_and_fetch_results_without_minting_fetch_ids(
-):
+def test_web_tools_register_search_and_fetch_results_without_minting_fetch_ids():
     search_evidence = _evidence(content="Search result content.")
     fetched_evidence = _evidence(content="Fetched full page content.")
 

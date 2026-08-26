@@ -436,8 +436,12 @@ class CapabilitySkillProfile(Base):
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     allowed_tools_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
-    required_roles_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
-    required_secrets_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    required_roles_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    required_secrets_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     source: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     created_by_user_id: Mapped[int | None] = mapped_column(
@@ -454,7 +458,9 @@ class CapabilitySkillProfile(Base):
 class CapabilityHttpToolProfile(Base):
     __tablename__ = "capability_http_tool_profiles"
     __table_args__ = (
-        CheckConstraint("method IN ('GET', 'POST')", name="ck_capability_http_tool_method"),
+        CheckConstraint(
+            "method IN ('GET', 'POST')", name="ck_capability_http_tool_method"
+        ),
         CheckConstraint(
             "timeout_seconds > 0 AND timeout_seconds <= 120",
             name="ck_capability_http_tool_timeout",
@@ -472,10 +478,18 @@ class CapabilityHttpToolProfile(Base):
     endpoint: Mapped[str] = mapped_column(String(2048), nullable=False)
     method: Mapped[str] = mapped_column(String(8), nullable=False)
     input_schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    static_headers_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    secret_headers_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    required_roles_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
-    requires_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    static_headers_json: Mapped[dict] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    secret_headers_json: Mapped[dict] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    required_roles_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    requires_approval: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     idempotent: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     timeout_seconds: Mapped[Decimal] = mapped_column(
         Numeric(10, 3), default=Decimal("20"), nullable=False
@@ -518,9 +532,15 @@ class SqlAssistantProfile(Base):
         String(128), default="SQL_ASSISTANT_DSN", nullable=False
     )
     expected_role: Mapped[str] = mapped_column(String(63), default="", nullable=False)
-    allowed_schemas_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
-    allowed_tables_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
-    sensitive_columns_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    allowed_schemas_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    allowed_tables_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    sensitive_columns_json: Mapped[list] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     statement_timeout_seconds: Mapped[Decimal] = mapped_column(
         Numeric(10, 3), default=Decimal("10"), nullable=False
     )

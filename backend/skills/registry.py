@@ -683,7 +683,9 @@ class SkillRegistry:
         records: dict[str, _SkillRecord] = {}
         for raw_definition in definitions:
             if not isinstance(raw_definition, SkillDefinition):
-                raise SkillRegistryError("definitions must contain SkillDefinition values")
+                raise SkillRegistryError(
+                    "definitions must contain SkillDefinition values"
+                )
             manifest = SkillManifest.model_validate(
                 raw_definition.manifest.model_dump(mode="json")
             )

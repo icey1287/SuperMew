@@ -903,9 +903,7 @@ def _score_case(
                 metrics[f"{metric_name}_at_{k}"] = value
             metrics[f"hit_at_{k}"] = float(ranking["recall"] > 0)
         largest_k = max(k_values)
-        checks[f"retrieval_hit_at_{largest_k}"] = bool(
-            metrics[f"hit_at_{largest_k}"]
-        )
+        checks[f"retrieval_hit_at_{largest_k}"] = bool(metrics[f"hit_at_{largest_k}"])
     else:
         metrics["gold_chunk_coverage"] = None
         for k in k_values:
@@ -1067,8 +1065,7 @@ def _aggregate_metrics(
         eligible_cases=len(cases),
     )
     rewrite_coverage_values = [
-        float(observation.rewrite_performed)
-        for observation in observations.values()
+        float(observation.rewrite_performed) for observation in observations.values()
     ]
     aggregated["rewrite_coverage_rate"] = RagMetricResult(
         value=_mean(rewrite_coverage_values),
