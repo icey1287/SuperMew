@@ -425,6 +425,49 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual("complex", result.get("complexity"))
         self.assertEqual(2, result.get("rag_trace", {}).get("sub_agent_count"))
 
+    def test_multi_fact_interrogatives_do_not_take_the_simple_fast_path(self):
+        def retrieve(query, top_k=5):
+            return {"docs": [_doc("cross-document evidence")], "meta": _meta(1)}
+
+        def complexity(schema, prompt):
+            return {
+                "complexity": "complex",
+                "reason": "multiple requested facts",
+                "sub_questions": ["北仓部署数量", "北仓支持套餐与响应时间"],
+            }
+
+        def grade(schema, prompt):
+            return {
+                "relevance": "strong",
+                "answerability": "sufficient",
+                "ambiguity": "none",
+                "route": "answer",
+                "confidence": 0.9,
+            }
+
+        pipeline = load_pipeline(retrieve_documents=retrieve)
+        complexity_model_calls = {"count": 0}
+
+        def get_complexity_model(*_):
+            complexity_model_calls["count"] += 1
+            return FakeStructuredModel(complexity)
+
+        pipeline._get_complexity_model = get_complexity_model
+        pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
+
+        ctx = self._ctx()
+        try:
+            result = pipeline.run_rag_graph(
+                "北仓部署了多少台 Orion，采用哪个支持套餐，该套餐的响应时间是多少？",
+                ctx,
+            )
+        finally:
+            ctx.close()
+
+        self.assertGreaterEqual(complexity_model_calls["count"], 1)
+        self.assertEqual("complex", result.get("complexity"))
+        self.assertEqual(2, result.get("rag_trace", {}).get("sub_agent_count"))
+
     def test_complex_subquestions_share_one_catalog_snapshot_per_request(self):
         catalog_calls = []
         retrieval_snapshots = []

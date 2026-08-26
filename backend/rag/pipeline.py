@@ -865,6 +865,23 @@ _SIMPLE_QUERY_MARKERS = (
     "which",
 )
 
+_SIMPLE_INTERROGATIVE_MARKERS = (
+    "是什么",
+    "是谁",
+    "哪里",
+    "何时",
+    "多少",
+    "是否",
+    "哪个",
+    "哪种",
+    "what is",
+    "who is",
+    "where is",
+    "when is",
+    "how many",
+    "which",
+)
+
 _COMPLEX_QUERY_MARKERS = (
     "比较",
     "对比",
@@ -924,6 +941,8 @@ def _simple_question_fast_path_reason(question: str) -> Optional[str]:
     if not normalized or len(normalized) > 48:
         return None
     if any(marker in normalized for marker in _COMPLEX_QUERY_MARKERS):
+        return None
+    if sum(normalized.count(marker) for marker in _SIMPLE_INTERROGATIVE_MARKERS) > 1:
         return None
     if "、" in normalized:
         return None
