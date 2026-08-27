@@ -2,6 +2,7 @@ import unittest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 
 from backend.core.errors import (
     ErrorCode,
@@ -35,6 +36,20 @@ class ErrorContractTests(unittest.TestCase):
         error = public_error_from_exception(RuntimeError("secret upstream body"))
         self.assertEqual(ErrorCode.INTERNAL_ERROR, error.code)
         self.assertNotIn("secret upstream body", error.message)
+
+    def test_model_call_limit_keeps_a_specific_terminal_error(self):
+        error = public_error_from_exception(
+            ModelCallLimitExceededError(
+                thread_count=4,
+                run_count=4,
+                thread_limit=None,
+                run_limit=4,
+            )
+        )
+
+        self.assertEqual(ErrorCode.MODEL_CALL_LIMIT_EXCEEDED, error.code)
+        self.assertEqual("model_budget", error.stage)
+        self.assertFalse(error.retryable)
 
     def test_provider_public_error_round_trips_without_raw_exception(self):
         error = public_error_from_exception(FakeProviderError())

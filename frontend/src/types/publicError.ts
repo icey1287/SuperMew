@@ -23,6 +23,7 @@ const DEFAULT_MESSAGES: Record<string, string> = {
   MODEL_RATE_LIMITED: '上游模型服务当前繁忙，请稍后重试',
   MODEL_TIMEOUT: '上游模型响应超时，请稍后重试',
   MODEL_UNAVAILABLE: '模型服务暂时不可用，请稍后重试',
+  MODEL_CALL_LIMIT_EXCEEDED: '模型调用次数达到本次运行上限，请缩小问题范围后重试',
   EMBEDDING_UNAVAILABLE: '向量化服务暂时不可用，请稍后重试',
   VECTOR_STORE_UNAVAILABLE: '知识检索服务暂时不可用，请稍后重试',
   RERANK_TIMEOUT: '相关性排序服务响应超时',

@@ -3,6 +3,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -698,6 +699,40 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             events[-1].data["error"]["code"],
         )
         self.assertNotIn("secret-token", str(events[-1].data))
+
+    async def test_model_call_limit_keeps_specific_terminal_payload(self):
+        self.runtime_factory.failure = ModelCallLimitExceededError(
+            thread_count=4,
+            run_count=4,
+            thread_limit=None,
+            run_limit=4,
+        )
+        reservation = self.service.create_run(
+            username="alice",
+            thread_id="thread-model-call-limit",
+            message="触发模型调用上限",
+            idempotency_key="request-model-call-limit",
+        )
+
+        task = await self.executor.spawn_once(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertIsNotNone(task)
+        await task
+
+        run = self.repository.get(username="alice", run_id=reservation.run.id)
+        self.assertEqual("failed", run.status)
+        self.assertEqual("MODEL_CALL_LIMIT_EXCEEDED", run.error_code)
+        self.assertEqual("model_budget", run.error["stage"])
+        events = self.journal.read_after(
+            username="alice",
+            run_id=reservation.run.id,
+        )
+        self.assertEqual(
+            "MODEL_CALL_LIMIT_EXCEEDED",
+            events[-1].data["error"]["code"],
+        )
 
     async def test_rerank_warning_is_replayed_without_failing_the_run(self):
         self.runtime_factory.emit_rag_warning = True

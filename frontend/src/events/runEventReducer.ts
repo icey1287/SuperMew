@@ -1,5 +1,9 @@
 import type { RunEventType, RunEventV1 } from '@/types/generated/run-event-v1';
-import { normalizePublicErrorInfo, type PublicErrorInfo } from '@/types/publicError';
+import {
+  normalizePublicErrorInfo,
+  publicErrorMessage,
+  type PublicErrorInfo,
+} from '@/types/publicError';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -233,6 +237,17 @@ function eventError(data: UnknownRecord, defaults: Partial<PublicErrorInfo>): Pu
   return normalizePublicErrorInfo(data, defaults);
 }
 
+function isRerankFallback(data: UnknownRecord): boolean {
+  return data.stage === 'rerank' && data.fallback_applied === true;
+}
+
+function warningError(data: UnknownRecord): PublicErrorInfo {
+  const error = eventError(data, { code: 'INTERNAL_ERROR', retryable: false });
+  return isRerankFallback(data)
+    ? { ...error, message: publicErrorMessage('RERANK_UNAVAILABLE') }
+    : error;
+}
+
 function hitlState(data: UnknownRecord): RunHitlState {
   const rawOptions = Array.isArray(data.options) ? data.options : [];
   return {
@@ -419,24 +434,25 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
     case 'usage.updated':
       next.usage = { ...next.usage, ...data };
       break;
-    case 'warning.created':
+    case 'warning.created': {
       if (data.code === 'CANCEL_REQUESTED') {
         next.status = 'cancelling';
       }
-      next.warnings = [
-        ...next.warnings,
-        eventError(data, { code: 'INTERNAL_ERROR', retryable: false }),
-      ];
+      const warning = warningError(data);
+      next.warnings = [...next.warnings, warning];
       appendTimelineItem(next, {
         ...baseTimelineItem(event, data, {
           id: `warning:${event.sequence}`,
           kind: 'warning',
           status: 'warning',
-          title: safeString(data.message) || '执行警告',
+          title: isRerankFallback(data)
+            ? '相关性排序已降级'
+            : safeString(data.message) || '执行警告',
         }),
-        error: next.warnings[next.warnings.length - 1],
+        error: warning,
       });
       break;
+    }
     case 'tool.progress': {
       const step = asRecord(data.step);
       if (step) {

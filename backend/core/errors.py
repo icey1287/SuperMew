@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     MODEL_RATE_LIMITED = "MODEL_RATE_LIMITED"
     MODEL_TIMEOUT = "MODEL_TIMEOUT"
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+    MODEL_CALL_LIMIT_EXCEEDED = "MODEL_CALL_LIMIT_EXCEEDED"
     EMBEDDING_TIMEOUT = "EMBEDDING_TIMEOUT"
     EMBEDDING_UNAVAILABLE = "EMBEDDING_UNAVAILABLE"
     VECTOR_STORE_TIMEOUT = "VECTOR_STORE_TIMEOUT"
@@ -117,6 +118,8 @@ def _status_for_code(code: ErrorCode | str) -> int:
     if value == "PROVIDER_REQUEST_INVALID":
         return 502
     if value == ErrorCode.WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED.value:
+        return 422
+    if value == ErrorCode.MODEL_CALL_LIMIT_EXCEEDED.value:
         return 422
     if value in {ErrorCode.PERMISSION_DENIED.value, ErrorCode.POLICY_DENIED.value}:
         return 403
@@ -350,6 +353,20 @@ def public_error_from_exception(
 
     if isinstance(exc, AppError):
         return exc.public_error
+
+    exc_type = type(exc)
+    if (
+        exc_type.__name__ == "ModelCallLimitExceededError"
+        and exc_type.__module__ == "langchain.agents.middleware.model_call_limit"
+    ):
+        return PublicError(
+            ErrorCode.MODEL_CALL_LIMIT_EXCEEDED,
+            "模型调用次数达到本次运行上限，请缩小问题范围后重试。",
+            status_code=422,
+            retryable=False,
+            category="run",
+            stage="model_budget",
+        )
 
     if isinstance(exc, HTTPException):
         code = _http_error_code(exc.status_code)

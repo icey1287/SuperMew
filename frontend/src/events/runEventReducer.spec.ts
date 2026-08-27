@@ -203,6 +203,27 @@ describe('run event reducer', () => {
     expect(state.warnings[0].code).toBe('CANCEL_REQUESTED');
   });
 
+  it('describes a rerank provider fallback as a quality degradation', () => {
+    const state = applyRunEvent(
+      initialRunEventState('run_1', 'thread-1'),
+      event(1, 'warning.created', {
+        code: 'PROVIDER_AUTHENTICATION_FAILED',
+        stage: 'rerank',
+        retryable: false,
+        fallback_applied: true,
+      })
+    );
+
+    expect(state.warnings[0]).toMatchObject({
+      code: 'PROVIDER_AUTHENTICATION_FAILED',
+      message: '相关性排序服务暂时不可用，已使用原始排序',
+    });
+    expect(state.timeline[0]).toMatchObject({
+      title: '相关性排序已降级',
+      status: 'warning',
+    });
+  });
+
   it('projects tool lifecycle, public guardrail fields and Artifact identities', () => {
     let state = initialRunEventState('run_1', 'thread-1');
     state = applyRunEvent(

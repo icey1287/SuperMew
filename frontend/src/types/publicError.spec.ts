@@ -35,4 +35,10 @@ describe('web context budget public error', () => {
       retryable: false,
     });
   });
+
+  it('keeps model call budget failures specific', () => {
+    expect(publicErrorMessage('MODEL_CALL_LIMIT_EXCEEDED')).toBe(
+      '模型调用次数达到本次运行上限，请缩小问题范围后重试'
+    );
+  });
 });
