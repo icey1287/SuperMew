@@ -296,7 +296,16 @@ def test_project_web_research_skill_allows_user_and_admin_but_requires_runtime()
     assert "sql_query" not in activated.allowed_tools
     instructions = activated.instructions.casefold()
     assert "untrusted evidence" in instructions
-    assert "markdown link" in instructions
+    assert activated.version == "1.1.0"
+    assert "allowed_domains" in instructions
+    assert "exactly once" in instructions
+    assert "<current month> <current year>" in instructions
+    assert "old patch" in instructions
+    assert "content` as its search-result summary" in instructions
+    assert "citation_token" in instructions
+    assert "server renders" in instructions
+    assert "raw `http://`" in instructions
+    assert "web_evidence_budget_exhausted" in instructions
     assert "source conflicts" in instructions
     assert "coverage gaps" in instructions
     assert "example.com" not in instructions

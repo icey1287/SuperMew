@@ -111,9 +111,16 @@ class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
         evidence_id = evidence.evidence_id
         url = evidence.canonical_url
 
-        ctx_a.record_web_search_result(WebResearchResult.create([evidence]))
+        ctx_a.record_web_search_result(
+            WebResearchResult.create([evidence]),
+            allowed_domains=("research.dev",),
+        )
 
         self.assertEqual(url, ctx_a.resolve_web_evidence(evidence_id))
+        self.assertEqual(
+            (url, ("research.dev",)),
+            ctx_a.resolve_web_fetch_authorization(evidence_id),
+        )
         self.assertIsNone(ctx_b.resolve_web_evidence(evidence_id))
         self.assertNotIn(url, repr(ctx_a))
 

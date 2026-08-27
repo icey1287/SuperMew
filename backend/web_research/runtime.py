@@ -33,6 +33,7 @@ from backend.web_research.http import (
     CancellationProbe,
     SafeWebHttpClient,
     WebHttpError,
+    WebHttpErrorCode,
     WebHttpFetch,
 )
 from backend.web_research.url_policy import (
@@ -58,6 +59,29 @@ _SAFE_TEXT_ENCODINGS = {
     "utf8": "utf-8",
     "windows-1252": "cp1252",
 }
+
+
+def _url_matches_allowed_domains(
+    url: str,
+    allowed_domains: tuple[str, ...],
+) -> bool:
+    if not allowed_domains:
+        return True
+    try:
+        host = (urlsplit(url).hostname or "").rstrip(".").casefold()
+    except ValueError:
+        return False
+    return bool(host) and any(
+        host == domain or host.endswith(f".{domain}") for domain in allowed_domains
+    )
+
+
+def _search_evidence_content_limit(limits: WebResearchLimits) -> int:
+    return min(
+        limits.max_snippet_bytes,
+        limits.max_content_bytes,
+        max(limits.max_total_evidence_bytes // 4, 1),
+    )
 
 
 class WebResearchErrorCode(StrEnum):
@@ -111,6 +135,7 @@ class WebSearchAdapter(Protocol):
         query: str,
         *,
         limit: int,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None,
         cancellation_probe: CancellationProbe | None,
     ) -> Sequence[WebSearchHit]: ...
@@ -267,10 +292,11 @@ class DisabledWebSearchAdapter:
         query: str,
         *,
         limit: int,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None,
         cancellation_probe: CancellationProbe | None,
     ) -> Sequence[WebSearchHit]:
-        del query, limit, deadline_at, cancellation_probe
+        del query, limit, allowed_domains, deadline_at, cancellation_probe
         raise WebResearchError(WebResearchErrorCode.SEARCH_NOT_CONFIGURED)
 
 
@@ -290,6 +316,7 @@ class TavilyKeylessWebSearchAdapter:
         query: str,
         *,
         limit: int,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None,
         cancellation_probe: CancellationProbe | None,
     ) -> Sequence[WebSearchHit]:
@@ -305,12 +332,15 @@ class TavilyKeylessWebSearchAdapter:
             self._config.limits.max_evidence_items,
             self._config.limits.max_citations,
         )
+        request: dict[str, object] = {
+            "query": query,
+            "search_depth": "basic",
+            "max_results": limit,
+        }
+        if allowed_domains:
+            request["include_domains"] = list(allowed_domains)
         body = json.dumps(
-            {
-                "query": query,
-                "search_depth": "basic",
-                "max_results": limit,
-            },
+            request,
             ensure_ascii=False,
             separators=(",", ":"),
             allow_nan=False,
@@ -451,6 +481,7 @@ class WebResearchRuntime:
         query: str,
         *,
         limit: int | None = None,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None = None,
         cancellation_probe: CancellationProbe | None = None,
     ) -> WebResearchResult:
@@ -462,6 +493,7 @@ class WebResearchRuntime:
             return self._search(
                 query,
                 limit=limit,
+                allowed_domains=allowed_domains,
                 deadline_at=deadline_at,
                 cancellation_probe=cancellation_probe,
             )
@@ -471,6 +503,7 @@ class WebResearchRuntime:
         query: str,
         *,
         limit: int | None,
+        allowed_domains: tuple[str, ...],
         deadline_at: float,
         cancellation_probe: CancellationProbe | None,
     ) -> WebResearchResult:
@@ -483,14 +516,26 @@ class WebResearchRuntime:
             field="query",
             max_bytes=self.config.limits.max_query_bytes,
         )
+        normalized_domains = tuple(
+            sorted({domain.casefold() for domain in allowed_domains})
+        )
         result_limit = self._result_limit(limit)
         try:
-            raw_hits = self.search_adapter.search(
-                normalized_query,
-                limit=result_limit,
-                deadline_at=deadline_at,
-                cancellation_probe=cancellation_probe,
-            )
+            if normalized_domains:
+                raw_hits = self.search_adapter.search(
+                    normalized_query,
+                    limit=result_limit,
+                    allowed_domains=normalized_domains,
+                    deadline_at=deadline_at,
+                    cancellation_probe=cancellation_probe,
+                )
+            else:
+                raw_hits = self.search_adapter.search(
+                    normalized_query,
+                    limit=result_limit,
+                    deadline_at=deadline_at,
+                    cancellation_probe=cancellation_probe,
+                )
             if isinstance(raw_hits, (str, bytes)):
                 raise TypeError("search adapter returned an invalid sequence")
             hits = tuple(islice(iter(raw_hits), result_limit + 1))
@@ -528,6 +573,9 @@ class WebResearchRuntime:
             if not isinstance(hit, WebSearchHit):
                 truncated = True
                 continue
+            if not _url_matches_allowed_domains(hit.url, normalized_domains):
+                truncated = True
+                continue
             try:
                 resolved = self.url_policy.resolve(
                     hit.url,
@@ -544,6 +592,12 @@ class WebResearchRuntime:
                 # never fetched and never allowed to fail open.
                 truncated = True
                 continue
+            if not _url_matches_allowed_domains(
+                resolved.canonical_url,
+                normalized_domains,
+            ):
+                truncated = True
+                continue
             if resolved.canonical_url in canonical_urls:
                 truncated = True
                 continue
@@ -552,12 +606,12 @@ class WebResearchRuntime:
                     _normalize_inline(hit.title),
                     self.config.limits.max_title_bytes,
                 )
-                snippet = _truncate_utf8(
+                search_content = _truncate_utf8(
                     _normalize_inline(hit.snippet),
-                    self.config.limits.max_snippet_bytes,
+                    _search_evidence_content_limit(self.config.limits),
                 )
                 content = _truncate_utf8(
-                    snippet or title,
+                    search_content or title,
                     self.config.limits.max_content_bytes,
                 )
             except UnicodeError:
@@ -570,7 +624,7 @@ class WebResearchRuntime:
                 item = _create_single_result(
                     canonical_url=resolved.canonical_url,
                     title=title,
-                    snippet=snippet,
+                    snippet="",
                     content=content,
                     retrieved_at=retrieved_at,
                     limits=self.config.limits,
@@ -609,6 +663,7 @@ class WebResearchRuntime:
         self,
         url: str,
         *,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None = None,
         cancellation_probe: CancellationProbe | None = None,
     ) -> WebResearchResult:
@@ -619,6 +674,7 @@ class WebResearchRuntime:
         ):
             return self._fetch(
                 url,
+                allowed_domains=allowed_domains,
                 deadline_at=deadline_at,
                 cancellation_probe=cancellation_probe,
             )
@@ -627,6 +683,7 @@ class WebResearchRuntime:
         self,
         url: str,
         *,
+        allowed_domains: tuple[str, ...],
         deadline_at: float,
         cancellation_probe: CancellationProbe | None,
     ) -> WebResearchResult:
@@ -634,6 +691,11 @@ class WebResearchRuntime:
             deadline_at=deadline_at,
             cancellation_probe=cancellation_probe,
         )
+        normalized_domains = tuple(
+            sorted({domain.casefold() for domain in allowed_domains})
+        )
+        if not _url_matches_allowed_domains(url, normalized_domains):
+            raise WebHttpError(WebHttpErrorCode.REDIRECT_DENIED)
         try:
             fetched = self.http_client.get(
                 url,
@@ -660,6 +722,11 @@ class WebResearchRuntime:
             deadline_at=deadline_at,
             cancellation_probe=cancellation_probe,
         )
+        if not _url_matches_allowed_domains(
+            fetched.resolved.canonical_url,
+            normalized_domains,
+        ):
+            raise WebHttpError(WebHttpErrorCode.REDIRECT_DENIED)
         title, content = _extract_content(fetched)
         self._guard(
             deadline_at=deadline_at,
@@ -937,7 +1004,7 @@ def _create_single_result(
             evidence=(evidence,),
             citations=(WebCitation.from_evidence(evidence),),
         )
-        excess = raw_result.encoded_size - limits.max_total_evidence_bytes
+        excess = raw_result.tool_encoded_size - limits.max_total_evidence_bytes
         if excess <= 0:
             return WebResearchResult.create((evidence,), limits=limits)
         snippet_bytes = len(candidate_snippet.encode("utf-8"))

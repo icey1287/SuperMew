@@ -45,6 +45,7 @@ def _optional_tenant_id(value: str | None) -> str | None:
 @dataclass(frozen=True, slots=True)
 class _WebFetchAuthorization:
     canonical_url: str
+    allowed_domains: tuple[str, ...] = ()
     capability: DestinationCapability | None = field(default=None, repr=False)
 
 
@@ -395,11 +396,19 @@ class RunRequestContext:
             self._web_tool_result_bytes_claimed += claimed
             return claimed
 
-    def record_web_search_result(self, result: WebResearchResult) -> None:
+    def record_web_search_result(
+        self,
+        result: WebResearchResult,
+        *,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> None:
         """Register search evidence and mint only its Run-local fetch capabilities."""
 
         if not isinstance(result, WebResearchResult):
             raise TypeError("result must be WebResearchResult")
+        normalized_domains = tuple(
+            sorted({domain.casefold() for domain in allowed_domains})
+        )
         capabilities = {
             item.evidence_id: item.canonical_url for item in result.evidence
         }
@@ -413,18 +422,35 @@ class RunRequestContext:
             for evidence_id, canonical_url in capabilities.items():
                 existing = self._web_fetch_authorizations.get(evidence_id)
                 if existing is not None and existing.canonical_url != canonical_url:
-                    raise ValueError("web evidence identity cannot be rebound")
+                    raise ValueError("web evidence authorization cannot be rebound")
             authority = self._destination_authority
             staged_authorizations: dict[str, _WebFetchAuthorization] = {}
             for evidence_id, canonical_url in capabilities.items():
-                if evidence_id not in self._web_fetch_authorizations:
+                existing = self._web_fetch_authorizations.get(evidence_id)
+                if existing is None:
                     staged_authorizations[evidence_id] = _WebFetchAuthorization(
                         canonical_url=canonical_url,
+                        allowed_domains=normalized_domains,
                         capability=(
                             authority.issue(canonical_url)
                             if authority is not None
                             else None
                         ),
+                    )
+                elif existing.allowed_domains != normalized_domains:
+                    merged_domains = (
+                        ()
+                        if not existing.allowed_domains or not normalized_domains
+                        else tuple(
+                            sorted(
+                                set(existing.allowed_domains).union(normalized_domains)
+                            )
+                        )
+                    )
+                    staged_authorizations[evidence_id] = _WebFetchAuthorization(
+                        canonical_url=canonical_url,
+                        allowed_domains=merged_domains,
+                        capability=existing.capability,
                     )
             self._web_citation_ledger.register_result(
                 result,
@@ -469,6 +495,15 @@ class RunRequestContext:
     def resolve_web_evidence(self, evidence_id: str) -> str | None:
         """Resolve a fetch capability issued by web_search in this request."""
 
+        authorization = self.resolve_web_fetch_authorization(evidence_id)
+        return None if authorization is None else authorization[0]
+
+    def resolve_web_fetch_authorization(
+        self,
+        evidence_id: str,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """Resolve a Run-local fetch URL together with its search domain scope."""
+
         if not isinstance(evidence_id, str) or not _WEB_EVIDENCE_ID.fullmatch(
             evidence_id
         ):
@@ -477,7 +512,9 @@ class RunRequestContext:
             if not self._active:
                 return None
             authorization = self._web_fetch_authorizations.get(evidence_id)
-            return None if authorization is None else authorization.canonical_url
+            if authorization is None:
+                return None
+            return authorization.canonical_url, authorization.allowed_domains
 
     def elapsed_ms(self) -> int:
         with self._lock:

@@ -184,6 +184,13 @@ def test_citation_identity_is_derived_only_from_evidence_identity() -> None:
     item = evidence()
     citation = WebCitation.from_evidence(item)
 
+    assert item.citation_token == f"[source](webcite:{item.evidence_id})"
+    assert item.source_domain == "news.research.dev"
+    assert item.to_public_dict()["canonical_url"] == item.canonical_url
+    assert "citation_token" not in item.to_public_dict()
+    assert item.to_tool_dict()["citation_token"] == item.citation_token
+    assert item.to_tool_dict()["source_domain"] == item.source_domain
+    assert "canonical_url" not in item.to_tool_dict()
     assert citation.evidence_id == item.evidence_id
     assert citation.citation_id.startswith("web_cit_")
     assert citation == WebCitation.from_evidence(item)
@@ -222,6 +229,9 @@ def test_result_generates_citations_and_exposes_aggregate_observability_only() -
         "snippet_bytes",
         "title_bytes",
     }
+    assert result.tool_observability_metadata()["output_bytes"] == (
+        result.tool_encoded_size
+    )
 
 
 def test_result_rejects_duplicate_or_unknown_identities() -> None:

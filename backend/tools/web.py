@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Protocol
 
 from langchain_core.tools import BaseTool, tool
@@ -25,6 +26,7 @@ class WebResearchRuntime(Protocol):
         query: str,
         *,
         limit: int | None,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None,
         cancellation_probe,
     ) -> WebResearchResult: ...
@@ -33,6 +35,7 @@ class WebResearchRuntime(Protocol):
         self,
         url: str,
         *,
+        allowed_domains: tuple[str, ...] = (),
         deadline_at: float | None,
         cancellation_probe,
     ) -> WebResearchResult: ...
@@ -41,16 +44,24 @@ class WebResearchRuntime(Protocol):
 WEB_RESEARCH_METADATA_KEYS = frozenset(
     {"citation_count", "evidence_count", "output_bytes", "truncated"}
 )
-_WEB_TOOL_VERSION = "1.0.0"
+_WEB_TOOL_VERSION = "1.1.0"
 _MAX_WEB_TOOL_DURATION_MS = 999_999
+_WEB_EVIDENCE_BUDGET_EXHAUSTED = "WEB_EVIDENCE_BUDGET_EXHAUSTED"
+
+
+def _web_evidence_budget_failure() -> ToolResultV1:
+    return new_tool_failure(
+        error_code=_WEB_EVIDENCE_BUDGET_EXHAUSTED,
+        retryable=False,
+    )
 
 
 def _tool_result(result: WebResearchResult) -> ToolResultV1:
     if not isinstance(result, WebResearchResult):
         raise TypeError("Web runtime returned an invalid result contract")
-    metadata = result.observability_metadata()
+    metadata = result.tool_observability_metadata()
     return new_tool_success(
-        data=result.to_public_dict(),
+        data=result.to_tool_dict(),
         observability_metadata={
             key: value
             for key, value in metadata.items()
@@ -128,6 +139,20 @@ def _research_result(
         citations=tuple(WebCitation.from_evidence(item) for item in evidence),
         truncated=truncated,
     )
+
+
+_MINIMUM_WEB_RESEARCH_RESULT = _research_result(
+    [
+        WebEvidence.create(
+            canonical_url="https://example.com/",
+            title="",
+            snippet="",
+            content="x",
+            retrieved_at=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        )
+    ],
+    truncated=True,
+)
 
 
 def _fit_web_result(
@@ -256,30 +281,54 @@ def make_web_search(
         raise RuntimeError("Web Research runtime is not configured")
 
     @tool("web_search")
-    def web_search(query: str, max_results: int = default_results) -> ToolResultV1:
-        """Search the public web and return bounded evidence with stable citations."""
+    def web_search(
+        query: str,
+        max_results: int = default_results,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> ToolResultV1:
+        """Search the public web for bounded, citable evidence."""
 
         deadline_at, cancellation_probe = ctx.provider_runtime()
         ctx.mark_web_research_attempted()
-        empty = _research_result([], truncated=True)
         if ctx.remaining_web_tool_result_budget(
             max_total_evidence_bytes
-        ) < _registered_tool_result_size(empty, tool_name="web_search"):
-            return _tool_result(empty)
+        ) < _registered_tool_result_size(
+            _MINIMUM_WEB_RESEARCH_RESULT,
+            tool_name="web_search",
+        ):
+            return _web_evidence_budget_failure()
         try:
-            result = runtime.search(
-                query,
-                limit=max_results,
-                deadline_at=deadline_at,
-                cancellation_probe=cancellation_probe,
+            normalized_domains = tuple(
+                sorted({domain.casefold() for domain in allowed_domains})
             )
-            result = _bounded_web_result(
+            if normalized_domains:
+                result = runtime.search(
+                    query,
+                    limit=max_results,
+                    allowed_domains=normalized_domains,
+                    deadline_at=deadline_at,
+                    cancellation_probe=cancellation_probe,
+                )
+            else:
+                result = runtime.search(
+                    query,
+                    limit=max_results,
+                    deadline_at=deadline_at,
+                    cancellation_probe=cancellation_probe,
+                )
+            bounded_result = _bounded_web_result(
                 ctx,
                 result,
                 max_total_evidence_bytes=max_total_evidence_bytes,
                 tool_name="web_search",
             )
-            ctx.record_web_search_result(result)
+            if result.evidence and not bounded_result.evidence:
+                return _web_evidence_budget_failure()
+            result = bounded_result
+            ctx.record_web_search_result(
+                result,
+                allowed_domains=normalized_domains,
+            )
         except Exception as exc:
             failure = _web_failure(exc)
             if failure is None:
@@ -304,33 +353,47 @@ def make_web_fetch(
 
     @tool("web_fetch")
     def web_fetch(evidence_id: str) -> ToolResultV1:
-        """Fetch one URL previously returned by web_search in this Run."""
+        """Fetch one page previously authorized by web_search in this Run."""
 
         ctx.mark_web_research_attempted()
-        empty = _research_result([], truncated=True)
         if ctx.remaining_web_tool_result_budget(
             max_total_evidence_bytes
-        ) < _registered_tool_result_size(empty, tool_name="web_fetch"):
-            return _tool_result(empty)
-        url = ctx.resolve_web_evidence(evidence_id)
-        if url is None:
+        ) < _registered_tool_result_size(
+            _MINIMUM_WEB_RESEARCH_RESULT,
+            tool_name="web_fetch",
+        ):
+            return _web_evidence_budget_failure()
+        authorization = ctx.resolve_web_fetch_authorization(evidence_id)
+        if authorization is None:
             return new_tool_failure(
                 error_code="WEB_EVIDENCE_NOT_AUTHORIZED",
                 retryable=False,
             )
+        url, allowed_domains = authorization
         deadline_at, cancellation_probe = ctx.provider_runtime()
         try:
-            result = runtime.fetch(
-                url,
-                deadline_at=deadline_at,
-                cancellation_probe=cancellation_probe,
-            )
-            result = _bounded_web_result(
+            if allowed_domains:
+                result = runtime.fetch(
+                    url,
+                    allowed_domains=allowed_domains,
+                    deadline_at=deadline_at,
+                    cancellation_probe=cancellation_probe,
+                )
+            else:
+                result = runtime.fetch(
+                    url,
+                    deadline_at=deadline_at,
+                    cancellation_probe=cancellation_probe,
+                )
+            bounded_result = _bounded_web_result(
                 ctx,
                 result,
                 max_total_evidence_bytes=max_total_evidence_bytes,
                 tool_name="web_fetch",
             )
+            if result.evidence and not bounded_result.evidence:
+                return _web_evidence_budget_failure()
+            result = bounded_result
             ctx.record_web_fetch_result(result)
         except Exception as exc:
             failure = _web_failure(exc)

@@ -77,9 +77,23 @@ class SqlQueryInput(_StrictInput):
     sql: str = Field(min_length=1, max_length=100_000)
 
 
+BareDomain = Annotated[
+    str,
+    Field(
+        min_length=3,
+        max_length=253,
+        pattern=(
+            r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+            r"[A-Za-z]{2,63}$"
+        ),
+    ),
+]
+
+
 class WebSearchInput(_StrictInput):
     query: str = Field(min_length=1, max_length=16_384)
     max_results: int = Field(default=5, ge=1, le=50)
+    allowed_domains: tuple[BareDomain, ...] = Field(default=(), max_length=8)
 
 
 class WebFetchInput(_StrictInput):
@@ -291,10 +305,10 @@ def build_default_tool_registry(
             name="web_search",
             description=(
                 "Search the public web for bounded evidence with stable citation "
-                "identities."
+                "identities and optional official-domain filtering."
             ),
             group="web-research",
-            version="1.0.0",
+            version="1.1.0",
             input_schema=web_search_schema,
             output_schema=TOOL_RESULT_V1_SCHEMA,
             timeout=web_settings.request_timeout_seconds + 1.0,
@@ -324,7 +338,7 @@ def build_default_tool_registry(
                 "web_search in this Run."
             ),
             group="web-research",
-            version="1.0.0",
+            version="1.1.0",
             input_schema=WebFetchInput.model_json_schema(),
             output_schema=TOOL_RESULT_V1_SCHEMA,
             timeout=web_settings.request_timeout_seconds + 1.0,

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.web_research.contracts import WebResearchLimits
-from backend.web_research.http import WebHttpFetch
+from backend.web_research.http import WebHttpError, WebHttpErrorCode, WebHttpFetch
 from backend.web_research.runtime import (
     TavilyKeylessWebSearchAdapter,
     WebResearchError,
@@ -174,6 +174,154 @@ def test_search_enforces_result_and_aggregate_byte_limits() -> None:
     assert all(len(item.content.encode("utf-8")) <= 32 for item in evidence.evidence)
 
 
+def test_search_keeps_multiple_results_without_duplicating_provider_snippets() -> None:
+    limits = WebResearchLimits(
+        max_content_bytes=3_072,
+        max_total_evidence_bytes=3_072,
+    )
+    runtime = WebResearchRuntime(
+        url_policy=_policy(),
+        config=WebResearchRuntimeConfig(limits=limits),
+        search_adapter=_Search(
+            (
+                WebSearchHit(
+                    "https://news.openai.com/releases/current",
+                    "Python 3.13.15",
+                    "a" * 2_000,
+                ),
+                WebSearchHit(
+                    "https://research.cloudflare.com/downloads",
+                    "Download Python",
+                    "b" * 2_000,
+                ),
+            )
+        ),
+        clock=lambda: _NOW,
+    )
+    runtime.start()
+
+    result = runtime.search("Python 3.13 latest release", limit=2)
+
+    assert len(result.evidence) == 2
+    assert all(item.snippet == "" for item in result.evidence)
+    assert all(
+        len(item.content.encode("utf-8")) <= limits.max_total_evidence_bytes // 4
+        for item in result.evidence
+    )
+
+
+@pytest.mark.parametrize(("path_bytes", "count"), ((1_100, 2), (3_000, 1)))
+def test_search_budget_uses_model_output_without_hidden_url_paths(
+    path_bytes: int,
+    count: int,
+) -> None:
+    limits = WebResearchLimits(
+        max_url_bytes=4_096,
+        max_content_bytes=3_072,
+        max_total_evidence_bytes=3_072,
+    )
+    path = "a" * path_bytes
+    runtime = WebResearchRuntime(
+        url_policy=_policy(),
+        config=WebResearchRuntimeConfig(limits=limits),
+        search_adapter=_Search(
+            tuple(
+                WebSearchHit(
+                    f"https://news.openai.com/{path}{index}",
+                    f"Source {index}",
+                    f"Evidence {index}",
+                )
+                for index in range(count)
+            )
+        ),
+        clock=lambda: _NOW,
+    )
+    runtime.start()
+
+    result = runtime.search(
+        "official research",
+        limit=count,
+        allowed_domains=("openai.com",),
+    )
+
+    assert len(result.evidence) == count
+    assert result.tool_encoded_size <= limits.max_total_evidence_bytes
+    assert all(item.source_domain == "news.openai.com" for item in result.evidence)
+
+
+def test_search_drops_provider_hits_outside_allowed_domains() -> None:
+    search = _Search(
+        (
+            WebSearchHit(
+                "https://bad-offdomain.invalid/unresolvable",
+                "Unresolvable",
+                "Must be rejected before DNS resolution",
+            ),
+            WebSearchHit(
+                "https://news.openai.com/official",
+                "Official",
+                "Allowed evidence",
+            ),
+            WebSearchHit(
+                "https://research.cloudflare.com/unrelated",
+                "Unrelated",
+                "Must be omitted",
+            ),
+        )
+    )
+    runtime = WebResearchRuntime(
+        url_policy=_policy(),
+        search_adapter=search,
+        clock=lambda: _NOW,
+    )
+    runtime.start()
+
+    result = runtime.search(
+        "official research",
+        allowed_domains=("OpenAI.com",),
+    )
+
+    assert [item.canonical_url for item in result.evidence] == [
+        "https://news.openai.com/official"
+    ]
+    assert result.truncated is True
+    assert search.calls[0][1]["allowed_domains"] == ("openai.com",)
+
+
+def test_search_without_domain_scope_supports_legacy_adapter_signature() -> None:
+    calls = []
+
+    class LegacySearch:
+        def search(
+            self,
+            query,
+            *,
+            limit,
+            deadline_at,
+            cancellation_probe,
+        ):
+            calls.append((query, limit, deadline_at, cancellation_probe))
+            return (
+                WebSearchHit(
+                    "https://news.openai.com/official",
+                    "Official",
+                    "Allowed evidence",
+                ),
+            )
+
+    runtime = WebResearchRuntime(
+        url_policy=_policy(),
+        search_adapter=LegacySearch(),
+        clock=lambda: _NOW,
+    )
+    runtime.start()
+
+    result = runtime.search("official research")
+
+    assert len(result.evidence) == 1
+    assert calls[0][0:2] == ("official research", 5)
+
+
 def test_fetch_extracts_html_text_and_removes_active_or_hidden_content() -> None:
     policy = _policy()
     resolved = policy.resolve("https://news.openai.com/final")
@@ -214,6 +362,34 @@ def test_fetch_extracts_html_text_and_removes_active_or_hidden_content() -> None
     assert client.calls[0][2]["allowed_content_types"] == frozenset(
         {"text/html", "application/xhtml+xml", "text/plain"}
     )
+
+
+def test_fetch_rejects_final_url_outside_search_domain_scope() -> None:
+    policy = _policy()
+    client = _Fetch(
+        WebHttpFetch(
+            resolved=policy.resolve("https://research.cloudflare.com/final"),
+            status_code=200,
+            headers={"content-type": "text/plain; charset=utf-8"},
+            body=b"Unrelated page",
+            redirects=1,
+        )
+    )
+    runtime = WebResearchRuntime(
+        url_policy=policy,
+        http_client=client,
+        search_adapter=_Search(()),
+        clock=lambda: _NOW,
+    )
+    runtime.start()
+
+    with pytest.raises(WebHttpError) as captured:
+        runtime.fetch(
+            "https://news.openai.com/start",
+            allowed_domains=("openai.com",),
+        )
+
+    assert captured.value.code == WebHttpErrorCode.REDIRECT_DENIED
 
 
 def test_fetch_truncates_utf8_content_without_splitting_characters() -> None:
@@ -298,7 +474,24 @@ def test_runtime_checks_cancel_and_deadline_before_calling_adapters() -> None:
     assert search.calls == []
 
 
-def test_tavily_keyless_adapter_posts_bounded_json_without_an_api_key() -> None:
+@pytest.mark.parametrize(
+    ("allowed_domains", "expected_body"),
+    (
+        (
+            (),
+            b'{"query":"safe query","search_depth":"basic","max_results":1}',
+        ),
+        (
+            ("python.org",),
+            b'{"query":"safe query","search_depth":"basic","max_results":1,'
+            b'"include_domains":["python.org"]}',
+        ),
+    ),
+)
+def test_tavily_keyless_adapter_posts_bounded_json_without_an_api_key(
+    allowed_domains,
+    expected_body,
+) -> None:
     policy = _policy()
     resolved = policy.resolve("https://api.tavily.com/search")
     client = _Fetch(
@@ -317,6 +510,7 @@ def test_tavily_keyless_adapter_posts_bounded_json_without_an_api_key() -> None:
     hits = adapter.search(
         "safe query",
         limit=1,
+        allowed_domains=allowed_domains,
         deadline_at=None,
         cancellation_probe=None,
     )
@@ -328,9 +522,7 @@ def test_tavily_keyless_adapter_posts_bounded_json_without_an_api_key() -> None:
     assert "Authorization" not in client.calls[0][2]["headers"]
     assert client.calls[0][2]["max_response_bytes"] == config.limits.max_response_bytes
     assert client.calls[0][2]["max_redirects"] == 0
-    assert client.calls[0][2]["body"] == (
-        b'{"query":"safe query","search_depth":"basic","max_results":1}'
-    )
+    assert client.calls[0][2]["body"] == expected_body
 
 
 def test_lifecycle_readiness_matches_start_and_close_state() -> None:

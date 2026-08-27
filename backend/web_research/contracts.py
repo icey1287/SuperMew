@@ -463,6 +463,14 @@ class WebEvidence:
     def encoded_size(self) -> int:
         return _compact_json_size(self.to_public_dict())
 
+    @property
+    def citation_token(self) -> str:
+        return f"[source](webcite:{self.evidence_id})"
+
+    @property
+    def source_domain(self) -> str:
+        return urlsplit(self.canonical_url).hostname or ""
+
     def to_public_dict(self) -> dict[str, str | int]:
         return {
             "canonical_url": self.canonical_url,
@@ -474,6 +482,13 @@ class WebEvidence:
             "snippet": self.snippet,
             "title": self.title,
         }
+
+    def to_tool_dict(self) -> dict[str, str | int]:
+        data = self.to_public_dict()
+        data.pop("canonical_url")
+        data["citation_token"] = self.citation_token
+        data["source_domain"] = self.source_domain
+        return data
 
     def observability_metadata(self) -> dict[str, int]:
         """Return aggregate-safe sizes; never return URL, title, hash or body."""
@@ -610,7 +625,7 @@ class WebResearchResult:
                 code,
                 "Web research result is invalid",
             ) from exc
-        if result.encoded_size > limits.max_total_evidence_bytes:
+        if result.tool_encoded_size > limits.max_total_evidence_bytes:
             raise WebResearchContractError(
                 WebResearchContractCode.OUTPUT_TOO_LARGE,
                 "Web research result exceeds its output size limit",
@@ -624,10 +639,22 @@ class WebResearchResult:
     def encoded_size(self) -> int:
         return _compact_json_size(self.to_public_dict())
 
+    @property
+    def tool_encoded_size(self) -> int:
+        return _compact_json_size(self.to_tool_dict())
+
     def to_public_dict(self) -> dict[str, object]:
         return {
             "citations": [item.to_public_dict() for item in self.citations],
             "evidence": [item.to_public_dict() for item in self.evidence],
+            "schema_version": self.schema_version,
+            "truncated": self.truncated,
+        }
+
+    def to_tool_dict(self) -> dict[str, object]:
+        return {
+            "citations": [item.to_public_dict() for item in self.citations],
+            "evidence": [item.to_tool_dict() for item in self.evidence],
             "schema_version": self.schema_version,
             "truncated": self.truncated,
         }
@@ -641,6 +668,11 @@ class WebResearchResult:
             "output_bytes": self.encoded_size,
             "truncated": self.truncated,
         }
+
+    def tool_observability_metadata(self) -> dict[str, int | bool]:
+        metadata = self.observability_metadata()
+        metadata["output_bytes"] = self.tool_encoded_size
+        return metadata
 
 
 __all__ = [
