@@ -14,13 +14,16 @@
 ./scripts/start.sh
 ```
 
-启动器同时管理 API 与 indexing worker。任一子进程退出时会终止另一个子进程，避免形成“API 可访问但 Index Job 无消费者”的半健康状态。需要关闭 API 自动重载时使用：
+启动器同时管理 API、indexing worker 与 RAG evaluation worker。任一子进程退出时会终止其余
+进程，避免形成“API 可访问但后台任务无消费者”的半健康状态。需要关闭 API 自动重载时使用：
 
 ```bash
 ./scripts/start.sh --no-reload
 ```
 
-生产环境使用 systemd、Kubernetes 或等价 supervisor 分别管理 API 与 worker，并共享持久上传目录。
+生产环境使用 systemd、Kubernetes 或等价 supervisor 分别管理 API、indexing worker 与 RAG
+evaluation worker；API 与 indexing worker 必须共享持久上传目录。完整流程见
+`docs/runbooks/deployment.md`。
 
 ## 发布顺序
 
@@ -37,15 +40,21 @@
    uv run python -c "from backend.infra.database import assert_schema_current; assert_schema_current()"
    ```
 
-4. 启动 worker：
+4. 启动 indexing worker：
 
    ```bash
    uv run python -m backend.workers.indexing
    ```
 
-5. 启动 API，生产保持 `INDEX_WORKER_REQUIRED=true`。
-6. 检查 `/health/ready`：`indexing_worker.ready=true`、`fresh_workers>=1`。
-7. 恢复上传入口，提交测试 Document 并确认 Index Job 最终 completed。
+5. 启动 RAG evaluation worker：
+
+   ```bash
+   uv run python -m backend.workers.evaluation
+   ```
+
+6. 启动 API，生产保持 `INDEX_WORKER_REQUIRED=true`。
+7. 检查 `/health/ready`：`indexing_worker.ready=true`、`fresh_workers>=1`。
+8. 恢复上传入口，提交测试 Document 并确认 Index Job 最终 completed。
 
 ## 必要配置
 

@@ -16,7 +16,7 @@ from backend.runs.state import MultitaskStrategy, RunStatus
 
 
 class RunService:
-    """Run 生命周期的应用 interface；HTTP、worker 与兼容入口共享。"""
+    """Run 生命周期的应用 interface；HTTP 与执行 worker 共享。"""
 
     def __init__(
         self,

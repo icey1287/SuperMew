@@ -10,7 +10,10 @@
           <span v-if="item.durationMs !== null">{{ formatDuration(item.durationMs) }}</span>
         </div>
         <p v-if="item.detail">{{ item.detail }}</p>
-        <div v-if="item.toolName || shouldShowGuardrail(item.guardrailDecision)" class="execution-meta">
+        <div
+          v-if="item.toolName || shouldShowGuardrail(item.guardrailDecision)"
+          class="execution-meta"
+        >
           <code v-if="item.toolName">{{ item.toolName }}</code>
           <span
             v-if="shouldShowGuardrail(item.guardrailDecision)"

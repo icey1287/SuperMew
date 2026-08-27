@@ -163,8 +163,6 @@ class RateLimitHttpIdentityTests(unittest.IsolatedAsyncioTestCase):
             ("/auth/logout", (bearer, cookie), "host:203.0.113.7"),
             ("/auth/logout-all", (bearer, cookie), "subject:alice"),
             ("/v1/threads/thread_1/runs", (bearer, cookie), "subject:alice"),
-            ("/chat", (bearer, cookie), "subject:alice"),
-            ("/chat/stream", (bearer, cookie), "subject:alice"),
             ("/documents/upload/async", (), "host:203.0.113.7"),
         )
 

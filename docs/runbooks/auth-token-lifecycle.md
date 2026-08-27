@@ -78,6 +78,24 @@ rotate/logout 可先无锁读取 token hash 对应的 user_id，只用于定位 
 再锁 RefreshToken。issue、rotate、logout 与 logout-all 都遵守该顺序，禁止新增相反锁序。
 PostgreSQL 集成测试负责证明 rotate/replay/logout-all 多实例并发不会留下活跃 token 或形成死锁。
 
+## 旧密码哈希迁移
+
+新注册只写 PBKDF2-SHA256。既有 bcrypt / bcrypt-sha256 账号在密码验证成功后，会在签发 Access
+和 Refresh credential 的同一数据库事务中改写为 PBKDF2；错误密码、签发失败或事务回滚都必须
+保留原哈希且不产生 Refresh Token。该路径只迁移密码数据，不提供旧 Token、Cookie 或 Session
+协议。
+
+部署方可以只统计哈希格式，不读取或导出具体值：
+
+```sql
+SELECT count(*)
+FROM users
+WHERE password_hash NOT LIKE 'pbkdf2_sha256$%';
+```
+
+所有环境返回 0 或遗留账号已完成受控密码重置后，才可在后续变更中删除历史验证器和 bcrypt
+依赖。
+
 ## Ledger 保留与清理
 
 `AUTH_REFRESH_LEDGER_RETENTION_DAYS` 默认 30。清理 cutoff 是：

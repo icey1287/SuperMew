@@ -1,17 +1,9 @@
-import sys
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
 from uuid import uuid4
 
-# 兼容直接执行 backend/app.py 时在导入 backend 包前修正 sys.path。
+# Application imports read settings at module load, so load the project environment first.
 # ruff: noqa: E402
-
-# 支持 `python backend/app.py` 与 `uvicorn backend.app:app` 两种启动方式
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
 from backend.env import PROJECT_ROOT, load_env
 
 load_env()
@@ -233,9 +225,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-if __name__ == "__main__":
-    import uvicorn
-
-    settings = get_settings()
-    uvicorn.run(app, host=settings.app.host, port=settings.app.port)

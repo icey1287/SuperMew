@@ -6,9 +6,7 @@ from backend.api.router import router
 from backend.documents.catalog import DocumentCatalog
 
 
-def test_application_exposes_canonical_and_deprecated_main_compatibility_interfaces() -> (
-    None
-):
+def test_application_exposes_only_canonical_interfaces() -> None:
     app = FastAPI()
     app.include_router(router)
     assert set(app.openapi()["paths"]) == {
@@ -18,8 +16,6 @@ def test_application_exposes_canonical_and_deprecated_main_compatibility_interfa
         "/auth/me",
         "/auth/refresh",
         "/auth/register",
-        "/chat",
-        "/chat/stream",
         "/documents",
         "/documents/delete/async/{filename}",
         "/documents/delete/jobs",
@@ -29,8 +25,6 @@ def test_application_exposes_canonical_and_deprecated_main_compatibility_interfa
         "/documents/upload/jobs/{job_id}",
         "/health/live",
         "/health/ready",
-        "/sessions",
-        "/sessions/{session_id}",
         "/v1/capabilities",
         "/v1/capabilities/control-plane",
         "/v1/capabilities/skills",

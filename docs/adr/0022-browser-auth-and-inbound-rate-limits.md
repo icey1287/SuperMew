@@ -88,7 +88,10 @@ token mutation 与 PBKDF2 之前。
 避免 access token、Cookie lifecycle 响应或认证错误被浏览器/中间缓存保存。HttpOnly 降低脚本
 读取 credential 的能力，但不能阻止已执行脚本发起同源操作，因此仍需 CSP、输出编码和依赖治理。
 
-密码哈希固定使用 PBKDF2-SHA256。运行时只接受这一种格式，不提供其它密码哈希 Adapter 或登录时自动迁移路径。
+新注册和迁移后的密码哈希固定使用 PBKDF2-SHA256。登录边界临时保留对历史 bcrypt 与
+bcrypt-sha256 哈希的只读验证；验证成功后在凭据签发的同一数据库事务中改写为 PBKDF2，失败或
+事务回滚都不得改写。这是有终点的一次性数据迁移，不是第二套认证、Token 或 Session Interface；
+所有环境不再存在历史哈希后应删除该读取器。
 
 Refresh ledger 不能在 refresh 热路径中 opportunistic delete。每条记录必须在自然 `expires_at`
 之前完整保留；自然过期后再继续保留 `AUTH_REFRESH_LEDGER_RETENTION_DAYS`（默认 30 天），仅作为

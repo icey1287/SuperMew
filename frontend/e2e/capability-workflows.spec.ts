@@ -244,7 +244,7 @@ test('discovers Skills, enters Web Research, and renders Tool timeline plus Arti
   await expect(page.getByText('公开信息核验完成。')).toBeVisible();
   const inspector = page.locator('.knowledge-context');
   await expect(inspector.getByText('web_search执行完成')).toBeVisible();
-  await expect(inspector.getByText('策略允许')).toBeVisible();
+  await expect(inspector.getByText('策略允许')).toHaveCount(0);
   await expect(
     inspector.getByRole('region', { name: 'Artifacts' }).getByText('sources.json', { exact: true })
   ).toBeVisible();

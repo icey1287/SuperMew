@@ -16,7 +16,9 @@ SuperMew 的 Thread、Run、Event、Document Version 与认证生命周期都以
 - Thread 生命周期只由 `backend.threads` 与 `/v1/threads` 拥有；
 - Agent 执行只由持久 Run/Event/Checkpoint 路径拥有；
 - Document 入库、发布、检索与删除只接受完整 Document Version identity；
-- 浏览器认证只接受内存 Access Token、HttpOnly Refresh Token 与 PBKDF2-SHA256；
+- 浏览器认证只提供内存 Access Token 与 HttpOnly Refresh Token；密码写入只使用
+  PBKDF2-SHA256。升级期间允许在登录事务中只读验证历史哈希并立即单向改写，但不保留第二套
+  Token、Session 或密码写入 Interface；
 - 前端只使用 Thread、Run、Event、Document 与 Document Version 领域模型。
 
 正式替换完成时必须同时删除：
@@ -29,6 +31,9 @@ SuperMew 的 Thread、Run、Event、Document Version 与认证生命周期都以
 - 描述已删除路径、配置、字段或操作步骤的活跃文档与文案。
 
 数据库迁移可以读取并删除待退役字段，因为这是升级到当前 schema 所必需的单向数据变换。迁移完成后，运行时模型、查询、健康检查和文档不得继续依赖这些字段。不可逆迁移必须 fail-closed，发现仍活跃或未清理的数据时拒绝升级。
+
+无法离线转换的密码哈希是唯一的凭据迁移边界：旧哈希只允许在成功登录时验证一次，并在同一
+事务中改写为 PBKDF2-SHA256。部署方确认所有环境不存在旧哈希后必须删除验证代码与依赖。
 
 唯一允许的延迟清理是 Document Version 原子发布后 previous current 的固定 1 小时 grace。该规则封装在 `DocumentCatalog` Implementation 内，不是配置项，也不暴露给调用者。用户主动删除、失败、取消、dead-letter 与候选覆盖全部立即进入可领取的物理清理。
 
