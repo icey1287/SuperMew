@@ -1,10 +1,10 @@
-"""Deterministic, fail-closed Tool Guardrail policy Implementation.
+"""Deterministic, fail-closed Tool Guardrail policy implementation.
 
 One small ``ToolGuardrail.evaluate`` Interface hides context validation, Skill
-scope attenuation, high-risk defaults, SQL and network rules, capability
-verification, provider failures, policy identity, and audit-safe metadata. This
-Depth gives middleware and future Sandbox Adapters the same policy Leverage and
-keeps security decisions local to one Module.
+context, high-risk defaults, SQL and network rules, capability verification,
+provider failures, policy identity, and audit-safe metadata. Tool visibility and
+Skill scope remain owned by ``ToolSession`` so this module does not repeat that
+authorization decision.
 """
 
 from __future__ import annotations
@@ -407,10 +407,6 @@ class DeterministicToolGuardrailProvider:
                 GuardrailReasonCode.HIGH_RISK_TOOL_DENIED,
             )
 
-        scoped = self._check_skill_scope(request)
-        if scoped is not None:
-            return scoped
-
         sql_rule = self._check_sql(request)
         if sql_rule is not None:
             return sql_rule
@@ -437,47 +433,6 @@ class DeterministicToolGuardrailProvider:
         return self._directive(
             GuardrailDecision.ALLOW,
             GuardrailReasonCode.ALLOWED,
-        )
-
-    def _check_skill_scope(
-        self,
-        request: ToolGuardrailRequest,
-    ) -> GuardrailDirective | None:
-        assert request.tool_name is not None
-        assert request.tool_group is not None
-        is_control = (
-            request.tool_name in self.policy.control_tools
-            and request.tool_group in self.policy.control_groups
-        )
-        if request.active_skill is None:
-            if is_control or request.tool_name in self.policy.resident_tools:
-                return None
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.ACTIVE_SKILL_REQUIRED,
-            )
-
-        if request.active_skill_registered is not True:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.ACTIVE_SKILL_UNKNOWN,
-            )
-        if is_control:
-            return None
-        if request.active_skill_scope_allows is not True:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.TOOL_OUTSIDE_ACTIVE_SKILL,
-            )
-        scope = self.policy.scope_for(request.active_skill)
-        if scope is None or scope.allows(
-            tool_name=request.tool_name,
-            tool_group=request.tool_group,
-        ):
-            return None
-        return self._directive(
-            GuardrailDecision.DENY,
-            GuardrailReasonCode.TOOL_OUTSIDE_ACTIVE_SKILL,
         )
 
     def _check_sql(
@@ -546,7 +501,6 @@ class DeterministicToolGuardrailProvider:
         if (
             not is_web_group
             or not is_web_tool
-            or request.active_skill != self.policy.web_skill
         ):
             return self._directive(
                 GuardrailDecision.DENY,

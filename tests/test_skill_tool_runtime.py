@@ -775,8 +775,17 @@ async def test_tool_search_remains_available_without_an_active_skill(
                 ],
             ),
             AIMessage(
-                content="Deferred SQL schema discovered",
+                content="",
+                tool_calls=[
+                    {
+                        "name": "analysis_query",
+                        "args": {"query": "select count(*) from orders"},
+                        "id": "call-analysis-query",
+                        "type": "tool_call",
+                    }
+                ],
             ),
+            AIMessage(content="Deferred SQL query completed"),
         ]
     )
     factory = AgentRuntimeFactory(
@@ -801,9 +810,10 @@ async def test_tool_search_remains_available_without_an_active_skill(
     finally:
         request_context.close()
 
-    assert result.content == "Deferred SQL schema discovered"
+    assert result.content == "Deferred SQL query completed"
     assert model.bound_tool_names[0] == ["tool_search"]
     assert set(model.bound_tool_names[1]) == {"tool_search", "analysis_query"}
+    assert set(model.bound_tool_names[2]) == {"tool_search", "analysis_query"}
     search_results = [
         message
         for message in model.received_messages[1]
@@ -817,7 +827,7 @@ async def test_tool_search_remains_available_without_an_active_skill(
         "schemas_available": True,
     }
     assert "input_schema" not in str(search_results[0].content)
-    assert sql_calls == []
+    assert sql_calls == ["select count(*) from orders"]
     assert runtime.context.tool_session.is_allowed("analysis_query")
     assert runtime.context.skill_session.active is None
     assert "tool.denied" not in {event["stage"] for event in result.runtime_trace}

@@ -199,17 +199,6 @@ def test_unavailable_argument_summary_is_incomplete_and_denied() -> None:
             GuardrailReasonCode.RESOURCE_SCOPE_UNKNOWN,
         ),
         ({"tool_group": "email"}, GuardrailReasonCode.TOOL_GROUP_UNKNOWN),
-        (
-            {
-                "active_skill": "unknown-skill",
-                "active_skill_registered": False,
-            },
-            GuardrailReasonCode.ACTIVE_SKILL_UNKNOWN,
-        ),
-        (
-            {"active_skill": "sql-assistant"},
-            GuardrailReasonCode.TOOL_OUTSIDE_ACTIVE_SKILL,
-        ),
     ],
 )
 def test_unknown_or_out_of_scope_context_is_denied(
@@ -222,16 +211,21 @@ def test_unknown_or_out_of_scope_context_is_denied(
     assert result.reason_code is reason_code
 
 
-def test_skill_scoped_tool_requires_an_active_skill() -> None:
+def test_session_authorized_web_search_does_not_require_an_active_skill() -> None:
     result = ToolGuardrail().evaluate(
-        _web_request(active_skill=None, destination_capability=None)
+        _web_request(
+            active_skill=None,
+            active_skill_registered=False,
+            active_skill_scope_allows=False,
+            destination_capability=None,
+        )
     )
 
-    assert result.decision is GuardrailDecision.DENY
-    assert result.reason_code is GuardrailReasonCode.ACTIVE_SKILL_REQUIRED
+    assert result.decision is GuardrailDecision.ALLOW
+    assert result.reason_code is GuardrailReasonCode.ALLOWED
 
 
-def test_inactive_skill_allows_only_an_explicit_resident_tool() -> None:
+def test_inactive_skill_allows_an_authorized_resident_tool() -> None:
     result = ToolGuardrail().evaluate(_request(active_skill=None))
 
     assert result.decision is GuardrailDecision.ALLOW
