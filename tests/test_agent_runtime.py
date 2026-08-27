@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ToolCallRequest
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -1377,7 +1378,7 @@ class CompiledAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(["allowed"], model.bound_tool_names)
         self.assertIn("tool.denied", [item["stage"] for item in context.trace_events])
 
-    async def test_stream_reads_model_limit_terminal_state(self):
+    async def test_stream_fails_when_model_limit_is_exceeded(self):
         @tool("echo")
         def echo(value: str) -> str:
             """Echo a value."""
@@ -1404,18 +1405,19 @@ class CompiledAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             [echo],
             budget=budget,
         )
+        events = []
         try:
-            events = [
-                item
+            with self.assertRaises(ModelCallLimitExceededError) as exceeded:
                 async for item in runtime.astream(
                     AgentRuntimeInput(history=[], user_text="use echo")
-                )
-            ]
+                ):
+                    events.append(item)
         finally:
             request_context.close()
 
-        self.assertTrue(events[-1].result.content)
-        self.assertIn("limit", events[-1].result.content.lower())
+        self.assertEqual([], events)
+        self.assertEqual(1, exceeded.exception.run_count)
+        self.assertEqual(1, exceeded.exception.run_limit)
 
     async def test_stream_reads_terminal_fallback_from_final_state(self):
         model = ScriptedChatModel(responses=[AIMessage(content="")])

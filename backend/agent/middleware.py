@@ -1229,7 +1229,7 @@ def build_default_middleware(budget: RuntimeBudget) -> tuple[AgentMiddleware, ..
         ),
         ModelCallLimitMiddleware(
             run_limit=budget.max_model_calls,
-            exit_behavior="end",
+            exit_behavior="error",
         ),
         LoopDetectionMiddleware(),
         TerminalResponseMiddleware(),
