@@ -10,9 +10,12 @@
           <span v-if="item.durationMs !== null">{{ formatDuration(item.durationMs) }}</span>
         </div>
         <p v-if="item.detail">{{ item.detail }}</p>
-        <div v-if="item.toolName || item.guardrailDecision" class="execution-meta">
+        <div v-if="item.toolName || shouldShowGuardrail(item.guardrailDecision)" class="execution-meta">
           <code v-if="item.toolName">{{ item.toolName }}</code>
-          <span v-if="item.guardrailDecision" :class="guardrailClass(item.guardrailDecision)">
+          <span
+            v-if="shouldShowGuardrail(item.guardrailDecision)"
+            :class="guardrailClass(item.guardrailDecision)"
+          >
             <i class="fa-solid fa-shield-halved"></i>
             {{ guardrailLabel(item.guardrailDecision) }}
           </span>
@@ -56,15 +59,17 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 };
 
-const guardrailLabel = (decision: string) => {
-  if (decision === 'ALLOW') return '策略允许';
+const shouldShowGuardrail = (decision: string | null) =>
+  decision === 'DENY' || decision === 'REQUIRE_APPROVAL';
+
+const guardrailLabel = (decision: string | null) => {
   if (decision === 'REQUIRE_APPROVAL') return '需要审批';
   return '策略拒绝';
 };
 
-const guardrailClass = (decision: string) => [
+const guardrailClass = (decision: string | null) => [
   'guardrail-chip',
-  decision === 'ALLOW' ? 'is-allow' : decision === 'REQUIRE_APPROVAL' ? 'is-approval' : 'is-deny',
+  decision === 'REQUIRE_APPROVAL' ? 'is-approval' : 'is-deny',
 ];
 </script>
 
@@ -180,10 +185,6 @@ const guardrailClass = (decision: string) => [
   padding: 2px 5px;
   border-radius: 999px;
   background: var(--surface);
-}
-
-.guardrail-chip.is-allow {
-  color: var(--success);
 }
 
 .guardrail-chip.is-approval {

@@ -21,4 +21,18 @@ describe('web context budget public error', () => {
       retryable: false,
     });
   });
+
+  it('keeps tool guardrail denials specific instead of falling back to an internal error', () => {
+    expect(publicErrorMessage('TOOL_GUARDRAIL_DENIED')).toBe('当前工具调用未通过安全策略');
+    expect(
+      normalizePublicErrorInfo({
+        error_code: 'TOOL_GUARDRAIL_DENIED',
+        message: '服务暂时不可用，请稍后重试',
+      })
+    ).toMatchObject({
+      code: 'TOOL_GUARDRAIL_DENIED',
+      message: '当前工具调用未通过安全策略',
+      retryable: false,
+    });
+  });
 });

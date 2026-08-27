@@ -35,6 +35,9 @@ const DEFAULT_MESSAGES: Record<string, string> = {
   PROVIDER_REQUEST_INVALID: '上游服务拒绝了当前请求，请联系管理员',
   WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED: '搜索结果超过上下文预算，请缩小搜索范围后重试',
   POLICY_DENIED: '当前操作被安全策略拒绝',
+  TOOL_POLICY_DENIED: '当前工具不在本次运行的可用范围内',
+  TOOL_GUARDRAIL_DENIED: '当前工具调用未通过安全策略',
+  TOOL_APPROVAL_REQUIRED: '当前工具需要人工批准后才能执行',
   RUN_CANCELLED: '运行已取消',
   REQUEST_CANCELLED: '请求已取消',
   REQUEST_TIMEOUT: '请求超时，请稍后重试',
@@ -61,7 +64,12 @@ const PROVIDER_CODES = new Set([
   'PROVIDER_REQUEST_INVALID',
 ]);
 
-const FIXED_CLIENT_MESSAGE_CODES = new Set(['WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED']);
+const FIXED_CLIENT_MESSAGE_CODES = new Set([
+  'WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED',
+  'TOOL_POLICY_DENIED',
+  'TOOL_GUARDRAIL_DENIED',
+  'TOOL_APPROVAL_REQUIRED',
+]);
 
 const RETRYABLE_CODES = new Set([
   'RATE_LIMITED',
