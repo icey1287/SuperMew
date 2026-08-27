@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.agent.factory import runtime_factory
 from backend.rag.checkpoint_runner import (
     HitlCheckpointRepository,
+    ResumeAccessState,
     ResumeAccessValidator,
     checkpoint_repository,
 )
@@ -19,6 +19,13 @@ class RunResumeAcceptance:
     created: bool
 
 
+def _validate_current_runtime_access(state: ResumeAccessState) -> None:
+    from backend.capabilities.control_service import capability_control_service
+
+    with capability_control_service.acquire_factory() as factory:
+        factory.validate_resume_access(state)
+
+
 class RunResumeCoordinator:
     """Atomic interface for accepting one HITL answer and re-queueing its Run."""
 
@@ -27,7 +34,7 @@ class RunResumeCoordinator:
         *,
         checkpoints: HitlCheckpointRepository = checkpoint_repository,
         run_service: RunService = service,
-        access_validator: ResumeAccessValidator = runtime_factory.validate_resume_access,
+        access_validator: ResumeAccessValidator = _validate_current_runtime_access,
     ) -> None:
         self.checkpoints = checkpoints
         self.run_service = run_service

@@ -1,6 +1,8 @@
 import json
 import sys
 import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -16,6 +18,7 @@ from backend.rag.checkpoint_runner import (
     HitlCheckpointRepository,
     _assert_checkpoint_tenant,
 )
+from backend.agent.factory import runtime_factory
 from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
@@ -418,6 +421,67 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
             self.assertIsNone(run.lease_expires_at)
             self.assertEqual(fence, run.fencing_token)
             self.assertEqual(event_count, db.query(RunEvent).count())
+
+    def test_default_resume_validator_uses_managed_runtime_registry(self):
+        claimed, pause = self._pause(request_key="managed-registry")
+        managed_version = "9.9.9"
+        managed_hash = "f" * 64
+        with self.Session.begin() as db:
+            run = db.query(Run).filter(Run.id == claimed.id).one()
+            run.skill_name = "knowledge-base"
+            run.skill_version = managed_version
+            run.skill_content_hash = managed_hash
+            run.skill_activation_source = "explicit_slash"
+
+        validated_states = []
+
+        class ManagedFactory:
+            def validate_resume_access(self, state):
+                validated_states.append(state)
+
+        managed_factory = ManagedFactory()
+        managed_control = SimpleNamespace(
+            acquire_factory=lambda: nullcontext(managed_factory)
+        )
+        coordinator = RunResumeCoordinator(
+            checkpoints=self.checkpoints,
+            run_service=self.run_service,
+        )
+
+        with patch(
+            "backend.capabilities.control_service.capability_control_service",
+            managed_control,
+        ):
+            accepted = coordinator.accept(
+                username="alice",
+                run_id=claimed.id,
+                hitl_token=pause.hitl_token,
+                answer="丹瑾",
+                idempotency_key="managed-registry-resume",
+            )
+
+        self.assertTrue(accepted.created)
+        self.assertEqual(1, len(validated_states))
+        self.assertEqual(
+            (
+                "knowledge-base",
+                managed_version,
+                managed_hash,
+                "explicit_slash",
+            ),
+            (
+                validated_states[0].skill_name,
+                validated_states[0].skill_version,
+                validated_states[0].skill_content_hash,
+                validated_states[0].skill_activation_source,
+            ),
+        )
+        with self.assertRaises(AppError) as static_mismatch:
+            runtime_factory.validate_resume_access(validated_states[0])
+        self.assertEqual(
+            ErrorCode.RUN_STATE_CONFLICT,
+            static_mismatch.exception.code,
+        )
 
     def test_resume_idempotency_key_is_scoped_to_each_run(self):
         first_run, first_pause = self._pause(
