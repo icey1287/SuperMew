@@ -498,10 +498,7 @@ class DeterministicToolGuardrailProvider:
         is_web_tool = request.tool_name in self.policy.restricted_web_tools
         if not is_web_group and not is_web_tool:
             return None
-        if (
-            not is_web_group
-            or not is_web_tool
-        ):
+        if not is_web_group or not is_web_tool:
             return self._directive(
                 GuardrailDecision.DENY,
                 GuardrailReasonCode.WEB_CONTEXT_REQUIRED,

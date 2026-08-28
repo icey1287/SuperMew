@@ -38,6 +38,7 @@ from backend.evaluation.rag import (
 from backend.evaluation.rag_adapters import (
     LiveRagEvalAdapter,
     PredictionFileAdapter,
+    RAG_SOURCE_FINGERPRINT_VERSION,
     RagEvalExecutionError,
     RagEvalExecutor,
     artifact_tree_fingerprint,
@@ -54,6 +55,7 @@ __all__ = [
     "LiveRagEvalAdapter",
     "ObservationCoverageError",
     "PredictionFileAdapter",
+    "RAG_SOURCE_FINGERPRINT_VERSION",
     "RagComplexity",
     "RagEvalCase",
     "RagEvalCaseResult",

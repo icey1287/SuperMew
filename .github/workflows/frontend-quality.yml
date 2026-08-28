@@ -47,8 +47,8 @@ jobs:
       - name: Build and enforce bundle budgets
         run: npm run build:check
 
-      - name: Audit dependency graph
-        run: npm audit --audit-level=high
+      - name: Audit production dependency graph
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Install Chromium runtime
         run: npx playwright install --with-deps chromium

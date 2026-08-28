@@ -26,6 +26,9 @@ from backend.evaluation.rag import (
 )
 
 
+RAG_SOURCE_FINGERPRINT_VERSION = "1"
+
+
 class RagEvalExecutionError(RuntimeError):
     """Raised when a live evaluation cannot produce a valid Observation."""
 
@@ -270,7 +273,13 @@ def observation_from_rag_results(
 
 
 def rag_source_fingerprint(root: str | Path) -> str:
-    """Hash the implementation files that can materially change RAG observations."""
+    """Hash the implementation files that can materially change RAG observations.
+
+    Dependency manifests are intentionally excluded because unrelated tooling or
+    development dependency changes should not invalidate the committed RAG
+    baseline. Bump ``RAG_SOURCE_FINGERPRINT_VERSION`` when a dependency change is
+    expected to alter RAG behavior without changing the files below.
+    """
 
     root_path = Path(root)
     relative_paths = (
@@ -297,10 +306,11 @@ def rag_source_fingerprint(root: str | Path) -> str:
         "backend/rag/utils.py",
         "backend/schemas/rag.py",
         "backend/security/milvus_filters.py",
-        "pyproject.toml",
-        "uv.lock",
     )
     digest = hashlib.sha256()
+    digest.update(b"rag-source-fingerprint\0")
+    digest.update(RAG_SOURCE_FINGERPRINT_VERSION.encode("utf-8"))
+    digest.update(b"\0")
     for relative in relative_paths:
         path = root_path / relative
         digest.update(relative.encode("utf-8"))
@@ -635,6 +645,7 @@ __all__ = [
     "artifact_tree_fingerprint",
     "LiveRagEvalAdapter",
     "PredictionFileAdapter",
+    "RAG_SOURCE_FINGERPRINT_VERSION",
     "RagEvalExecutionError",
     "RagEvalExecutor",
     "observation_from_rag_results",

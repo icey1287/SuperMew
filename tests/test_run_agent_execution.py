@@ -1095,6 +1095,51 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.service.get_run(username="alice", run_id=second.run.id).status,
         )
 
+    async def test_queued_resume_keeps_execute_task_open_until_resume_finishes(self):
+        execute_started = asyncio.Event()
+        release_execute = asyncio.Event()
+        resume_started = asyncio.Event()
+        release_resume = asyncio.Event()
+        resume_finished = asyncio.Event()
+
+        async def execute(**_kwargs):
+            execute_started.set()
+            await release_execute.wait()
+
+        async def resume(**_kwargs):
+            resume_started.set()
+            await release_resume.wait()
+            resume_finished.set()
+
+        with (
+            patch.object(self.executor, "execute", side_effect=execute),
+            patch.object(self.executor, "resume", side_effect=resume),
+        ):
+            execute_task = await self.executor.spawn_once(
+                username="alice",
+                run_id="queued-resume-run",
+            )
+            self.assertIsNotNone(execute_task)
+            await execute_started.wait()
+
+            queued_task = await self.executor.resume_once(
+                username="alice",
+                run_id="queued-resume-run",
+                hitl_token="hitl-token",
+                answer="补充信息",
+                idempotency_key="queued-resume-1",
+            )
+            self.assertIs(execute_task, queued_task)
+
+            release_execute.set()
+            await asyncio.wait_for(resume_started.wait(), timeout=1)
+            self.assertFalse(execute_task.done())
+
+            release_resume.set()
+            await execute_task
+
+        self.assertTrue(resume_finished.is_set())
+
     async def test_run_hitl_resumes_same_checkpoint_and_finalizes(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
         runtime_factory = CheckpointRuntimeFactory()

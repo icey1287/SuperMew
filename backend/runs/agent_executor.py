@@ -411,7 +411,9 @@ class RunAgentExecutor:
                             pending_resume = self._pending_resumes.pop(run_id, None)
                             should_schedule_resume = not self._closing
                     if pending_resume is not None and should_schedule_resume:
-                        await self.resume_once(**pending_resume)
+                        resume_task = await self.resume_once(**pending_resume)
+                        if resume_task is not None:
+                            await resume_task
 
             task = asyncio.create_task(managed(), name=f"run-agent:{run_id}")
             self._tasks[run_id] = task
