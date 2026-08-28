@@ -1,0 +1,310 @@
+{
+  "$defs": {
+    "RagComplexity": {
+      "enum": [
+        "simple",
+        "complex"
+      ],
+      "title": "RagComplexity",
+      "type": "string"
+    },
+    "RagEvalCase": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "critical": {
+          "default": false,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "expected": {
+          "$ref": "#/$defs/RagExpectedBehavior"
+        },
+        "gold_chunks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RagGoldChunk"
+          },
+          "title": "Gold Chunks",
+          "type": "array"
+        },
+        "gold_documents": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RagGoldDocument"
+          },
+          "title": "Gold Documents",
+          "type": "array"
+        },
+        "hitl_answers": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Hitl Answers",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "question": {
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "reference_answer": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Answer"
+        },
+        "required_claims": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Required Claims",
+          "type": "array"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "question",
+        "expected"
+      ],
+      "title": "RagEvalCase",
+      "type": "object"
+    },
+    "RagExpectedBehavior": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptable_abstention": {
+          "default": false,
+          "title": "Acceptable Abstention",
+          "type": "boolean"
+        },
+        "complexity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagComplexity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hitl": {
+          "$ref": "#/$defs/RagHitlKind",
+          "default": "none"
+        },
+        "hitl_final_outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hitl_resolution_success": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hitl Resolution Success"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "RagExpectedBehavior",
+      "type": "object"
+    },
+    "RagGoldChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Id"
+        },
+        "content_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Sha256"
+        }
+      },
+      "title": "RagGoldChunk",
+      "type": "object"
+    },
+    "RagGoldDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Name"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        }
+      },
+      "title": "RagGoldDocument",
+      "type": "object"
+    },
+    "RagHitlKind": {
+      "enum": [
+        "none",
+        "clarify",
+        "scope_select"
+      ],
+      "title": "RagHitlKind",
+      "type": "string"
+    },
+    "RagOutcome": {
+      "enum": [
+        "ANSWERABLE",
+        "NO_KNOWLEDGE",
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "title": "RagOutcome",
+      "type": "string"
+    },
+    "RagRoute": {
+      "enum": [
+        "answer",
+        "rewrite",
+        "clarify",
+        "scope_select",
+        "no_knowledge",
+        "insufficient_evidence",
+        "provider_failed"
+      ],
+      "title": "RagRoute",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/RagEvalCase"
+      },
+      "minItems": 1,
+      "title": "Cases",
+      "type": "array"
+    },
+    "name": {
+      "maxLength": 160,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name",
+    "cases"
+  ],
+  "title": "RagEvalDataset",
+  "type": "object"
+}

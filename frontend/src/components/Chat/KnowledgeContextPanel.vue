@@ -12,7 +12,7 @@
     </div>
 
     <div v-if="!latestMessage" class="context-empty">
-      <span class="context-empty-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+      <img :src="emptyEvidence" class="context-empty-illustration" alt="" />
       <h3>等待一次提问</h3>
       <p>检索步骤、证据置信度和引用来源会实时出现在这里。</p>
     </div>
@@ -22,30 +22,22 @@
         <div class="context-card-heading">
           <div>
             <strong>本次 Agent 运行</strong>
-            <small>{{ shortSessionId }}</small>
+            <small>{{ shortThreadId }}</small>
           </div>
           <span v-if="totalDuration">{{ totalDuration }}</span>
         </div>
 
-        <div class="run-timeline">
-          <div v-for="(step, index) in runSteps" :key="step.key + index" class="run-step">
-            <span :class="['run-step-dot', { active: isRunning && index === runSteps.length - 1 }]">
-              <i :class="isRunning && index === runSteps.length - 1 ? 'fa-solid fa-ellipsis' : 'fa-solid fa-check'"></i>
-            </span>
-            <span class="run-step-copy">
-              <strong>{{ step.label }}</strong>
-              <small v-if="step.detail">{{ step.detail }}</small>
-            </span>
-            <span v-if="step.time" class="run-step-time">{{ step.time }}</span>
-          </div>
-        </div>
+        <ExecutionTimeline :items="timelineItems" />
       </section>
 
+      <ArtifactShelf
+        v-if="latestMessage?.artifacts?.length"
+        :artifacts="latestMessage.artifacts"
+        compact
+      />
+
       <section class="context-card confidence-card">
-        <div
-          class="confidence-ring"
-          :style="{ '--confidence': (confidence ?? 0) + '%' }"
-        >
+        <div class="confidence-ring" :style="{ '--confidence': (confidence ?? 0) + '%' }">
           <strong>{{ confidence === null ? '—' : confidence + '%' }}</strong>
         </div>
         <div>
@@ -78,16 +70,22 @@
 
       <div v-else class="context-no-sources">
         <i class="fa-solid fa-route"></i>
-        <span>{{ trace?.tool_used === false ? '本次为直接回答，未调用知识库。' : '正在等待可引用证据。' }}</span>
+        <span>{{
+          trace?.tool_used === false ? '本次为直接回答，未调用知识库。' : '正在等待可引用证据。'
+        }}</span>
       </div>
     </template>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
+import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
+import ArtifactShelf from '@/components/Artifacts/ArtifactShelf.vue';
+import type { RunTimelineItem } from '@/events/runEventReducer';
 import type { RetrievedChunk } from '@/types/chat';
+import emptyEvidence from '@/assets/images/empty-evidence.webp';
 
 interface RunStepView {
   key: string;
@@ -101,6 +99,18 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
+const currentTime = ref(Date.now());
+let durationTimer: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  durationTimer = setInterval(() => {
+    currentTime.value = Date.now();
+  }, 250);
+});
+
+onUnmounted(() => {
+  if (durationTimer !== null) clearInterval(durationTimer);
+});
 
 const latestMessageIndex = computed(() => {
   for (let index = chatStore.messages.length - 1; index >= 0; index -= 1) {
@@ -117,8 +127,10 @@ const latestMessage = computed(() => {
 
 const trace = computed(() => latestMessage.value?.ragTrace || null);
 const sources = computed(() => trace.value?.retrieved_chunks || []);
-const isRunning = computed(() => Boolean(latestMessage.value?.isThinking || chatStore.isViewingStreamingSession));
-const shortSessionId = computed(() => chatStore.sessionId.replace('session_', '').slice(-8));
+const isRunning = computed(() =>
+  Boolean(latestMessage.value?.isThinking || chatStore.isViewingStreamingThread)
+);
+const shortThreadId = computed(() => chatStore.threadId.replace('thread_', '').slice(-8));
 
 const statusLabel = computed(() => {
   if (isRunning.value) return '运行中';
@@ -139,11 +151,13 @@ const runSteps = computed<RunStepView[]>(() => {
 
   const currentTrace = trace.value;
   if (!currentTrace) {
-    return [{
-      key: 'answer',
-      label: isRunning.value ? '正在连接喵喵 Agent' : '直接回答已完成',
-      detail: isRunning.value ? '准备理解问题与选择工具' : '本次未产生检索轨迹',
-    }];
+    return [
+      {
+        key: 'answer',
+        label: isRunning.value ? '正在连接喵喵 Agent' : '直接回答已完成',
+        detail: isRunning.value ? '准备理解问题与选择工具' : '本次未产生检索轨迹',
+      },
+    ];
   }
 
   const result: RunStepView[] = [];
@@ -183,6 +197,28 @@ const runSteps = computed<RunStepView[]>(() => {
   return result;
 });
 
+const timelineItems = computed<RunTimelineItem[]>(() => {
+  const durableItems = latestMessage.value?.runTimeline || [];
+  if (durableItems.length) return durableItems;
+  return runSteps.value.map((step, index) => ({
+    id: `legacy-rag:${step.key}:${index}`,
+    sequence: index + 1,
+    kind: 'retrieval',
+    eventType: 'retrieval.progress',
+    status: isRunning.value && index === runSteps.value.length - 1 ? 'running' : 'completed',
+    title: step.label,
+    detail: step.detail || null,
+    timestamp: '',
+    toolName: null,
+    toolCallId: null,
+    durationMs: null,
+    resultSize: null,
+    guardrailDecision: null,
+    guardrailReasonCode: null,
+    error: null,
+  }));
+});
+
 const confidence = computed<number | null>(() => {
   const raw = trace.value?.evidence_confidence;
   if (raw === null || raw === undefined || Number.isNaN(Number(raw))) return null;
@@ -200,11 +236,22 @@ const confidenceDescription = computed(() => {
 });
 
 const totalDuration = computed(() => {
-  const total = (latestMessage.value?.ragSteps || []).reduce(
-    (sum, step) => sum + Number(step.elapsed_ms || 0),
-    0
-  );
-  return total > 0 ? formatMilliseconds(total) : '';
+  const recordedDuration = latestMessage.value?.runActiveDurationMs;
+  if (recordedDuration !== undefined) {
+    const activeStartedAt = latestMessage.value?.runActiveStartedAt;
+    const activeStartedTimestamp = activeStartedAt ? Date.parse(activeStartedAt) : Number.NaN;
+    const activeElapsed = Number.isFinite(activeStartedTimestamp)
+      ? Math.max(currentTime.value - activeStartedTimestamp, 0)
+      : 0;
+    const total = Math.max(recordedDuration, 0) + activeElapsed;
+    return total > 0 ? formatMilliseconds(total) : '';
+  }
+
+  const elapsed = (latestMessage.value?.ragSteps || []).reduce((latest, step) => {
+    const sample = Number(step.elapsed_ms);
+    return Number.isFinite(sample) ? Math.max(latest, sample) : latest;
+  }, 0);
+  return elapsed > 0 ? formatMilliseconds(elapsed) : '';
 });
 
 const formatMilliseconds = (milliseconds: number) => {

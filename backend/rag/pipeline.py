@@ -1,62 +1,97 @@
-from typing import Annotated, Any, Literal, TypedDict, List, Optional
+from typing import Annotated, Literal, TypedDict, List, Optional
+from collections.abc import Callable
 import operator
-import os
 import re
-from langchain.chat_models import init_chat_model
+import time
+from uuid import uuid4
 from langgraph.graph import StateGraph, END
-from langgraph.types import Send
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command, Send, interrupt
 from pydantic import BaseModel, Field
 
-from backend.chat.request_context import ChatRequestContext
-from backend.schemas.chat import HitlResumeState, normalize_rag_sub_trace
+from backend.core.errors import AppError, ErrorCode
+from backend.agent.models import ModelRole, model_registry
+from backend.model_control import ModelCatalogSnapshot
+from backend.runs.request_context import RunRequestContext
+from backend.schemas.rag import HitlResumeState, normalize_rag_sub_trace
 from backend.rag.utils import (
     RETRIEVAL_TOP_K,
     retrieve_documents,
+    resolve_retrieval_snapshot,
     rewrite_query_once,
     dedupe_documents,
     retrieval_trace_fields,
 )
+from backend.rag.runtime_context import (
+    bind_rag_runtime_context,
+    get_rag_runtime_context,
+    register_rag_runtime_context,
+)
+from backend.rag.outcomes import outcome_for_status
+from backend.rag.evidence import (
+    EvidencePack,
+    grader_evidence_character_budget,
+    grader_max_document_character_budget,
+    pack_evidence,
+    rag_evidence_character_budget,
+)
+from backend.providers import (
+    ProviderCallContext,
+    ProviderError,
+    ProviderExecutor,
+    ProviderOperation,
+    ProviderPolicy,
+)
 
-API_KEY = os.getenv("ARK_API_KEY")
-BASE_URL = os.getenv("BASE_URL")
-FAST_MODEL = os.getenv("FAST_MODEL")
-GRADE_MODEL = os.getenv("GRADE_MODEL")
-
-_grader_model = None
-_complexity_model = None
+_provider_executor = ProviderExecutor()
+_model_policy = ProviderPolicy(max_attempts=2)
 
 
-def _get_grader_model():
-    global _grader_model
-    if not API_KEY or not GRADE_MODEL:
+def _state_model_snapshot(state: dict | None) -> ModelCatalogSnapshot | None:
+    if not state:
         return None
-    if _grader_model is None:
-        _grader_model = init_chat_model(
-            model=GRADE_MODEL,
-            model_provider="openai",
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            temperature=0,
-            stream_usage=True,
-        )
-    return _grader_model
-
-
-def _get_complexity_model():
-    """FAST_MODEL 用于问题复杂度分类和子问题分解。"""
-    global _complexity_model
-    if not API_KEY or not FAST_MODEL:
+    value = state.get("model_snapshot")
+    if not value:
         return None
-    if _complexity_model is None:
-        _complexity_model = init_chat_model(
-            model=FAST_MODEL,
-            model_provider="openai",
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            temperature=0,
-            stream_usage=True,
-        )
-    return _complexity_model
+    if isinstance(value, ModelCatalogSnapshot):
+        return value
+    return ModelCatalogSnapshot.model_validate(value)
+
+
+def _get_grader_model(state: dict | None = None):
+    return model_registry.get(
+        ModelRole.GRADER,
+        snapshot=_state_model_snapshot(state),
+    )
+
+
+def _get_complexity_model(state: dict | None = None):
+    """Fast Model 用于问题复杂度分类和子问题分解。"""
+    return model_registry.get(
+        ModelRole.FAST,
+        snapshot=_state_model_snapshot(state),
+    )
+
+
+def _model_call_settings(
+    state: dict,
+    role: ModelRole,
+    model,
+) -> tuple[str, float]:
+    snapshot = _state_model_snapshot(state)
+    if snapshot is not None:
+        spec = model_registry.describe(role, snapshot=snapshot)
+        return spec.name, spec.timeout_seconds
+    provider = str(
+        getattr(model, "model_name", None)
+        or getattr(model, "model", None)
+        or f"{role.value}-model"
+    )
+    timeout = getattr(model, "request_timeout", None)
+    try:
+        return provider, max(float(timeout), 0.1)
+    except (TypeError, ValueError):
+        return provider, 15.0
 
 
 EVIDENCE_GRADE_PROMPT = (
@@ -90,11 +125,10 @@ class EvidenceGrade(BaseModel):
         description="检索片段是否足以回答问题"
     )
     ambiguity: Literal["none", "missing_slot", "multiple_candidates"] = Field(
-        default="none",
-        description="问题是否缺条件或存在多个候选方向"
+        default="none", description="问题是否缺条件或存在多个候选方向"
     )
-    route: Literal["answer", "rewrite", "clarify", "scope_select", "no_knowledge"] = Field(
-        description="下一步路由"
+    route: Literal["answer", "rewrite", "clarify", "scope_select", "no_knowledge"] = (
+        Field(description="下一步路由")
     )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     missing_slots: List[str] = Field(default_factory=list)
@@ -118,12 +152,15 @@ class ComplexityResult(BaseModel):
 
 
 class RAGState(TypedDict):
+    tenant_id: str
+    original_question: str
     question: str
     query: str
     context: str
     docs: List[dict]
     route: Optional[str]
     retrieval_status: Optional[str]
+    retrieval_outcome: Optional[str]
     evidence_relevance: Optional[str]
     evidence_answerability: Optional[str]
     evidence_ambiguity: Optional[str]
@@ -131,6 +168,8 @@ class RAGState(TypedDict):
     missing_slots: Optional[List[str]]
     hitl_prompt: Optional[str]
     hitl_options: Optional[List[str]]
+    hitl_answers: List[str]
+    hitl_answer: Optional[str]
     rewrite_count: int
     rewrite_method: Optional[str]
     rewritten_query: Optional[str]
@@ -143,21 +182,25 @@ class RAGState(TypedDict):
     sub_questions: Optional[List[str]]
     is_sub_agent: bool
     sub_results: Annotated[List[dict], operator.add]
-    request_context: ChatRequestContext
+    model_snapshot: dict
+    runtime_context_id: str
     rag_step_group: Optional[str]
     rag_step_group_label: Optional[str]
 
 
 def _format_docs(docs: List[dict]) -> str:
-    if not docs:
-        return ""
-    chunks = []
-    for i, doc in enumerate(docs, 1):
-        source = doc.get("filename", "Unknown")
-        page = doc.get("page_number", "N/A")
-        text = doc.get("text", "")
-        chunks.append(f"[{i}] {source} (Page {page}):\n{text}")
-    return "\n\n---\n\n".join(chunks)
+    return pack_evidence(
+        docs,
+        maximum_characters=rag_evidence_character_budget(),
+    ).text
+
+
+def _pack_grader_docs(docs: List[dict]) -> EvidencePack:
+    return pack_evidence(
+        docs,
+        maximum_characters=grader_evidence_character_budget(),
+        max_document_characters=grader_max_document_character_budget(),
+    )
 
 
 def _copy_jsonable_doc(doc: dict) -> dict:
@@ -185,34 +228,40 @@ def _is_hitl_result(result: dict | None) -> bool:
     trace = result.get("rag_trace") or {}
     status = result.get("retrieval_status") or trace.get("retrieval_status")
     route = result.get("route") or trace.get("route")
-    return status in ("needs_clarification", "needs_scope_selection") or route in ("clarify", "scope_select")
+    return status in ("needs_clarification", "needs_scope_selection") or route in (
+        "clarify",
+        "scope_select",
+    )
 
 
-def _build_hitl_resume_state(result: dict) -> dict:
+def _build_hitl_resume_state(
+    result: dict,
+    *,
+    checkpoint_thread_id: str | None = None,
+    checkpoint_id: str | None = None,
+    interrupt_id: str | None = None,
+) -> dict:
     trace = result.get("rag_trace") or {}
     return HitlResumeState(
         question=result.get("question") or trace.get("query") or "",
         route=result.get("route") or trace.get("route"),
-        retrieval_status=result.get("retrieval_status") or trace.get("retrieval_status"),
+        retrieval_status=result.get("retrieval_status")
+        or trace.get("retrieval_status"),
         rewrite_count=int(result.get("rewrite_count") or 0),
         complexity=result.get("complexity") or trace.get("complexity"),
-        complexity_reason=result.get("complexity_reason") or trace.get("complexity_reason"),
+        complexity_reason=result.get("complexity_reason")
+        or trace.get("complexity_reason"),
         sub_questions=result.get("sub_questions") or trace.get("sub_questions") or [],
-    ).model_dump()
-
-
-def _refined_question_for_hitl(resume_state: dict, user_answer: str) -> str:
-    question = resume_state.get("question") or ""
-    answer = user_answer.strip()
-    if not question:
-        return answer
-    if answer and answer in question:
-        return question
-    return f"{answer}：{question}" if answer else question
+        checkpoint_thread_id=checkpoint_thread_id,
+        checkpoint_id=checkpoint_id,
+        interrupt_id=interrupt_id,
+    ).model_dump(exclude_none=True)
 
 
 def _emit(state: RAGState, icon: str, label: str, detail: str = "") -> None:
-    ctx = state["request_context"]
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    if ctx is None:
+        return
     ctx.emit_rag_step(
         icon,
         label,
@@ -222,21 +271,132 @@ def _emit(state: RAGState, icon: str, label: str, detail: str = "") -> None:
     )
 
 
+def _emit_retrieval_warnings(state: RAGState, meta: dict) -> None:
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    if ctx is None:
+        return
+    rerank_code = meta.get("rerank_error_code")
+    if rerank_code:
+        ctx.emit_rag_warning(
+            code=str(rerank_code),
+            stage="rerank",
+            retryable=bool(meta.get("rerank_retryable")),
+            fallback_applied=bool(meta.get("rerank_fallback_applied")),
+            attempts=int(meta.get("rerank_attempts") or 0),
+        )
+    degraded_code = meta.get("retrieval_degraded_code")
+    if degraded_code:
+        ctx.emit_rag_warning(
+            code=str(degraded_code),
+            stage="vector_search",
+            retryable=False,
+            fallback_applied=True,
+        )
+
+
+def _provider_runtime(
+    state: RAGState,
+) -> tuple[float | None, Callable[[], bool] | None]:
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    if ctx is None:
+        return None, None
+    return ctx.provider_runtime()
+
+
+def _provider_deadline(run_deadline: float | None, timeout_seconds: float) -> float:
+    stage_deadline = time.monotonic() + timeout_seconds
+    return (
+        min(run_deadline, stage_deadline)
+        if run_deadline is not None
+        else stage_deadline
+    )
+
+
+def _required_tenant_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("tenant_id is required for RAG retrieval")
+    tenant_id = value.strip()
+    if not tenant_id:
+        raise ValueError("tenant_id is required for RAG retrieval")
+    return tenant_id
+
+
+def _retrieve_for_state(state: RAGState, query: str) -> dict:
+    deadline, cancellation = _provider_runtime(state)
+    tenant_id = _required_tenant_id(state.get("tenant_id"))
+    ctx = get_rag_runtime_context(state.get("runtime_context_id"))
+    retrieval_snapshot = None
+    if ctx is not None:
+        retrieval_snapshot = ctx.get_or_resolve_rag_retrieval_snapshot(
+            lambda: resolve_retrieval_snapshot(
+                tenant_id=tenant_id,
+                deadline=deadline,
+                cancellation=cancellation,
+            )
+        )
+    return retrieve_documents(
+        query,
+        top_k=RETRIEVAL_TOP_K,
+        tenant_id=tenant_id,
+        retrieval_snapshot=retrieval_snapshot,
+        deadline=deadline,
+        cancellation=cancellation,
+    )
+
+
+def _invoke_structured_model(
+    state: RAGState,
+    *,
+    model,
+    schema,
+    messages: list[dict],
+    provider: str,
+    timeout_seconds: float,
+):
+    run_deadline, cancellation = _provider_runtime(state)
+    context = ProviderCallContext(
+        provider=provider,
+        operation=ProviderOperation.MODEL,
+        deadline=_provider_deadline(run_deadline, timeout_seconds),
+        cancellation=cancellation,
+    )
+    return _provider_executor.call(
+        lambda: model.with_structured_output(schema).invoke(messages),
+        context=context,
+        policy=_model_policy,
+    )
+
+
 def _initial_state(
     question: str,
-    ctx: ChatRequestContext,
+    ctx: RunRequestContext | None = None,
     *,
+    tenant_id: str | None = None,
+    runtime_context_id: str | None = None,
+    model_snapshot: ModelCatalogSnapshot | dict | None = None,
     is_sub_agent: bool = False,
     rag_step_group: Optional[str] = None,
     rag_step_group_label: Optional[str] = None,
 ) -> dict:
+    if tenant_id is None and ctx is not None:
+        tenant_id = ctx.require_tenant_id()
+    tenant_id = _required_tenant_id(tenant_id)
+    if runtime_context_id is None and ctx is not None:
+        runtime_context_id = register_rag_runtime_context(ctx)
+    if model_snapshot is None and ctx is not None:
+        model_snapshot = ctx.model_snapshot_payload()
+    if isinstance(model_snapshot, ModelCatalogSnapshot):
+        model_snapshot = model_snapshot.model_dump(mode="json")
     return {
+        "tenant_id": tenant_id,
+        "original_question": question,
         "question": question,
         "query": question,
         "context": "",
         "docs": [],
         "route": None,
         "retrieval_status": None,
+        "retrieval_outcome": None,
         "evidence_relevance": None,
         "evidence_answerability": None,
         "evidence_ambiguity": None,
@@ -244,6 +404,8 @@ def _initial_state(
         "missing_slots": [],
         "hitl_prompt": "",
         "hitl_options": [],
+        "hitl_answers": [],
+        "hitl_answer": None,
         "rewrite_count": 0,
         "rewrite_method": None,
         "rewritten_query": None,
@@ -255,7 +417,8 @@ def _initial_state(
         "sub_questions": None,
         "is_sub_agent": is_sub_agent,
         "sub_results": [],
-        "request_context": ctx,
+        "model_snapshot": dict(model_snapshot or {}),
+        "runtime_context_id": runtime_context_id or "",
         "rag_step_group": rag_step_group,
         "rag_step_group_label": rag_step_group_label,
     }
@@ -264,9 +427,10 @@ def _initial_state(
 def retrieve_initial(state: RAGState) -> RAGState:
     query = state["question"]
     _emit(state, "🔍", "正在检索知识库...", "初始检索")
-    retrieved = retrieve_documents(query, top_k=RETRIEVAL_TOP_K)
+    retrieved = _retrieve_for_state(state, query)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    _emit_retrieval_warnings(state, retrieve_meta)
     context = _format_docs(results)
     _emit(
         state,
@@ -287,7 +451,12 @@ def retrieve_initial(state: RAGState) -> RAGState:
             f"替换片段: {retrieve_meta.get('auto_merge_replaced_chunks', 0)}"
         ),
     )
-    _emit(state, "✅", f"检索完成，找到 {len(results)} 个片段", f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}")
+    _emit(
+        state,
+        "✅",
+        f"检索完成，找到 {len(results)} 个片段",
+        f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}",
+    )
     if not results:
         _emit(state, "⚠️", "无可用片段，将进入证据评分短路判断")
     rag_trace = {
@@ -313,9 +482,13 @@ def _route_after_initial(state: RAGState) -> Literal["grade_documents"]:
     return "grade_documents"
 
 
-def _route_after_grade(state: RAGState) -> Literal["rewrite_question", "end"]:
+def _route_after_grade(
+    state: RAGState,
+) -> Literal["rewrite_question", "await_hitl", "end"]:
     if state.get("route") == "rewrite":
         return "rewrite_question"
+    if state.get("route") in ("clarify", "scope_select"):
+        return "await_hitl"
     return "end"
 
 
@@ -354,6 +527,33 @@ def _grade_for_no_docs() -> EvidenceGrade:
     )
 
 
+_SCOPE_SELECTION_HINTS = (
+    "版本",
+    "型号",
+    "方案",
+    "套餐",
+    "范围",
+    "选项",
+    "环境",
+    "区域",
+    "地区",
+    "version",
+    "model",
+    "plan",
+    "tier",
+    "scope",
+    "option",
+    "environment",
+    "region",
+)
+
+
+def _question_requests_scope_selection(state: RAGState) -> bool:
+    question = str(state.get("original_question") or state.get("question") or "")
+    normalized = question.casefold()
+    return any(hint in normalized for hint in _SCOPE_SELECTION_HINTS)
+
+
 def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     docs = state.get("docs") or []
     rewrite_count = int(state.get("rewrite_count") or 0)
@@ -363,12 +563,26 @@ def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     if not docs or grade.relevance == "none":
         return "no_knowledge"
 
-    if grade.ambiguity == "missing_slot":
-        return "clarify"
+    selectable_options = tuple(
+        dict.fromkeys(option.strip() for option in grade.hitl_options if option.strip())
+    )
     if grade.ambiguity == "multiple_candidates":
         return "scope_select"
+    if grade.ambiguity == "missing_slot" or grade.missing_slots:
+        if len(selectable_options) >= 2 and _question_requests_scope_selection(state):
+            return "scope_select"
+        return "clarify"
 
-    answer_is_supported = grade.relevance == "strong" and grade.answerability == "sufficient"
+    if grade.route == "scope_select" or (
+        grade.route == "clarify"
+        and len(selectable_options) >= 2
+        and _question_requests_scope_selection(state)
+    ):
+        return "scope_select"
+
+    answer_is_supported = (
+        grade.relevance == "strong" and grade.answerability == "sufficient"
+    )
     if route == "answer" and answer_is_supported:
         return "answer"
 
@@ -399,9 +613,14 @@ def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
 
 def _grade_update(grade: EvidenceGrade, route: str) -> dict:
     status = _retrieval_status_for_route(route, grade)
-    hitl_prompt = _default_hitl_prompt(route, grade) if route in ("clarify", "scope_select") else ""
+    hitl_prompt = (
+        _default_hitl_prompt(route, grade)
+        if route in ("clarify", "scope_select")
+        else ""
+    )
     return {
         "retrieval_status": status,
+        "retrieval_outcome": outcome_for_status(status).value,
         "evidence_relevance": grade.relevance,
         "evidence_answerability": grade.answerability,
         "evidence_ambiguity": grade.ambiguity,
@@ -417,29 +636,58 @@ def _grade_update(grade: EvidenceGrade, route: str) -> dict:
 def grade_documents_node(state: RAGState) -> RAGState:
     _emit(state, "📊", "正在评估证据质量...")
     docs = state.get("docs") or []
+    grader_evidence = None
     if not docs:
         grade = _grade_for_no_docs()
     else:
-        grader = _get_grader_model()
+        grader = _get_grader_model(state)
         if not grader:
-            raise RuntimeError("GRADE_MODEL is required for evidence grading")
+            raise RuntimeError("Grader model is required for evidence grading")
+        grader_provider, grader_timeout = _model_call_settings(
+            state,
+            ModelRole.GRADER,
+            grader,
+        )
         question = state["question"]
-        context = state.get("context", "")
-        prompt = EVIDENCE_GRADE_PROMPT.format(question=question, context=context)
-        grade = grader.with_structured_output(EvidenceGrade).invoke(
-            [{"role": "user", "content": prompt}]
+        grader_evidence = _pack_grader_docs(docs)
+        prompt = EVIDENCE_GRADE_PROMPT.format(
+            question=question,
+            context=grader_evidence.text,
+        )
+        grade = _invoke_structured_model(
+            state,
+            model=grader,
+            schema=EvidenceGrade,
+            messages=[{"role": "user", "content": prompt}],
+            provider=grader_provider,
+            timeout_seconds=grader_timeout,
         )
 
     route = _resolve_route(grade, state)
     grade_update = _grade_update(grade, route)
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update(grade_update)
+    rag_trace.update(
+        {
+            "grader_evidence_characters": (
+                grader_evidence.characters if grader_evidence is not None else 0
+            ),
+            "grader_evidence_omitted_count": (
+                grader_evidence.omitted_count if grader_evidence is not None else 0
+            ),
+            "grader_evidence_truncated_count": (
+                grader_evidence.truncated_count if grader_evidence is not None else 0
+            ),
+        }
+    )
 
     if route == "answer":
         if grade.answerability == "partial":
             _emit(state, "🟡", "保留部分相关证据", f"置信度: {grade.confidence:.2f}")
         else:
-            _emit(state, "✅", "证据足够，返回检索片段", f"置信度: {grade.confidence:.2f}")
+            _emit(
+                state, "✅", "证据足够，返回检索片段", f"置信度: {grade.confidence:.2f}"
+            )
     elif route == "rewrite":
         _emit(state, "⚠️", "证据不足，将改写查询一次", f"置信度: {grade.confidence:.2f}")
     elif route in ("clarify", "scope_select"):
@@ -450,6 +698,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
     update = {
         "route": route,
         "retrieval_status": grade_update["retrieval_status"],
+        "retrieval_outcome": grade_update["retrieval_outcome"],
         "evidence_relevance": grade.relevance,
         "evidence_answerability": grade.answerability,
         "evidence_ambiguity": grade.ambiguity,
@@ -475,11 +724,13 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     rewrite_count = int(state.get("rewrite_count") or 0)
     if rewrite_count >= 1:
         rag_trace = state.get("rag_trace", {}) or {}
-        rag_trace.update({
-            "retrieval_status": "no_knowledge",
-            "route": "no_knowledge",
-            "evidence_reason": "rewrite_budget_exhausted",
-        })
+        rag_trace.update(
+            {
+                "retrieval_status": "no_knowledge",
+                "route": "no_knowledge",
+                "evidence_reason": "rewrite_budget_exhausted",
+            }
+        )
         _emit(state, "⛔", "改写预算已用完，停止检索")
         return {
             "route": "no_knowledge",
@@ -490,7 +741,13 @@ def rewrite_question_node(state: RAGState) -> RAGState:
         }
 
     _emit(state, "🧠", "选择 Step-back / HyDE 重写方式")
-    rewrite = rewrite_query_once(question)
+    deadline, cancellation = _provider_runtime(state)
+    rewrite = rewrite_query_once(
+        question,
+        deadline=deadline,
+        cancellation=cancellation,
+        model_snapshot=_state_model_snapshot(state),
+    )
     rewrite_method = (rewrite.get("rewrite_method") or "").strip()
     step_back_question = (rewrite.get("step_back_question") or "").strip()
     hyde_document = (rewrite.get("hyde_document") or "").strip()
@@ -506,11 +763,13 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     _emit(state, "✅", f"已选择 {method_label} 重写", "本轮只执行这一种重写检索")
 
     rag_trace = state.get("rag_trace", {}) or {}
-    rag_trace.update({
-        "rewrite_method": rewrite_method,
-        "rewritten_query": rewritten_query,
-        "rewrite_count": rewrite_count + 1,
-    })
+    rag_trace.update(
+        {
+            "rewrite_method": rewrite_method,
+            "rewritten_query": rewritten_query,
+            "rewrite_count": rewrite_count + 1,
+        }
+    )
     if step_back_question:
         rag_trace["step_back_question"] = step_back_question
     if hyde_document:
@@ -535,9 +794,10 @@ def retrieve_rewritten(state: RAGState) -> RAGState:
         raise ValueError("rewritten_query is required for rewritten retrieval")
     method_label = "Step-back" if rewrite_method == "step_back" else "HyDE"
     _emit(state, "🔄", f"使用 {method_label} 查询重新检索...")
-    retrieved = retrieve_documents(rewritten_query, top_k=RETRIEVAL_TOP_K)
+    retrieved = _retrieve_for_state(state, rewritten_query)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    _emit_retrieval_warnings(state, retrieve_meta)
     context = _format_docs(results)
     _emit(
         state,
@@ -551,14 +811,16 @@ def retrieve_rewritten(state: RAGState) -> RAGState:
     )
     _emit(state, "✅", f"重写检索完成，共 {len(results)} 个片段")
     rag_trace = state.get("rag_trace", {}) or {}
-    rag_trace.update({
-        "rewrite_method": rewrite_method,
-        "rewritten_query": rewritten_query,
-        "retrieved_chunks": results,
-        "rewrite_retrieved_chunks": results,
-        "retrieval_stage": "rewritten",
-        **retrieval_trace_fields(retrieve_meta),
-    })
+    rag_trace.update(
+        {
+            "rewrite_method": rewrite_method,
+            "rewritten_query": rewritten_query,
+            "retrieved_chunks": results,
+            "rewrite_retrieved_chunks": results,
+            "retrieval_stage": "rewritten",
+            **retrieval_trace_fields(retrieve_meta),
+        }
+    )
     if state.get("step_back_question"):
         rag_trace["step_back_question"] = state["step_back_question"]
     if state.get("hyde_document"):
@@ -595,6 +857,23 @@ _SIMPLE_QUERY_MARKERS = (
     "规格",
     "定义",
     "含义",
+    "what is",
+    "who is",
+    "where is",
+    "when is",
+    "how many",
+    "which",
+)
+
+_SIMPLE_INTERROGATIVE_MARKERS = (
+    "是什么",
+    "是谁",
+    "哪里",
+    "何时",
+    "多少",
+    "是否",
+    "哪个",
+    "哪种",
     "what is",
     "who is",
     "where is",
@@ -663,9 +942,11 @@ def _simple_question_fast_path_reason(question: str) -> Optional[str]:
         return None
     if any(marker in normalized for marker in _COMPLEX_QUERY_MARKERS):
         return None
+    if sum(normalized.count(marker) for marker in _SIMPLE_INTERROGATIVE_MARKERS) > 1:
+        return None
     if "、" in normalized:
         return None
-    if re.search(r"[\u4e00-\u9fff]", normalized) and normalized.count(" ") >= 2:
+    if re.search(r"[\u4e00-\u9fff]", normalized) and normalized.count(" ") >= 3:
         return None
     if sum(marker in normalized for marker in _QUERY_DIMENSION_MARKERS) >= 2:
         return None
@@ -688,20 +969,28 @@ def classify_complexity(state: RAGState) -> RAGState:
         _emit(state, "⚡", "快速判断为简单问题 → 走标准 RAG 流程")
         return {"complexity": "simple", "complexity_reason": fast_path_reason}
 
-    model = _get_complexity_model()
+    model = _get_complexity_model(state)
     if not model:
-        raise RuntimeError("FAST_MODEL is required for complexity planning")
+        raise RuntimeError("Fast model is required for complexity planning")
+    fast_provider, fast_timeout = _model_call_settings(
+        state,
+        ModelRole.FAST,
+        model,
+    )
 
     prompt = COMPLEXITY_PROMPT.format(question=question)
-    result = model.with_structured_output(ComplexityResult).invoke(
-        [{"role": "user", "content": prompt}]
+    result = _invoke_structured_model(
+        state,
+        model=model,
+        schema=ComplexityResult,
+        messages=[{"role": "user", "content": prompt}],
+        provider=fast_provider,
+        timeout_seconds=fast_timeout,
     )
     complexity = (result.complexity or "simple").strip().lower()
     reason = (result.reason or "").strip()
     sub_questions = [
-        item.strip()
-        for item in (result.sub_questions or [])
-        if item and item.strip()
+        item.strip() for item in (result.sub_questions or []) if item and item.strip()
     ][:4]
     if complexity not in ("simple", "complex"):
         raise ValueError(f"Unsupported complexity result: {complexity}")
@@ -742,13 +1031,14 @@ def _route_after_complexity(state: RAGState):
 def _fanout_sub_questions(state: RAGState):
     """将规划出的子问题通过 Send API 并行分发到 rag_sub_agent。"""
     sub_qs = state.get("sub_questions") or []
-    ctx = state["request_context"]
     return [
         Send(
             "rag_sub_agent",
             _initial_state(
                 sq,
-                ctx,
+                tenant_id=state.get("tenant_id"),
+                runtime_context_id=state.get("runtime_context_id"),
+                model_snapshot=state.get("model_snapshot"),
                 is_sub_agent=True,
                 rag_step_group=f"子问题 {i}",
                 rag_step_group_label=sq,
@@ -764,6 +1054,11 @@ def synthesis(state: RAGState) -> RAGState:
     _emit(state, "🔬", f"正在合成 {len(sub_results)} 个子问题的检索结果...")
 
     all_docs: List[dict] = []
+    provider_failures = [
+        result["provider_error"]
+        for result in sub_results
+        if isinstance(result.get("provider_error"), dict)
+    ]
     for result in sub_results:
         status = result.get("retrieval_status")
         if status not in ("answerable", "partial"):
@@ -774,6 +1069,9 @@ def synthesis(state: RAGState) -> RAGState:
     deduped = dedupe_documents(all_docs)
     for idx, item in enumerate(deduped, 1):
         item["rrf_rank"] = idx
+
+    if provider_failures and len(provider_failures) == len(sub_results):
+        raise ProviderError.from_snapshot(provider_failures[0])
 
     context = _format_docs(deduped)
     if deduped:
@@ -793,23 +1091,52 @@ def synthesis(state: RAGState) -> RAGState:
     original_trace = state.get("rag_trace") or {}
     has_docs = bool(deduped)
     retrieval_status = "answerable" if has_docs else "no_knowledge"
-    if has_docs and any(result.get("retrieval_status") == "partial" for result in sub_results):
+    uncovered_results = [
+        result
+        for result in sub_results
+        if result.get("retrieval_status") != "answerable"
+    ]
+    if has_docs and (provider_failures or uncovered_results):
         retrieval_status = "partial"
+    coverage_gap_codes = list(
+        dict.fromkeys(
+            str(item.get("code")) for item in provider_failures if item.get("code")
+        )
+    )
+    coverage_gap_questions = (
+        list(
+            dict.fromkeys(
+                str(item.get("question") or "").strip()
+                for item in uncovered_results
+                if str(item.get("question") or "").strip()
+            )
+        )
+        if has_docs or provider_failures
+        else []
+    )
     hitl_traces = [
-        trace for trace in sub_traces
-        if trace.get("retrieval_status") in ("needs_clarification", "needs_scope_selection")
+        trace
+        for trace in sub_traces
+        if trace.get("retrieval_status")
+        in ("needs_clarification", "needs_scope_selection")
     ]
     hitl_route = None
     hitl_prompt = ""
     hitl_options: List[str] = []
     if not has_docs and hitl_traces:
         scope_trace = next(
-            (trace for trace in hitl_traces if trace.get("retrieval_status") == "needs_scope_selection"),
+            (
+                trace
+                for trace in hitl_traces
+                if trace.get("retrieval_status") == "needs_scope_selection"
+            ),
             None,
         )
         chosen_trace = scope_trace or hitl_traces[0]
         retrieval_status = chosen_trace.get("retrieval_status") or "needs_clarification"
-        hitl_route = "scope_select" if retrieval_status == "needs_scope_selection" else "clarify"
+        hitl_route = (
+            "scope_select" if retrieval_status == "needs_scope_selection" else "clarify"
+        )
         prompts = [
             trace.get("hitl_prompt")
             for trace in hitl_traces
@@ -820,6 +1147,17 @@ def synthesis(state: RAGState) -> RAGState:
             for option in trace.get("hitl_options") or []:
                 if option not in hitl_options:
                     hitl_options.append(option)
+    elif not has_docs and provider_failures:
+        retrieval_status = "insufficient_evidence"
+
+    route = (
+        "answer"
+        if has_docs
+        else (
+            hitl_route
+            or ("insufficient_evidence" if provider_failures else "no_knowledge")
+        )
+    )
 
     rag_trace = {
         **original_trace,
@@ -835,19 +1173,25 @@ def synthesis(state: RAGState) -> RAGState:
         "synthesis_merged_count": len(all_docs),
         "sub_traces": sub_traces,
         "retrieval_status": retrieval_status,
+        "retrieval_outcome": outcome_for_status(retrieval_status).value,
         "evidence_relevance": "strong" if has_docs else "none",
-        "evidence_answerability": "partial" if retrieval_status == "partial" else ("sufficient" if has_docs else "none"),
+        "evidence_answerability": "partial"
+        if retrieval_status == "partial"
+        else ("sufficient" if has_docs else "none"),
         "evidence_confidence": None,
-        "route": "answer" if has_docs else (hitl_route or "no_knowledge"),
+        "route": route,
         "hitl_prompt": hitl_prompt,
         "hitl_options": hitl_options,
+        "coverage_gap_codes": coverage_gap_codes,
+        "coverage_gap_questions": coverage_gap_questions,
     }
 
     return {
         "docs": deduped,
         "context": context,
-        "route": "answer" if has_docs else (hitl_route or "no_knowledge"),
+        "route": route,
         "retrieval_status": retrieval_status,
+        "retrieval_outcome": outcome_for_status(retrieval_status).value,
         "hitl_prompt": hitl_prompt,
         "hitl_options": hitl_options,
         "rag_trace": rag_trace,
@@ -858,25 +1202,115 @@ def rag_sub_agent(state: RAGState) -> RAGState:
     """Run the only reachable sub-agent path directly: retrieve → grade."""
     question = state.get("question", "")
     result = dict(state)
-    result.update(retrieve_initial(result))
-    result.update(grade_documents_node(result))
+    try:
+        result.update(retrieve_initial(result))
+        result.update(grade_documents_node(result))
+    except ProviderError as exc:
+        snapshot = exc.to_snapshot()
+        return {
+            "sub_results": [
+                {
+                    "question": question,
+                    "docs": [],
+                    "retrieval_status": "provider_failed",
+                    "route": "provider_failed",
+                    "provider_error": snapshot,
+                    "rag_trace": {
+                        "tool_used": True,
+                        "tool_name": "search_knowledge_base",
+                        "query": question,
+                        "retrieval_status": "provider_failed",
+                        "route": "provider_failed",
+                        "provider_error_code": snapshot["code"],
+                        "provider_error_stage": snapshot["operation"],
+                    },
+                }
+            ]
+        }
     trace = result.get("rag_trace") or {}
     return {
-        "sub_results": [{
-            "question": question,
-            "docs": result.get("docs", []),
-            "retrieval_status": result.get("retrieval_status") or trace.get("retrieval_status"),
-            "route": result.get("route") or trace.get("route"),
-            "rag_trace": trace,
-        }],
+        "sub_results": [
+            {
+                "question": question,
+                "docs": result.get("docs", []),
+                "retrieval_status": result.get("retrieval_status")
+                or trace.get("retrieval_status"),
+                "route": result.get("route") or trace.get("route"),
+                "rag_trace": trace,
+            }
+        ],
     }
+
+
+def await_hitl_node(state: RAGState) -> RAGState:
+    """Native LangGraph interrupt; resume continues from this exact node."""
+    answer = interrupt(
+        {
+            "prompt": state.get("hitl_prompt") or "请补充一个关键信息后继续。",
+            "options": state.get("hitl_options") or [],
+            "route": state.get("route"),
+            "retrieval_status": state.get("retrieval_status"),
+            "original_question": state.get("original_question")
+            or state.get("question"),
+        }
+    )
+    return resume_rag_state(state, answer)
+
+
+def checkpointless_hitl_node(_state: RAGState) -> RAGState:
+    """Stop the durable Run graph at HITL without creating graph checkpoints."""
+    return {}
+
+
+def resume_rag_state(state: dict, user_answer: str) -> dict:
+    """Resume a durable HITL state without relying on a LangGraph saver."""
+    resumed = dict(state)
+    clean_answer = str(user_answer or "").strip()
+    answers = [*(resumed.get("hitl_answers") or [])]
+    if clean_answer:
+        answers.append(clean_answer)
+    original_question = (
+        resumed.get("original_question") or resumed.get("question") or ""
+    )
+    clarification = "\n".join(f"- {item}" for item in answers)
+    refined_question = (
+        f"{original_question}\n\n用户澄清：\n{clarification}"
+        if clarification
+        else original_question
+    )
+    rag_trace = dict(resumed.get("rag_trace") or {})
+    rag_trace.update(
+        {
+            "query": refined_question,
+            "hitl_resumed": True,
+            "hitl_answer": clean_answer,
+            "hitl_resume_from_status": resumed.get("retrieval_status"),
+            "hitl_resume_from_route": resumed.get("route"),
+        }
+    )
+    resumed.update(
+        {
+            "question": refined_question,
+            "query": refined_question,
+            "hitl_answers": answers,
+            "hitl_answer": clean_answer,
+            "rag_trace": rag_trace,
+        }
+    )
+    resumed.update(_retrieve_resume_query(resumed))
+    if resumed.get("route") == "rewrite":
+        resumed.update(rewrite_question_node(resumed))
+        resumed.update(retrieve_rewritten(resumed))
+        resumed.update(grade_documents_node(resumed))
+    return resumed
 
 
 # ---------------------------------------------------------------------------
 # 主 RAG 图
 # ---------------------------------------------------------------------------
 
-def build_rag_graph():
+
+def build_rag_graph(checkpointer=None, *, interrupt_on_hitl: bool = True):
     graph = StateGraph(RAGState)
 
     # 节点注册
@@ -888,6 +1322,10 @@ def build_rag_graph():
     graph.add_node("retrieve_rewritten", retrieve_rewritten)
     graph.add_node("rag_sub_agent", rag_sub_agent)
     graph.add_node("synthesis", synthesis)
+    graph.add_node(
+        "await_hitl",
+        await_hitl_node if interrupt_on_hitl else checkpointless_hitl_node,
+    )
 
     # 入口：复杂度分类
     graph.set_entry_point("classify_complexity")
@@ -911,62 +1349,44 @@ def build_rag_graph():
         _route_after_grade,
         {
             "rewrite_question": "rewrite_question",
+            "await_hitl": "await_hitl",
             "end": END,
         },
     )
     graph.add_edge("rewrite_question", "retrieve_rewritten")
     graph.add_edge("retrieve_rewritten", "grade_documents")
+    if interrupt_on_hitl:
+        graph.add_conditional_edges(
+            "await_hitl",
+            _route_after_grade,
+            {
+                "rewrite_question": "rewrite_question",
+                "await_hitl": "await_hitl",
+                "end": END,
+            },
+        )
+    else:
+        graph.add_edge("await_hitl", END)
 
     # 并行子 Agent → 合成
     graph.add_edge("rag_sub_agent", "synthesis")
     graph.add_edge("synthesis", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 rag_graph = build_rag_graph()
-
-
-def _state_from_resume(
-    resume_state: dict,
-    user_answer: str,
-    ctx: ChatRequestContext,
-) -> dict:
-    current_resume_state = HitlResumeState.model_validate(resume_state).model_dump()
-    refined_question = _refined_question_for_hitl(current_resume_state, user_answer)
-    rag_trace = {
-        "tool_used": True,
-        "tool_name": "search_knowledge_base",
-        "query": refined_question,
-        "hitl_resumed": True,
-        "hitl_answer": user_answer,
-        "hitl_resume_from_status": current_resume_state["retrieval_status"],
-        "hitl_resume_from_route": current_resume_state["route"],
-    }
-    if current_resume_state.get("complexity"):
-        rag_trace["complexity"] = current_resume_state["complexity"]
-    if current_resume_state.get("complexity_reason"):
-        rag_trace["complexity_reason"] = current_resume_state["complexity_reason"]
-    if current_resume_state.get("sub_questions"):
-        rag_trace["sub_questions"] = current_resume_state["sub_questions"]
-    state = _initial_state(refined_question, ctx)
-    state.update({
-        "query": refined_question,
-        "rewrite_count": current_resume_state["rewrite_count"],
-        "complexity": current_resume_state.get("complexity"),
-        "complexity_reason": current_resume_state.get("complexity_reason"),
-        "sub_questions": current_resume_state.get("sub_questions") or [],
-        "rag_trace": rag_trace,
-    })
-    return state
+checkpointless_rag_graph = build_rag_graph(interrupt_on_hitl=False)
+_ephemeral_checkpointers: dict[str, InMemorySaver] = {}
 
 
 def _retrieve_resume_query(state: dict) -> dict:
     _emit(state, "🔎", "使用 HITL 补充进行针对性检索", "跳过复杂度判断与子问题分解")
     query = state["question"]
-    retrieved = retrieve_documents(query, top_k=RETRIEVAL_TOP_K)
+    retrieved = _retrieve_for_state(state, query)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    _emit_retrieval_warnings(state, retrieve_meta)
     context = _format_docs(results)
     _emit(
         state,
@@ -987,25 +1407,34 @@ def _retrieve_resume_query(state: dict) -> dict:
             f"替换片段: {retrieve_meta.get('auto_merge_replaced_chunks', 0)}"
         ),
     )
-    _emit(state, "✅", f"HITL 针对性检索完成，找到 {len(results)} 个片段", f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}")
+    _emit(
+        state,
+        "✅",
+        f"HITL 针对性检索完成，找到 {len(results)} 个片段",
+        f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}",
+    )
     rag_trace = state.get("rag_trace") or {}
-    rag_trace.update({
-        "tool_used": True,
-        "tool_name": "search_knowledge_base",
-        "query": query,
-        "retrieved_chunks": results,
-        "hitl_targeted_retrieved_chunks": results,
-        "hitl_resumed": True,
-        "hitl_resume_strategy": "targeted_retrieval",
-        "retrieval_stage": "hitl_targeted_retrieval",
-        **retrieval_trace_fields(retrieve_meta),
-    })
-    state.update({
-        "query": query,
-        "docs": results,
-        "context": context,
-        "rag_trace": rag_trace,
-    })
+    rag_trace.update(
+        {
+            "tool_used": True,
+            "tool_name": "search_knowledge_base",
+            "query": query,
+            "retrieved_chunks": results,
+            "hitl_targeted_retrieved_chunks": results,
+            "hitl_resumed": True,
+            "hitl_resume_strategy": "targeted_retrieval",
+            "retrieval_stage": "hitl_targeted_retrieval",
+            **retrieval_trace_fields(retrieve_meta),
+        }
+    )
+    state.update(
+        {
+            "query": query,
+            "docs": results,
+            "context": context,
+            "rag_trace": rag_trace,
+        }
+    )
     state.update(grade_documents_node(state))
     return state
 
@@ -1013,20 +1442,85 @@ def _retrieve_resume_query(state: dict) -> dict:
 def resume_rag_from_hitl(
     resume_state: dict,
     user_answer: str,
-    ctx: ChatRequestContext,
+    ctx: RunRequestContext,
 ) -> dict:
-    """Resume a paused RAG run from the HITL breakpoint without re-entering the main graph."""
-    state = _state_from_resume(resume_state, user_answer, ctx)
-    _emit(state, "▶️", "收到 HITL 补充，继续原 RAG 流程", user_answer)
+    checkpoint_thread_id = resume_state.get("checkpoint_thread_id")
+    if not checkpoint_thread_id or checkpoint_thread_id not in _ephemeral_checkpointers:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint 不存在或已失效",
+            status_code=409,
+            stage="hitl_resume",
+        )
+    saver = _ephemeral_checkpointers[checkpoint_thread_id]
+    graph = build_rag_graph(checkpointer=saver)
+    config = {"configurable": {"thread_id": checkpoint_thread_id}}
+    snapshot = graph.get_state(config)
+    try:
+        checkpoint_tenant_id = _required_tenant_id(snapshot.values.get("tenant_id"))
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint 缺少 tenant 上下文",
+            status_code=409,
+            stage="hitl_resume",
+        ) from exc
+    try:
+        request_tenant_id = ctx.require_tenant_id()
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL 恢复缺少 tenant 上下文",
+            status_code=409,
+            stage="hitl_resume",
+        ) from exc
+    if checkpoint_tenant_id != request_tenant_id:
+        raise AppError(
+            ErrorCode.RUN_STATE_CONFLICT,
+            "HITL checkpoint tenant 不匹配",
+            status_code=409,
+            stage="hitl_resume",
+        )
+    runtime_context_id = snapshot.values.get("runtime_context_id")
+    with bind_rag_runtime_context(ctx, runtime_context_id):
+        result = graph.invoke(Command(resume=user_answer), config=config)
+    interrupts = list(result.pop("__interrupt__", []) or [])
+    if interrupts:
+        snapshot = graph.get_state(config)
+        result["hitl_resume_state"] = _build_hitl_resume_state(
+            result,
+            checkpoint_thread_id=checkpoint_thread_id,
+            checkpoint_id=snapshot.config["configurable"].get("checkpoint_id"),
+            interrupt_id=interrupts[0].id,
+        )
+    else:
+        _ephemeral_checkpointers.pop(checkpoint_thread_id, None)
+    return result
 
-    state = _retrieve_resume_query(state)
-    if _is_hitl_result(state):
-        state["hitl_resume_state"] = _build_hitl_resume_state(state)
-    return state
 
-
-def run_rag_graph(question: str, ctx: ChatRequestContext) -> dict:
-    result = rag_graph.invoke(_initial_state(question, ctx))
-    if _is_hitl_result(result):
-        result["hitl_resume_state"] = _build_hitl_resume_state(result)
+def run_rag_graph(question: str, ctx: RunRequestContext) -> dict:
+    checkpoint_thread_id = f"rag_{uuid4().hex}"
+    saver = InMemorySaver()
+    graph = build_rag_graph(checkpointer=saver)
+    config = {"configurable": {"thread_id": checkpoint_thread_id}}
+    with bind_rag_runtime_context(ctx) as runtime_context_id:
+        result = graph.invoke(
+            _initial_state(
+                question,
+                tenant_id=ctx.require_tenant_id(),
+                runtime_context_id=runtime_context_id,
+                model_snapshot=ctx.model_catalog_snapshot(),
+            ),
+            config=config,
+        )
+    interrupts = list(result.pop("__interrupt__", []) or [])
+    if interrupts:
+        snapshot = graph.get_state(config)
+        _ephemeral_checkpointers[checkpoint_thread_id] = saver
+        result["hitl_resume_state"] = _build_hitl_resume_state(
+            result,
+            checkpoint_thread_id=checkpoint_thread_id,
+            checkpoint_id=snapshot.config["configurable"].get("checkpoint_id"),
+            interrupt_id=interrupts[0].id,
+        )
     return result

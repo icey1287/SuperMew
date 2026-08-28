@@ -1,30 +1,71 @@
 import asyncio
 import ast
 import importlib.util
-import sys
-import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
-from backend.chat.request_context import ChatRequestContext
-from backend.tools.knowledge import make_search_knowledge_base
+from backend.runs.request_context import RunRequestContext
+from backend.web_research.contracts import WebEvidence, WebResearchResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
+class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tenant_binding_is_normalized_immutable_and_fail_closed(self):
+        context = RunRequestContext.for_sync(
+            user_id="a",
+            thread_id="s1",
+            tenant_id=" tenant-a ",
+        )
+        tenantless = RunRequestContext.for_sync(user_id="b", thread_id="s2")
+        try:
+            self.assertEqual("tenant-a", context.tenant_id)
+            self.assertEqual("tenant-a", context.require_tenant_id())
+            with self.assertRaises(AttributeError):
+                context.tenant_id = "tenant-b"
+            with self.assertRaisesRegex(ValueError, "tenant_id"):
+                tenantless.require_tenant_id()
+        finally:
+            context.close()
+            tenantless.close()
+
+    async def test_rag_retrieval_snapshot_is_resolved_once_per_context(self):
+        context = RunRequestContext.for_sync(
+            user_id="a",
+            thread_id="s1",
+            tenant_id="tenant-a",
+        )
+        snapshot = object()
+        calls = 0
+
+        def resolve():
+            nonlocal calls
+            calls += 1
+            return snapshot
+
+        try:
+            self.assertIs(
+                snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve)
+            )
+            self.assertIs(
+                snapshot, context.get_or_resolve_rag_retrieval_snapshot(resolve)
+            )
+            self.assertEqual(1, calls)
+        finally:
+            context.close()
+
     async def test_two_request_contexts_do_not_share_rag_steps(self):
         queue_a = asyncio.Queue()
         queue_b = asyncio.Queue()
-        ctx_a = ChatRequestContext.for_stream(
+        ctx_a = RunRequestContext.for_stream(
             user_id="a",
-            session_id="s1",
+            thread_id="s1",
             output_queue=queue_a,
         )
-        ctx_b = ChatRequestContext.for_stream(
+        ctx_b = RunRequestContext.for_stream(
             user_id="b",
-            session_id="s2",
+            thread_id="s2",
             output_queue=queue_b,
         )
 
@@ -57,11 +98,40 @@ class ChatRequestContextTests(unittest.IsolatedAsyncioTestCase):
             ctx_a.close()
             ctx_b.close()
 
+    async def test_web_fetch_capabilities_are_request_owned_and_cannot_rebind(self):
+        ctx_a = RunRequestContext.for_sync(user_id="a", thread_id="s1")
+        ctx_b = RunRequestContext.for_sync(user_id="b", thread_id="s2")
+        evidence = WebEvidence.create(
+            canonical_url="https://research.dev/article",
+            title="Research",
+            snippet="Evidence",
+            content="Evidence body",
+            retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+        )
+        evidence_id = evidence.evidence_id
+        url = evidence.canonical_url
+
+        ctx_a.record_web_search_result(
+            WebResearchResult.create([evidence]),
+            allowed_domains=("research.dev",),
+        )
+
+        self.assertEqual(url, ctx_a.resolve_web_evidence(evidence_id))
+        self.assertEqual(
+            (url, ("research.dev",)),
+            ctx_a.resolve_web_fetch_authorization(evidence_id),
+        )
+        self.assertIsNone(ctx_b.resolve_web_evidence(evidence_id))
+        self.assertNotIn(url, repr(ctx_a))
+
+        ctx_a.close()
+        self.assertIsNone(ctx_a.resolve_web_evidence(evidence_id))
+
 
 class KnowledgeToolFactoryTests(unittest.TestCase):
     def test_knowledge_tool_counter_is_per_context(self):
-        ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
-        ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
+        ctx_a = RunRequestContext.for_sync(user_id="a", thread_id="s1")
+        ctx_b = RunRequestContext.for_sync(user_id="b", thread_id="s2")
 
         try:
             self.assertTrue(ctx_a.acquire_knowledge_tool_slot())
@@ -72,67 +142,26 @@ class KnowledgeToolFactoryTests(unittest.TestCase):
             ctx_a.close()
             ctx_b.close()
 
-    def test_tool_closure_records_trace_to_own_context(self):
-        fake_rag = types.ModuleType("backend.rag")
-        fake_rag.__path__ = []
-        fake_pipeline = types.ModuleType("backend.rag.pipeline")
-
-        def run_rag_graph(query, ctx):
-            return {
-                "docs": [
-                    {
-                        "filename": f"{query}.txt",
-                        "page_number": 1,
-                        "text": f"{query} body",
-                    }
-                ],
-                "rag_trace": {"query": query, "session_id": ctx.session_id},
-            }
-
-        fake_pipeline.run_rag_graph = run_rag_graph
-
-        ctx_a = ChatRequestContext.for_sync(user_id="a", session_id="s1")
-        ctx_b = ChatRequestContext.for_sync(user_id="b", session_id="s2")
-
-        try:
-            tool_a = make_search_knowledge_base(ctx_a)
-            tool_b = make_search_knowledge_base(ctx_b)
-
-            with patch.dict(
-                sys.modules,
-                {
-                    "backend.rag": fake_rag,
-                    "backend.rag.pipeline": fake_pipeline,
-                },
-            ):
-                output_a = tool_a.invoke({"query": "A"})
-                output_b = tool_b.invoke({"query": "B"})
-
-            self.assertIn("A.txt", output_a)
-            self.assertIn("B.txt", output_b)
-            self.assertEqual(ctx_a.take_rag_trace()["rag_trace"]["query"], "A")
-            self.assertEqual(ctx_b.take_rag_trace()["rag_trace"]["query"], "B")
-        finally:
-            ctx_a.close()
-            ctx_b.close()
-
 
 class RouteImportTests(unittest.TestCase):
-    def test_sessions_route_uses_storage_instance(self):
-        path = REPO_ROOT / "backend" / "api" / "routes" / "sessions.py"
-        spec = importlib.util.spec_from_file_location("sessions_route_under_test", path)
-        sessions = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(sessions)
+    def test_thread_route_uses_application_module(self):
+        path = REPO_ROOT / "backend" / "api" / "routes" / "threads.py"
+        spec = importlib.util.spec_from_file_location("threads_route_under_test", path)
+        threads = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(threads)
 
-        self.assertTrue(callable(sessions.storage.list_session_infos))
-        self.assertTrue(callable(sessions.storage.get_session_messages))
-        self.assertTrue(callable(sessions.storage.delete_session))
+        self.assertTrue(callable(threads.thread_service.create_thread))
+        self.assertTrue(callable(threads.thread_service.list_threads))
+        self.assertTrue(callable(threads.thread_service.recent_messages))
+        self.assertTrue(callable(threads.thread_service.delete_thread))
 
 
 class ImportShapeTests(unittest.TestCase):
     def test_backend_imports_do_not_pull_child_modules_from_packages(self):
         backend_root = REPO_ROOT / "backend"
-        files = list(backend_root.rglob("*.py")) + list((REPO_ROOT / "tests").glob("test_*.py"))
+        files = list(backend_root.rglob("*.py")) + list(
+            (REPO_ROOT / "tests").glob("test_*.py")
+        )
         offenders = []
 
         for path in files:
@@ -150,7 +179,9 @@ class ImportShapeTests(unittest.TestCase):
                     child_file = package_path / f"{alias.name}.py"
                     child_package = package_path / alias.name / "__init__.py"
                     if child_file.exists() or child_package.exists():
-                        offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.module}.{alias.name}")
+                        offenders.append(
+                            f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.module}.{alias.name}"
+                        )
 
         self.assertEqual([], offenders)
 

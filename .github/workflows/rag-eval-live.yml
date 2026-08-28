@@ -1,0 +1,62 @@
+name: RAG live quality gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile_id:
+        description: Stable name for the configured model/retrieval profile
+        required: true
+        type: string
+      index_id:
+        description: Immutable test collection/index manifest identity
+        required: true
+        type: string
+      timeout_seconds:
+        description: Per-case live deadline
+        required: true
+        default: "60"
+        type: string
+
+jobs:
+  live-regression:
+    runs-on: [self-hosted, supermew-rag-eval]
+    environment: rag-evaluation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --dev --locked
+      - name: Execute the production RAG Adapter
+        env:
+          PROFILE_ID: ${{ inputs.profile_id }}
+          INDEX_ID: ${{ inputs.index_id }}
+          TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
+        run: |
+          mkdir -p .artifacts/rag-eval
+          BASELINE_ARGS=""
+          if [ -f evals/rag/live_baseline_v1.json ]; then
+            BASELINE_ARGS="--baseline evals/rag/live_baseline_v1.json"
+          fi
+          uv run python scripts/evaluate_rag.py run \
+            --dataset evals/rag/rag_smoke_v1.json \
+            --gates evals/rag/live_gates_v1.json \
+            --observations .artifacts/rag-eval/live-observations.json \
+            --report .artifacts/rag-eval/live-report.json \
+            --markdown .artifacts/rag-eval/live-report.md \
+            --profile-id "$PROFILE_ID" \
+            --index-id "$INDEX_ID" \
+            --timeout-seconds "$TIMEOUT_SECONDS" \
+            $BASELINE_ARGS \
+            --fail-on-regression
+      - name: Upload sanitized live report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-live-report
+          path: |
+            .artifacts/rag-eval/live-observations.json
+            .artifacts/rag-eval/live-report.json
+            .artifacts/rag-eval/live-report.md
+          if-no-files-found: error

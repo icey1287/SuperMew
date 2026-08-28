@@ -5,20 +5,38 @@ build/
 dist/
 wheels/
 *.egg-info
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Virtual environments
-.venv
-.env    
+.venv/
+venv/
 
-#docker files
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime and Docker data
 volumes/
+data/
+.artifacts/
+.worktrees/
+*.log
+*.pid
 
 # OS files
 .DS_Store
-data/
-.worktrees/
 
 # Node / Frontend development
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/

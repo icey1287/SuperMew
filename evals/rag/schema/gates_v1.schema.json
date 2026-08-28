@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "MetricDirection": {
+      "enum": [
+        "higher_is_better",
+        "lower_is_better"
+      ],
+      "title": "MetricDirection",
+      "type": "string"
+    },
+    "RagMetricGate": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/MetricDirection",
+          "default": "higher_is_better"
+        },
+        "max_regression": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Max Regression",
+          "type": "number"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "metric": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Metric",
+          "type": "string"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "metric"
+      ],
+      "title": "RagMetricGate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "critical_no_regression": {
+      "default": true,
+      "title": "Critical No Regression",
+      "type": "boolean"
+    },
+    "k_values": {
+      "default": [
+        5,
+        10
+      ],
+      "items": {
+        "type": "integer"
+      },
+      "title": "K Values",
+      "type": "array"
+    },
+    "metric_gates": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RagMetricGate"
+      },
+      "title": "Metric Gates",
+      "type": "array"
+    },
+    "required_provenance": {
+      "anyOf": [
+        {
+          "enum": [
+            "contract_smoke",
+            "live_rag"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Required Provenance"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "title": "RagEvalGatePolicy",
+  "type": "object"
+}

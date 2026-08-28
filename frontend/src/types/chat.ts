@@ -1,9 +1,33 @@
+import type { RunArtifactState, RunTimelineItem } from '@/events/runEventReducer';
+
+export type { RunEventType, RunEventV1 } from './generated/run-event-v1';
+
 export interface RetrievedChunk {
   filename: string;
+  file_type?: string;
   page_number?: number;
   rrf_rank?: number;
   rerank_score?: number | null;
   text?: string;
+  chunk_id: string;
+  parent_chunk_id?: string;
+  root_chunk_id?: string;
+  chunk_level?: number;
+  chunk_idx?: number;
+  document_id: string;
+  document_version_id: string;
+  section_id: string;
+  index_version: string;
+  content_hash: string;
+  merged_from_children?: boolean;
+  merged_child_count?: number;
+}
+
+export interface RetrievalTargetTrace {
+  collection_name: string;
+  required: boolean;
+  mode: 'hybrid' | 'dense_fallback' | 'missing_optional';
+  hit_count: number;
 }
 
 export interface RagTraceFields {
@@ -13,11 +37,15 @@ export interface RagTraceFields {
   retrieval_stage?: string;
   route?: string;
   retrieval_status?: string;
+  retrieval_outcome?: 'ANSWERABLE' | 'NO_KNOWLEDGE' | 'INSUFFICIENT_EVIDENCE';
   evidence_relevance?: string;
   evidence_answerability?: string;
   evidence_ambiguity?: string;
   evidence_confidence?: number | null;
   evidence_reason?: string;
+  grader_evidence_characters?: number;
+  grader_evidence_omitted_count?: number;
+  grader_evidence_truncated_count?: number;
   missing_slots?: string[];
   hitl_prompt?: string;
   hitl_options?: string[];
@@ -34,6 +62,13 @@ export interface RagTraceFields {
   candidate_k_source?: string;
   retrieval_candidate_multiplier?: number;
   recall_count?: number | null;
+  deduplicated_recall_count?: number | null;
+  retrieval_index_id?: string;
+  retrieval_target_count?: number;
+  retrieval_required_target_count?: number;
+  retrieval_optional_target_count?: number;
+  retrieval_optional_missing_count?: number;
+  retrieval_target_results?: RetrievalTargetTrace[];
   post_merge_candidate_count?: number | null;
   candidate_count?: number | null;
   retrieval_top_k?: number;
@@ -47,12 +82,29 @@ export interface RagTraceFields {
   rerank_enabled?: boolean | null;
   rerank_applied?: boolean | null;
   rerank_model?: string;
-  rerank_error?: string;
+  rerank_error_code?: string;
+  rerank_retryable?: boolean | null;
+  rerank_attempts?: number;
+  rerank_fallback_applied?: boolean | null;
   rerank_timeout_seconds?: number;
   rerank_min_score?: number;
+  rerank_threshold_applied?: boolean | null;
+  rerank_skip_reason?: string | null;
+  rerank_candidate_count?: number;
+  rerank_candidate_limit?: number;
+  rerank_candidate_limit_applied?: boolean | null;
+  rerank_payload_characters?: number;
+  rerank_document_character_limit?: number;
+  rerank_total_character_limit?: number;
+  rerank_truncated_document_count?: number;
   post_rerank_count?: number;
   post_threshold_count?: number;
   retrieval_empty?: boolean;
+  retrieval_degraded_code?: string;
+  provider_error_code?: string;
+  provider_error_stage?: string;
+  coverage_gap_codes?: string[];
+  coverage_gap_questions?: string[];
   rewrite_method?: 'step_back' | 'hyde';
   step_back_question?: string;
   hyde_document?: string;
@@ -66,7 +118,7 @@ export interface RagTraceFields {
   rewrite_retrieved_chunks?: RetrievedChunk[];
 }
 
-export interface RagSubTrace extends RagTraceFields {}
+export type RagSubTrace = RagTraceFields;
 
 export interface RagTrace extends RagTraceFields {
   sub_traces?: RagSubTrace[];
@@ -95,6 +147,9 @@ export interface GroupedRagStep {
 
 export interface HitlRequest {
   id?: string;
+  runId?: string;
+  hitlToken?: string;
+  checkpointId?: string;
   prompt: string;
   options?: string[];
   route?: 'clarify' | 'scope_select' | string;
@@ -103,24 +158,26 @@ export interface HitlRequest {
 }
 
 export interface Message {
+  id?: number;
+  runId?: string;
+  sequence?: number;
+  status?: string;
   text: string;
   isUser: boolean;
   isThinking?: boolean;
   thinkingStartedAt?: number;
+  runActiveDurationMs?: number;
+  runActiveStartedAt?: string | null;
   isHitlRequest?: boolean;
   isHitlAnswer?: boolean;
   hitlPrompt?: string;
   hitlOptions?: string[];
   hitlResumeText?: string;
+  skillName?: string | null;
+  skillVersion?: string | null;
   ragTrace?: RagTrace | null;
   ragSteps?: RagStep[];
+  runTimeline?: RunTimelineItem[];
+  artifacts?: RunArtifactState[];
   _groupedSteps?: GroupedRagStep[];
-}
-
-export interface ChatSession {
-  session_id: string;
-  title?: string;
-  message_count: number;
-  updated_at: string;
-  isStreaming?: boolean;
 }

@@ -6,10 +6,7 @@
         <span>SuperMew Knowledge Copilot</span>
       </div>
       <h2>让每一份知识<br />都有清晰的回声。</h2>
-      <p>
-        混合检索、并行 Agent、证据精排与可追溯引用，
-        现在都汇聚在同一个工作台里。
-      </p>
+      <p>混合检索、并行 Agent、证据精排与可追溯引用， 现在都汇聚在同一个工作台里。</p>
       <div class="auth-feature-list">
         <div>
           <i class="fa-solid fa-magnifying-glass-chart"></i>
@@ -28,16 +25,26 @@
 
     <div class="auth-panel">
       <div class="auth-panel-heading">
-        <span class="auth-mini-logo"><i class="fa-solid fa-cat"></i></span>
+        <span class="auth-mini-logo" aria-hidden="true">
+          <img :src="superMewMark" class="brand-mark-image" alt="" />
+        </span>
         <div>
-          <span class="auth-eyebrow">{{ authStore.authMode === 'login' ? 'Welcome back' : 'Create account' }}</span>
+          <span class="auth-eyebrow">{{
+            authStore.authMode === 'login' ? 'Welcome back' : 'Create account'
+          }}</span>
           <h1>{{ authStore.authMode === 'login' ? '登录喵喵助手' : '注册喵喵助手' }}</h1>
         </div>
       </div>
       <p class="auth-description">
-        {{ authStore.authMode === 'login'
-          ? '进入你的私有知识空间，继续上一次对话。'
-          : '创建账号后即可开始对话和保存历史记录。' }}
+        {{
+          authStore.authMode === 'login'
+            ? '进入你的私有知识空间，继续上一次对话。'
+            : '创建账号后即可开始对话和保存历史记录。'
+        }}
+      </p>
+
+      <p v-if="authStore.authNotice" class="operation-notice" role="status" aria-live="polite">
+        {{ authStore.authNotice }}
       </p>
 
       <form class="auth-form" @submit.prevent="onSubmit">
@@ -45,7 +52,12 @@
           <span>用户名</span>
           <span class="field-input">
             <i class="fa-regular fa-user"></i>
-            <input v-model="authStore.authForm.username" type="text" autocomplete="username" placeholder="请输入用户名" />
+            <input
+              v-model="authStore.authForm.username"
+              type="text"
+              autocomplete="username"
+              placeholder="请输入用户名"
+            />
           </span>
         </label>
 
@@ -90,8 +102,18 @@
         </label>
 
         <button class="auth-submit" type="submit" :disabled="authStore.authLoading">
-          <span>{{ authStore.authLoading ? '正在连接...' : (authStore.authMode === 'login' ? '进入工作台' : '创建账号') }}</span>
-          <i :class="authStore.authLoading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-arrow-right'"></i>
+          <span>{{
+            authStore.authLoading
+              ? '正在连接...'
+              : authStore.authMode === 'login'
+                ? '进入工作台'
+                : '创建账号'
+          }}</span>
+          <i
+            :class="
+              authStore.authLoading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-arrow-right'
+            "
+          ></i>
         </button>
       </form>
 
@@ -106,6 +128,7 @@
 
 <script setup lang="ts">
 import { useAuthStore } from '@/stores/auth';
+import superMewMark from '@/assets/images/supermew-mark.png';
 
 const authStore = useAuthStore();
 

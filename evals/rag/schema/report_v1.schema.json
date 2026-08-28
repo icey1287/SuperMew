@@ -1,0 +1,353 @@
+{
+  "$defs": {
+    "GateStatus": {
+      "enum": [
+        "passed",
+        "failed",
+        "skipped"
+      ],
+      "title": "GateStatus",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "RagEvalCaseResult": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "checks": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "critical": {
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "gold_chunk_count": {
+          "minimum": 0,
+          "title": "Gold Chunk Count",
+          "type": "integer"
+        },
+        "matched_gold_chunk_count": {
+          "minimum": 0,
+          "title": "Matched Gold Chunk Count",
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Metrics",
+          "type": "object"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "provider_error_code": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Error Code"
+        },
+        "provider_error_stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RagProviderErrorStage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provider_failed": {
+          "title": "Provider Failed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "case_id",
+        "critical",
+        "metrics",
+        "checks",
+        "provider_failed",
+        "gold_chunk_count",
+        "matched_gold_chunk_count",
+        "passed"
+      ],
+      "title": "RagEvalCaseResult",
+      "type": "object"
+    },
+    "RagEvalSliceResult": {
+      "additionalProperties": false,
+      "properties": {
+        "case_count": {
+          "minimum": 1,
+          "title": "Case Count",
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RagMetricResult"
+          },
+          "title": "Metrics",
+          "type": "object"
+        }
+      },
+      "required": [
+        "case_count",
+        "metrics"
+      ],
+      "title": "RagEvalSliceResult",
+      "type": "object"
+    },
+    "RagGateResult": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual"
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline"
+        },
+        "baseline_threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Threshold"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metric"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/GateStatus"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "required": [
+        "name",
+        "status"
+      ],
+      "title": "RagGateResult",
+      "type": "object"
+    },
+    "RagMetricResult": {
+      "additionalProperties": false,
+      "properties": {
+        "eligible_cases": {
+          "minimum": 0,
+          "title": "Eligible Cases",
+          "type": "integer"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value",
+        "eligible_cases"
+      ],
+      "title": "RagMetricResult",
+      "type": "object"
+    },
+    "RagProviderErrorStage": {
+      "enum": [
+        "retrieval",
+        "generation",
+        "judge"
+      ],
+      "title": "RagProviderErrorStage",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_count": {
+      "minimum": 1,
+      "title": "Case Count",
+      "type": "integer"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/RagEvalCaseResult"
+      },
+      "title": "Cases",
+      "type": "array"
+    },
+    "dataset_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dataset Fingerprint",
+      "type": "string"
+    },
+    "dataset_name": {
+      "maxLength": 160,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Dataset Name",
+      "type": "string"
+    },
+    "gates": {
+      "items": {
+        "$ref": "#/$defs/RagGateResult"
+      },
+      "title": "Gates",
+      "type": "array"
+    },
+    "metadata": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Metadata",
+      "type": "object"
+    },
+    "metrics": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RagMetricResult"
+      },
+      "title": "Metrics",
+      "type": "object"
+    },
+    "observation_count": {
+      "minimum": 0,
+      "title": "Observation Count",
+      "type": "integer"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "slices": {
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9_.:-]*$": {
+          "$ref": "#/$defs/RagEvalSliceResult"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 160,
+        "minLength": 1
+      },
+      "title": "Slices",
+      "type": "object"
+    },
+    "unavailable_metrics": {
+      "additionalProperties": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Unavailable Metrics",
+      "type": "object"
+    }
+  },
+  "required": [
+    "dataset_name",
+    "dataset_fingerprint",
+    "case_count",
+    "observation_count",
+    "metrics",
+    "slices",
+    "unavailable_metrics",
+    "cases",
+    "gates",
+    "passed"
+  ],
+  "title": "RagEvalReport",
+  "type": "object"
+}

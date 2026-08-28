@@ -7,12 +7,17 @@
         </span>
         <span class="document-details">
           <strong class="document-name">{{ doc.filename }}</strong>
-          <small>{{ doc.file_type }} · 已建立混合索引</small>
+          <small>{{ doc.file_type }} · {{ versionLabel }}</small>
         </span>
       </div>
 
       <span class="document-chunks">{{ doc.chunk_count.toLocaleString() }}</span>
-      <span :class="['document-status', { failed: deleteJob?.status === 'failed' }]">
+      <span
+        :class="[
+          'document-status',
+          { failed: deleteJob?.status === 'failed' || doc.status === 'failed' },
+        ]"
+      >
         <i :class="statusIcon"></i>
         {{ statusLabel }}
       </span>
@@ -20,7 +25,13 @@
       <button
         type="button"
         class="btn-danger"
-        :title="deleteJob?.status === 'failed' ? '重试删除' : '删除文档'"
+        :title="
+          deleteJob?.status === 'failed'
+            ? '重试删除'
+            : deleteJob?.status === 'cleanup_failed'
+              ? '已不可检索，物理清理失败，需管理员受控重试'
+              : '删除文档'
+        "
         :disabled="documentStore.isDeleteActionLocked(doc.filename)"
         @click="onDelete"
       >
@@ -35,11 +46,21 @@
       <button type="button" class="upload-progress-header" @click="onToggleCollapse">
         <span>
           <strong>{{ deleteJob.message || '删除进度' }}</strong>
-          <small>{{ deleteJob.status === 'completed' ? '清理完成' : '正在同步各存储层' }}</small>
+          <small>
+            {{
+              deleteJob.status === 'completed'
+                ? '清理完成'
+                : deleteJob.status === 'cleanup_failed'
+                  ? '检索范围已撤销，物理清理失败，需管理员处理'
+                  : '正在同步各存储层'
+            }}
+          </small>
         </span>
         <span class="upload-toggle">
           {{ deleteJob.collapsed ? '展开' : '收起' }}
-          <i :class="deleteJob.collapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up'"></i>
+          <i
+            :class="deleteJob.collapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up'"
+          ></i>
         </span>
       </button>
 
@@ -89,16 +110,39 @@ const fileTone = computed(() => {
   return 'generic';
 });
 
+const versionLabel = computed(() => {
+  if (props.doc.status === 'updating') return '候选版本构建中，旧版本仍可用';
+  if (props.doc.status === 'indexing' || props.doc.status === 'pending') {
+    return '候选版本构建中';
+  }
+  if (props.doc.status === 'failed') return '候选版本构建失败';
+  if (props.doc.version_number) return `已原子发布 v${props.doc.version_number}`;
+  return '已建立混合索引';
+});
+
 const statusLabel = computed(() => {
   if (deleteJob.value?.status === 'running') return '删除中';
   if (deleteJob.value?.status === 'completed') return '已删除';
+  if (deleteJob.value?.status === 'cleanup_failed') return '已撤销，清理失败';
   if (deleteJob.value?.status === 'failed') return '删除失败';
+  if (props.doc.status === 'updating') return '更新中';
+  if (props.doc.status === 'indexing' || props.doc.status === 'pending') return '构建中';
+  if (props.doc.status === 'failed') return '入库失败';
   return '可检索';
 });
 
 const statusIcon = computed(() => {
   if (deleteJob.value?.status === 'running') return 'fa-solid fa-spinner fa-spin';
   if (deleteJob.value?.status === 'failed') return 'fa-solid fa-triangle-exclamation';
+  if (deleteJob.value?.status === 'cleanup_failed') return 'fa-solid fa-triangle-exclamation';
+  if (
+    props.doc.status === 'updating' ||
+    props.doc.status === 'indexing' ||
+    props.doc.status === 'pending'
+  ) {
+    return 'fa-solid fa-spinner fa-spin';
+  }
+  if (props.doc.status === 'failed') return 'fa-solid fa-triangle-exclamation';
   return 'fa-solid fa-circle-check';
 });
 

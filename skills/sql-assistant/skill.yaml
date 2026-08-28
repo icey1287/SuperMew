@@ -1,0 +1,12 @@
+schema_version: 1
+name: sql-assistant
+version: 1.0.0
+description: Inspect an authorized schema and run bounded read-only SQL analysis.
+allowed_tools:
+  - sql_query
+  - sql_schema
+required_roles:
+  - admin
+required_secrets:
+  - SQL_ASSISTANT_DSN
+entrypoint: SKILL.md

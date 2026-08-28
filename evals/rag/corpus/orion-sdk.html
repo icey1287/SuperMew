@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>Orion SDK</title></head>
+  <body>
+    <h1>Orion Python SDK</h1>
+    <p>只读查询使用 <code>client.get_status(robot_id)</code>。停止单台机器人使用 <code>client.stop(robot_id, reason="operator")</code>；stop 是控制指令，不得由客户端自动重试。</p>
+    <pre><code>status = client.get_status("orion-17")
+if status.error_code == "E17":
+    client.stop("orion-17", reason="sensor_obstruction")</code></pre>
+  </body>
+</html>

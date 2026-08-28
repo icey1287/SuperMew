@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "k_values": [1, 3, 5, 10],
+  "critical_no_regression": true,
+  "required_provenance": "contract_smoke",
+  "metric_gates": [
+    {"metric": "case_pass_rate", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.0, "required": true},
+    {"metric": "complexity_accuracy", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.01, "required": true},
+    {"metric": "document_recall_at_10", "direction": "higher_is_better", "minimum": 0.95, "max_regression": 0.02, "required": true},
+    {"metric": "gold_chunk_coverage", "direction": "higher_is_better", "minimum": 0.95, "max_regression": 0.02, "required": true},
+    {"metric": "hitl_accuracy", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.01, "required": true},
+    {"metric": "hitl_final_outcome_accuracy", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.0, "required": true},
+    {"metric": "hitl_resolution_success_rate", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.0, "required": true},
+    {"metric": "mrr_at_10", "direction": "higher_is_better", "minimum": 0.95, "max_regression": 0.02, "required": true},
+    {"metric": "ndcg_at_10", "direction": "higher_is_better", "minimum": 0.95, "max_regression": 0.02, "required": true},
+    {"metric": "outcome_accuracy", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.01, "required": true},
+    {"metric": "provider_failure_rate", "direction": "lower_is_better", "maximum": 0.0, "max_regression": 0.0, "required": true},
+    {"metric": "recall_at_10", "direction": "higher_is_better", "minimum": 0.95, "max_regression": 0.02, "required": true},
+    {"metric": "rewrite_improvement_rate_at_10", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.0, "required": true},
+    {"metric": "route_accuracy", "direction": "higher_is_better", "minimum": 1.0, "max_regression": 0.01, "required": true}
+  ]
+}

@@ -1,510 +1,813 @@
 import { defineStore } from 'pinia';
+import { watch, type WatchStopHandle } from 'vue';
 import { useAuthStore } from './auth';
-import { useSessionStore } from './sessions';
-import api from '@/utils/api';
+import { useThreadStore } from './threads';
+import { useRunsStore } from './runs';
+import { useCapabilityStore } from './capabilities';
+import type { RunEventState } from '@/events/runEventReducer';
+import { getThreadMessages } from '@/threads/threadClient';
+import type { ThreadMessage } from '@/types/threads';
+import { getPublicError, type PublicRequestError } from '@/utils/api';
 import type { Message, RagStep, GroupedRagStep, HitlRequest, RagTrace } from '@/types/chat';
+import type { CapabilityExecutionMessage } from '@/types/capabilities';
+
+const BUSY_RUN_STATUSES = new Set(['creating', 'queued', 'pending', 'running', 'cancelling']);
+const RECOVERABLE_MESSAGE_STATUSES = new Set(['queued', 'streaming', 'waiting_input']);
+const TERMINAL_MESSAGE_STATUSES = new Set(['completed', 'failed', 'cancelled', 'incomplete']);
+const projectionStops = new WeakMap<object, Map<string, WatchStopHandle>>();
+
+interface ThreadMessagePageState {
+  previousCursor: number | null;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+}
+
+interface SendOptions {
+  approvalConfirmed?: boolean;
+}
+
+function projectionMap(store: object): Map<string, WatchStopHandle> {
+  let stops = projectionStops.get(store);
+  if (!stops) {
+    stops = new Map();
+    projectionStops.set(store, stops);
+  }
+  return stops;
+}
+
+function stopAllProjections(store: object) {
+  const stops = projectionMap(store);
+  stops.forEach((stop) => stop());
+  stops.clear();
+}
+
+function appendPublicError(text: string, error: PublicRequestError): string {
+  const rendered = `[${error.code}] ${error.message}`;
+  return text.trim() ? `${text}\n\n${rendered}` : rendered;
+}
+
+function publicMessageContent(message: ThreadMessage): string {
+  const skillName = message.skill_name?.trim();
+  if (!skillName || message.role !== 'user') return message.content;
+  const activation = `/${skillName}`;
+  if (!message.content.startsWith(activation)) return message.content;
+  const remainder = message.content.slice(activation.length);
+  if (remainder && !/^\s/.test(remainder)) return message.content;
+  const body = remainder.trimStart();
+  if (skillName !== 'sandbox') return body;
+  const jsonStart = body.indexOf('{');
+  if (jsonStart < 0) return body;
+  try {
+    const payload = JSON.parse(body.slice(jsonStart));
+    return typeof payload?.source === 'string' ? payload.source : body;
+  } catch {
+    return body;
+  }
+}
+
+function messageIdentity(message: Message): string {
+  if (message.id !== undefined) return `id:${message.id}`;
+  if (message.sequence !== undefined) return `sequence:${message.sequence}`;
+  return `local:${message.runId || ''}:${message.isUser ? 'user' : 'assistant'}:${message.text}`;
+}
+
+function isTerminalMessage(message: Message | undefined): boolean {
+  return Boolean(message && TERMINAL_MESSAGE_STATUSES.has(String(message.status || '')));
+}
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as Message[],
-    messagesBySession: {} as Record<string, Message[]>,
+    messagesByThread: {} as Record<string, Message[]>,
+    messagePagesByThread: {} as Record<string, ThreadMessagePageState>,
     userInput: '',
-    isLoading: false,
-    activeNav: 'newChat' as 'newChat' | 'history' | 'settings',
-    sessionId: 'session_' + Date.now(),
-    streamingSessionId: null as string | null,
-    abortController: null as AbortController | null,
-    pendingHitlBySession: {} as Record<string, HitlRequest | null>,
+    activeNav: 'newChat' as
+      'newChat' | 'history' | 'settings' | 'models' | 'evaluations' | 'capabilities-admin',
+    threadId: '',
+    isCreatingThread: false,
+    loadingThreadId: '',
+    threadLoadError: '',
   }),
 
   getters: {
-    isViewingStreamingSession(state): boolean {
-      return state.isLoading && state.streamingSessionId === state.sessionId;
+    currentRunStatus(state): string | null {
+      return (
+        useRunsStore().activeForThread(state.threadId)?.status ||
+        useThreadStore().threadById(state.threadId)?.activeRunStatus ||
+        null
+      );
+    },
+
+    currentTransportStatus(state): string | null {
+      return useRunsStore().activeForThread(state.threadId)?.transportStatus || null;
+    },
+
+    currentTransportError(state) {
+      return useRunsStore().activeForThread(state.threadId)?.transportError || null;
+    },
+
+    isResumingHitl(state): boolean {
+      const run = useRunsStore().activeForThread(state.threadId);
+      return useRunsStore().isResumeInFlight(run?.runId);
+    },
+
+    isLoading(state): boolean {
+      const run = useRunsStore().activeForThread(state.threadId);
+      const status = run?.status || useThreadStore().threadById(state.threadId)?.activeRunStatus;
+      return (
+        state.isCreatingThread ||
+        Boolean(state.loadingThreadId && state.loadingThreadId === state.threadId) ||
+        this.isResumingHitl ||
+        BUSY_RUN_STATUSES.has(String(status || ''))
+      );
+    },
+
+    isViewingStreamingThread(state): boolean {
+      const run = useRunsStore().activeForThread(state.threadId);
+      return Boolean(run && BUSY_RUN_STATUSES.has(run.status));
     },
 
     isInputLocked(state): boolean {
-      return state.isLoading && state.streamingSessionId !== state.sessionId;
+      const run = useRunsStore().activeForThread(state.threadId);
+      if (
+        state.isCreatingThread ||
+        Boolean(state.loadingThreadId && state.loadingThreadId === state.threadId)
+      ) {
+        return true;
+      }
+      if (useRunsStore().isResumeInFlight(run?.runId)) return true;
+      if (run) return BUSY_RUN_STATUSES.has(run.status);
+      return Boolean(useThreadStore().threadById(state.threadId)?.activeRunStatus);
+    },
+
+    hasOlderMessages(state): boolean {
+      return Boolean(state.messagePagesByThread[state.threadId]?.hasOlder);
+    },
+
+    isLoadingOlderMessages(state): boolean {
+      return Boolean(state.messagePagesByThread[state.threadId]?.loadingOlder);
     },
 
     currentPendingHitl(state): HitlRequest | null {
-      return state.pendingHitlBySession[state.sessionId] || null;
+      const run = useRunsStore().activeForThread(state.threadId);
+      if (run?.pendingHitl) {
+        return {
+          runId: run.runId,
+          hitlToken: run.pendingHitl.hitlToken || undefined,
+          checkpointId: run.pendingHitl.checkpointId || undefined,
+          prompt: run.pendingHitl.prompt,
+          options: run.pendingHitl.options,
+          route: run.pendingHitl.route || undefined,
+          retrieval_status: run.pendingHitl.retrievalStatus || undefined,
+          original_question: run.pendingHitl.originalQuestion || undefined,
+        };
+      }
+      return null;
     },
 
-    inputPlaceholder(state): string {
-      const pendingHitl = state.pendingHitlBySession[state.sessionId];
-      if (pendingHitl) {
+    inputPlaceholder(): string {
+      if (this.currentPendingHitl) {
         return '输入自定义补充，或选择上方选项后发送...';
       }
+      const skillName = useCapabilityStore().selectedSkillName;
+      if (skillName === 'web-research') return '描述要调研的公开问题、时间范围或来源偏好…';
+      if (skillName === 'sql-assistant') return '描述要分析的业务问题、指标、维度与时间范围…';
+      if (skillName === 'sandbox') return '输入要在隔离 Sandbox 中执行的源码…';
+      if (skillName === 'knowledge-base') return '询问已上传文档，并说明需要引用的范围…';
       return '和喵喵说点什么吧... (Shift+Enter 换行)';
     },
   },
 
   actions: {
     resetWorkspace() {
-      if (this.abortController) {
-        this.abortController.abort();
-      }
+      stopAllProjections(this);
+      const runsStore = useRunsStore();
+      useCapabilityStore().reset();
+      runsStore.disconnectAll();
+      runsStore.$reset();
       this.$reset();
     },
 
-    ensureSessionMessages(sessionId: string): Message[] {
-      if (!this.messagesBySession[sessionId]) {
-        this.messagesBySession[sessionId] = [];
+    ensureThreadMessages(threadId: string): Message[] {
+      if (!this.messagesByThread[threadId]) {
+        this.messagesByThread[threadId] = [];
       }
-      return this.messagesBySession[sessionId];
+      return this.messagesByThread[threadId];
     },
 
-    isHitlTrace(trace?: RagTrace | null): boolean {
-      if (!trace) return false;
-      return trace.retrieval_status === 'needs_clarification'
-        || trace.retrieval_status === 'needs_scope_selection'
-        || trace.route === 'clarify'
-        || trace.route === 'scope_select';
-    },
-
-    normalizeHitlRequest(hitl: any, trace?: RagTrace | null): HitlRequest {
-      const prompt = String(hitl?.prompt || trace?.hitl_prompt || '请补充一个关键信息后我继续查询。');
-      const rawOptions = hitl?.options || trace?.hitl_options || [];
-      const options = Array.isArray(rawOptions)
-        ? rawOptions.map((item) => String(item).trim()).filter(Boolean)
-        : [];
-      return {
-        id: hitl?.id,
-        prompt,
-        options,
-        route: hitl?.route || trace?.route,
-        retrieval_status: hitl?.retrieval_status || trace?.retrieval_status,
-        original_question: hitl?.original_question,
-      };
-    },
-
-    formatHitlText(hitl: HitlRequest): string {
-      const options = hitl.options || [];
-      if (!options.length) return hitl.prompt;
-      return `${hitl.prompt}\n\n可选方向：\n${options.map((item) => `- ${item}`).join('\n')}`;
-    },
-
-    derivePendingHitl(messages: Message[]): HitlRequest | null {
-      const lastMessage = messages[messages.length - 1];
-      if (!lastMessage || lastMessage.isUser || !this.isHitlTrace(lastMessage.ragTrace)) {
-        return null;
+    ensureMessagePage(threadId: string): ThreadMessagePageState {
+      if (!this.messagePagesByThread[threadId]) {
+        this.messagePagesByThread[threadId] = {
+          previousCursor: null,
+          hasOlder: false,
+          loadingOlder: false,
+        };
       }
-      return this.normalizeHitlRequest(
-        {
-          prompt: lastMessage.hitlPrompt || lastMessage.ragTrace?.hitl_prompt || lastMessage.text,
-          options: lastMessage.hitlOptions || lastMessage.ragTrace?.hitl_options || [],
-        },
-        lastMessage.ragTrace
-      );
-    },
-
-    syncPendingHitlFromMessages(sessionId: string) {
-      const pendingHitl = this.derivePendingHitl(this.ensureSessionMessages(sessionId));
-      if (pendingHitl) {
-        this.pendingHitlBySession[sessionId] = pendingHitl;
-      } else {
-        delete this.pendingHitlBySession[sessionId];
-      }
+      return this.messagePagesByThread[threadId];
     },
 
     selectHitlOption(option: string) {
       this.userInput = option;
     },
 
-    setViewedSession(sessionId: string, messages?: Message[]) {
-      if (messages) {
-        this.messagesBySession[sessionId] = messages;
-        this.syncPendingHitlFromMessages(sessionId);
-      }
-      this.sessionId = sessionId;
-      this.messages = this.ensureSessionMessages(sessionId);
-      if (!messages) {
-        this.syncPendingHitlFromMessages(sessionId);
-      }
+    setViewedThread(threadId: string, messages?: Message[]) {
+      if (messages) this.messagesByThread[threadId] = messages;
+      this.threadId = threadId;
+      this.messages = this.ensureThreadMessages(threadId);
       this.activeNav = 'newChat';
+      useCapabilityStore().setActiveThread(threadId || null);
     },
 
-    createSessionId(): string {
-      let nextId = 'session_' + Date.now();
-      while (this.messagesBySession[nextId]) {
-        nextId = 'session_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      }
-      return nextId;
-    },
-
-    getLocalSessionTitle(sessionId: string, messages: Message[]): string {
-      const firstUserMessage = messages.find((msg) => msg.isUser && msg.text.trim());
-      if (!firstUserMessage) return sessionId;
+    getLocalThreadTitle(threadId: string, messages: Message[]): string {
+      const firstUserMessage = messages.find((message) => message.isUser && message.text.trim());
+      if (!firstUserMessage) return threadId;
       const title = firstUserMessage.text.trim();
-      return title.length > 10 ? title.substring(0, 10) + '...' : title;
+      return title.length > 10 ? `${title.substring(0, 10)}...` : title;
     },
 
-    mapServerMessages(messages: any[]): Message[] {
-      let awaitingHitlAnswer = false;
-      let hitlResumeText: string | undefined;
-
-      return (messages || []).map((msg: any) => {
-        const ragTrace = msg.rag_trace || null;
-        const isUser = msg.type === 'human';
-        const isHitlRequest = !isUser && this.isHitlTrace(ragTrace);
-        const isHitlAnswer = isUser && awaitingHitlAnswer;
-        const resumeTextForMessage = !isUser && !isHitlRequest ? hitlResumeText : undefined;
-
-        if (isHitlRequest) {
-          awaitingHitlAnswer = true;
-          hitlResumeText = undefined;
-        } else if (isHitlAnswer) {
-          awaitingHitlAnswer = false;
-          hitlResumeText = msg.content;
-        } else if (!isUser) {
-          hitlResumeText = undefined;
-        }
+    mapServerMessages(messages: ThreadMessage[]): Message[] {
+      return (messages || []).map((message) => {
+        const ragTrace = message.rag_trace || null;
+        const isUser = message.role === 'user';
 
         return {
-          text: msg.content,
+          id: message.id,
+          runId: message.run_id || undefined,
+          sequence: message.sequence,
+          status: message.status,
+          text: publicMessageContent(message),
           isUser,
-          isHitlRequest,
-          isHitlAnswer,
-          hitlPrompt: isHitlRequest ? ragTrace?.hitl_prompt || msg.content : undefined,
-          hitlOptions: isHitlRequest ? ragTrace?.hitl_options || [] : undefined,
-          hitlResumeText: resumeTextForMessage,
+          isThinking: !isUser && ['queued', 'streaming'].includes(String(message.status || '')),
+          isHitlRequest: false,
+          isHitlAnswer: false,
           ragTrace,
+          skillName: message.skill_name || null,
         };
       });
     },
 
-    mergeCachedSessionsIntoHistory() {
-      const sessionStore = useSessionStore();
-      const sessions = sessionStore.sessions.map((session) => ({
-        ...session,
-        isStreaming: this.isLoading && session.session_id === this.streamingSessionId,
-      }));
-
-      Object.entries(this.messagesBySession).forEach(([sessionId, messages]) => {
-        if (!messages.length) return;
-
-        const existingIndex = sessions.findIndex((session) => session.session_id === sessionId);
-        const existing = existingIndex >= 0 ? sessions[existingIndex] : null;
-        const localSession = {
-          session_id: sessionId,
-          title: existing?.title || this.getLocalSessionTitle(sessionId, messages),
-          message_count: Math.max(existing?.message_count || 0, messages.length),
-          updated_at: existing?.updated_at || new Date().toISOString(),
-          isStreaming: this.isLoading && sessionId === this.streamingSessionId,
-        };
-
-        if (existingIndex >= 0) {
-          sessions[existingIndex] = { ...existing, ...localSession };
-        } else {
-          sessions.unshift(localSession);
-        }
+    mergeCachedThreadsIntoHistory() {
+      const threadStore = useThreadStore();
+      const runsStore = useRunsStore();
+      threadStore.threads.forEach((thread) => {
+        const run = runsStore.activeForThread(thread.thread_id);
+        const creating = Boolean(runsStore.pendingCreates[thread.thread_id]);
+        if (creating) threadStore.setRunView(thread.thread_id, null, 'creating');
+        else if (run) threadStore.setRunView(thread.thread_id, run.runId, run.status);
       });
 
-      sessionStore.sessions = sessions;
+      Object.entries(this.messagesByThread).forEach(([threadId, messages]) => {
+        const existing = threadStore.threadById(threadId);
+        if (!existing || !messages.length) return;
+        const localTitle = this.getLocalThreadTitle(threadId, messages);
+        if (!existing.title || existing.title === threadId || existing.title === '新对话') {
+          existing.title = localTitle;
+        }
+        existing.message_count = Math.max(existing.message_count, messages.length);
+      });
     },
 
     appendRagStepToGroups(prev: GroupedRagStep[], step: RagStep): GroupedRagStep[] {
       const groups = prev ? [...prev] : [];
-      const g = step.group || null;
-      const groupLabel = step.group_label || g;
-      
-      if (g) {
-        const idx = groups.findIndex((grp) => grp.group === g);
-        if (idx >= 0) {
-          const existing = groups[idx];
-          const updated: GroupedRagStep = {
+      const group = step.group || null;
+      const groupLabel = step.group_label || group;
+      if (group) {
+        const index = groups.findIndex((item) => item.group === group);
+        if (index >= 0) {
+          const existing = groups[index];
+          groups[index] = {
             group: existing.group,
             label: existing.label || groupLabel,
             steps: [...existing.steps, step],
             collapsed: existing.collapsed,
           };
-          groups[idx] = updated;
           return groups;
         }
-        return [...groups, { group: g, label: groupLabel, steps: [step], collapsed: true }];
+        return [...groups, { group, label: groupLabel, steps: [step], collapsed: true }];
       }
 
-      const last = groups.length > 0 ? groups[groups.length - 1] : null;
-      if (last && last.group === null) {
-        const updated = { ...last, steps: [...last.steps, step] };
-        groups[groups.length - 1] = updated;
+      const last = groups[groups.length - 1];
+      if (last?.group === null) {
+        groups[groups.length - 1] = { ...last, steps: [...last.steps, step] };
         return groups;
       }
       return [...groups, { group: null, label: null, steps: [step], collapsed: false }];
     },
 
     groupRagSteps(steps: RagStep[]): GroupedRagStep[] {
-      if (!steps || !steps.length) return [];
-      return steps.reduce((groups: GroupedRagStep[], step) => this.appendRagStepToGroups(groups, step), []);
+      return (steps || []).reduce(
+        (groups, step) => this.appendRagStepToGroups(groups, step),
+        [] as GroupedRagStep[]
+      );
     },
 
-    toggleStepGroup(msgIndex: number, groupIndex: number) {
-      const msg = this.messages[msgIndex];
-      if (!msg || !msg._groupedSteps || !msg._groupedSteps[groupIndex]) return;
-      msg._groupedSteps[groupIndex].collapsed = !msg._groupedSteps[groupIndex].collapsed;
+    toggleStepGroup(messageIndex: number, groupIndex: number) {
+      const message = this.messages[messageIndex];
+      const group = message?._groupedSteps?.[groupIndex];
+      if (group) group.collapsed = !group.collapsed;
+    },
+
+    projectRunState(run: RunEventState) {
+      const messages = this.ensureThreadMessages(run.threadId);
+      const assistant = messages.find(
+        (message) =>
+          !message.isUser &&
+          (message.runId === run.runId ||
+            (run.assistantMessageId !== null && message.id === run.assistantMessageId))
+      );
+      const user = messages.find(
+        (message) =>
+          message.isUser &&
+          (message.runId === run.runId ||
+            (run.userMessageId !== null && message.id === run.userMessageId))
+      );
+      const preservePersistedTerminal =
+        isTerminalMessage(assistant) &&
+        !TERMINAL_MESSAGE_STATUSES.has(String(run.messageStatus || ''));
+      if (!preservePersistedTerminal || run.terminal) {
+        useThreadStore().setRunView(
+          run.threadId,
+          run.terminal ? null : run.runId,
+          run.terminal ? null : run.status
+        );
+      }
+      if (user) {
+        user.runId = run.runId;
+        if (run.userMessageId !== null) user.id = run.userMessageId;
+      }
+      if (!assistant) return;
+
+      assistant.runId = run.runId;
+      if (run.assistantMessageId !== null) assistant.id = run.assistantMessageId;
+      if (!preservePersistedTerminal) {
+        assistant.status = run.messageStatus || run.status;
+        assistant.isThinking = BUSY_RUN_STATUSES.has(run.status) && !run.messageText;
+        assistant.isHitlRequest = Boolean(run.pendingHitl);
+        assistant.hitlResumeText = run.lastResumeAnswer || assistant.hitlResumeText;
+        assistant.runActiveDurationMs = run.activeDurationMs;
+        assistant.runActiveStartedAt = run.activeStartedAt;
+
+        if (run.pendingHitl) {
+          const hitl: HitlRequest = {
+            runId: run.runId,
+            hitlToken: run.pendingHitl.hitlToken || undefined,
+            checkpointId: run.pendingHitl.checkpointId || undefined,
+            prompt: run.pendingHitl.prompt,
+            options: run.pendingHitl.options,
+            route: run.pendingHitl.route || undefined,
+            retrieval_status: run.pendingHitl.retrievalStatus || undefined,
+            original_question: run.pendingHitl.originalQuestion || undefined,
+          };
+          assistant.text = '';
+          assistant.isThinking = false;
+          assistant.hitlPrompt = hitl.prompt;
+          assistant.hitlOptions = hitl.options || [];
+        } else {
+          assistant.hitlPrompt = undefined;
+          assistant.hitlOptions = undefined;
+          if (run.messageText || run.messageStatus) assistant.text = run.messageText;
+        }
+      }
+
+      if (run.ragTrace) assistant.ragTrace = run.ragTrace as RagTrace;
+      const steps = run.toolProgress.map((item) => item.step as unknown as RagStep);
+      assistant.ragSteps = steps;
+      assistant.runTimeline = run.timeline;
+      assistant.artifacts = run.artifacts;
+      assistant.skillName = run.activeSkillName || assistant.skillName;
+      assistant.skillVersion = run.activeSkillVersion || assistant.skillVersion;
+      assistant._groupedSteps = this.groupRagSteps(steps);
+
+      if (run.terminal && !preservePersistedTerminal) {
+        assistant.isThinking = false;
+        if (!assistant.text && run.error) {
+          assistant.text = appendPublicError('', getPublicError(run.error));
+        }
+      }
+      if (this.threadId === run.threadId) this.messages = messages;
+      this.mergeCachedThreadsIntoHistory();
+    },
+
+    attachRunProjection(runId: string, threadId: string) {
+      const stops = projectionMap(this);
+      if (stops.has(runId)) return;
+      const runsStore = useRunsStore();
+      const stop = watch(
+        () => runsStore.byId[runId],
+        (run) => {
+          if (run?.threadId === threadId) this.projectRunState(run);
+        },
+        { deep: true, immediate: true, flush: 'sync' }
+      );
+      stops.set(runId, stop);
+    },
+
+    async connectRun(runId: string, token: string) {
+      try {
+        await useRunsStore().connect(runId, token);
+      } catch {
+        // Transport state is projected separately; only terminal Run Events may
+        // change the authoritative Message lifecycle.
+      } finally {
+        const run = useRunsStore().byId[runId];
+        if (run) this.projectRunState(run);
+      }
+    },
+
+    async reconnectCurrentRun() {
+      const run = useRunsStore().activeForThread(this.threadId);
+      if (!run || run.terminal || run.status === 'waiting_input') return;
+      await this.connectRun(run.runId, useAuthStore().token);
+    },
+
+    async restoreRunProjection(runId: string, threadId?: string) {
+      const authStore = useAuthStore();
+      const runsStore = useRunsStore();
+      const effectiveThreadId = threadId || this.threadId;
+      this.attachRunProjection(runId, effectiveThreadId);
+      const run = await runsStore.replay(runId, effectiveThreadId, authStore.token);
+      this.projectRunState(run);
+      if (!run.terminal && run.status !== 'waiting_input') {
+        void this.connectRun(runId, authStore.token);
+      }
+      return run;
+    },
+
+    async restoreRecoverableRunsForThread(threadId: string) {
+      const runsStore = useRunsStore();
+      const threadStore = useThreadStore();
+      const messages = this.ensureThreadMessages(threadId);
+      const runIds = Array.from(
+        new Set(
+          messages
+            .filter(
+              (message) =>
+                !message.isUser &&
+                message.runId &&
+                RECOVERABLE_MESSAGE_STATUSES.has(String(message.status || ''))
+            )
+            .map((message) => message.runId as string)
+        )
+      );
+      const activeRunId = threadStore.threadById(threadId)?.activeRunId;
+      if (activeRunId && !runIds.includes(activeRunId)) {
+        const activeAssistant = messages.find(
+          (message) => !message.isUser && message.runId === activeRunId
+        );
+        if (isTerminalMessage(activeAssistant)) {
+          threadStore.setRunView(threadId, null, null);
+        } else {
+          runIds.push(activeRunId);
+        }
+      }
+
+      const restore = async (runId: string) => {
+        try {
+          await this.restoreRunProjection(runId, threadId);
+        } catch (error) {
+          const assistant = this.ensureThreadMessages(threadId).find(
+            (message) => !message.isUser && message.runId === runId
+          );
+          const run =
+            runsStore.byId[runId] ||
+            (isTerminalMessage(assistant) ? null : runsStore.ensure(runId, threadId));
+          if (!run) return;
+          runsStore.setTransport(runId, 'closed', 0, error);
+          this.projectRunState(run);
+        }
+      };
+
+      for (let index = 0; index < runIds.length; index += 4) {
+        await Promise.all(runIds.slice(index, index + 4).map(restore));
+      }
+    },
+
+    async loadThread(threadId: string) {
+      const threadStore = useThreadStore();
+      const cachedMessages = this.messagesByThread[threadId];
+      this.setViewedThread(threadId, cachedMessages || []);
+      threadStore.showHistorySidebar = false;
+      this.loadingThreadId = threadId;
+      this.threadLoadError = '';
+
+      try {
+        const response = await getThreadMessages(threadId, { limit: 200 });
+        const loadedMessages = this.mapServerMessages(response.messages || []);
+        this.messagePagesByThread[threadId] = {
+          previousCursor: response.previous_cursor,
+          hasOlder: response.previous_cursor !== null,
+          loadingOlder: false,
+        };
+        const messagesNewestFirst = [...loadedMessages].reverse();
+        const latestRunMessage =
+          messagesNewestFirst.find((message) => !message.isUser && message.runId) ||
+          messagesNewestFirst.find((message) => message.runId);
+        useCapabilityStore().restoreThreadSkill(latestRunMessage?.skillName ?? null, threadId);
+        this.setViewedThread(threadId, loadedMessages);
+        this.mergeCachedThreadsIntoHistory();
+        await this.restoreRecoverableRunsForThread(threadId);
+      } catch (error) {
+        const publicError = getPublicError(error);
+        this.threadLoadError = publicError.message;
+        if (!cachedMessages && this.threadId === threadId) this.messages = [];
+        if (cachedMessages) await this.restoreRecoverableRunsForThread(threadId);
+        throw publicError;
+      } finally {
+        if (this.loadingThreadId === threadId) this.loadingThreadId = '';
+      }
+    },
+
+    async loadOlderMessages() {
+      const threadId = this.threadId;
+      if (!threadId) return;
+      const page = this.ensureMessagePage(threadId);
+      if (!page.hasOlder || page.loadingOlder || page.previousCursor === null) return;
+
+      page.loadingOlder = true;
+      try {
+        const response = await getThreadMessages(threadId, {
+          before: page.previousCursor,
+          limit: 200,
+        });
+        const current = this.ensureThreadMessages(threadId);
+        const seen = new Set(current.map(messageIdentity));
+        const older = this.mapServerMessages(response.messages || []).filter(
+          (message) => !seen.has(messageIdentity(message))
+        );
+        const merged = [...older, ...current].sort((left, right) => {
+          if (left.sequence === undefined) return 1;
+          if (right.sequence === undefined) return -1;
+          return left.sequence - right.sequence;
+        });
+        this.messagesByThread[threadId] = merged;
+        if (this.threadId === threadId) this.messages = merged;
+        page.previousCursor = response.previous_cursor;
+        page.hasOlder = response.previous_cursor !== null;
+      } catch (error) {
+        throw getPublicError(error);
+      } finally {
+        page.loadingOlder = false;
+      }
+    },
+
+    async createNewThread(title?: string, initialSkillName?: string | null) {
+      if (this.isCreatingThread) return null;
+      const selectedBeforeCreate = this.threadId;
+      this.isCreatingThread = true;
+      try {
+        const thread = await useThreadStore().createThread(title);
+        this.messagesByThread[thread.thread_id] = [];
+        this.messagePagesByThread[thread.thread_id] = {
+          previousCursor: null,
+          hasOlder: false,
+          loadingOlder: false,
+        };
+        if (this.threadId === selectedBeforeCreate) {
+          if (initialSkillName !== undefined) {
+            useCapabilityStore().selectSkill(initialSkillName, thread.thread_id);
+          }
+          this.setViewedThread(thread.thread_id);
+        }
+        return thread;
+      } finally {
+        this.isCreatingThread = false;
+      }
     },
 
     handleNewChat() {
-      const sessionId = this.createSessionId();
-      this.messagesBySession[sessionId] = [];
-      delete this.pendingHitlBySession[sessionId];
-      this.setViewedSession(sessionId);
-      const sessionStore = useSessionStore();
-      sessionStore.showHistorySidebar = false;
+      this.userInput = '';
+      this.threadId = '';
+      this.messages = [];
+      this.activeNav = 'newChat';
+      delete this.messagesByThread[''];
+      delete this.messagePagesByThread[''];
+      useCapabilityStore().setActiveThread(null);
+      useThreadStore().showHistorySidebar = false;
     },
 
-    handleClearChat() {
-      if (this.streamingSessionId === this.sessionId) {
-        alert('当前会话正在生成回答，请先终止或等待完成后再清空');
+    async handleClearChat() {
+      const threadId = this.threadId;
+      if (!threadId) {
+        await this.handleNewChat();
         return;
       }
-      if (confirm('确定要清空当前对话吗？喵？')) {
-        this.messagesBySession[this.sessionId] = [];
-        this.messages = this.messagesBySession[this.sessionId];
-        delete this.pendingHitlBySession[this.sessionId];
-      }
-    },
-
-    async loadSession(sessionId: string) {
-      const sessionStore = useSessionStore();
-      const cachedMessages = this.messagesBySession[sessionId];
-
-      this.setViewedSession(sessionId, cachedMessages || []);
-      sessionStore.showHistorySidebar = false;
-
-      if (sessionId === this.streamingSessionId) {
-        this.mergeCachedSessionsIntoHistory();
+      if (
+        useRunsStore().activeForThread(threadId) ||
+        useThreadStore().threadById(threadId)?.isStreaming
+      ) {
+        alert('当前会话仍有活跃运行，请先终止或等待完成后再清空');
         return;
       }
+      if (!confirm('确定要永久删除当前对话吗？喵？')) return;
 
       try {
-        const response = await api.get(`/sessions/${encodeURIComponent(sessionId)}`);
-        const data = response.data;
-        const loadedMessages = this.mapServerMessages(data.messages || []);
-        this.messagesBySession[sessionId] = loadedMessages;
-        this.syncPendingHitlFromMessages(sessionId);
-        if (this.sessionId === sessionId) {
-          this.messages = loadedMessages;
-        }
-        this.mergeCachedSessionsIntoHistory();
-      } catch (error: any) {
-        const errMsg = error.response?.data?.detail || error.message || '加载会话失败';
-        if (!cachedMessages && this.sessionId === sessionId) {
-          this.messages = [];
-        }
-        throw new Error(errMsg);
+        await useThreadStore().deleteThread(threadId);
+        this.removeThreadState(threadId);
+        this.handleNewChat();
+      } catch (error) {
+        alert(getPublicError(error).message);
       }
     },
 
     handleStop() {
-      if (this.abortController) {
-        this.abortController.abort();
-      }
+      const runsStore = useRunsStore();
+      const activeRun = runsStore.activeForThread(this.threadId);
+      if (!activeRun || activeRun.status === 'cancelling') return;
+      void runsStore.cancel(activeRun.runId, useAuthStore().token).catch((error) => {
+        alert(getPublicError(error).message);
+      });
     },
 
-    async handleSend() {
+    async resumeHitl(hitl: HitlRequest, answer: string) {
+      if (!hitl.runId || !hitl.hitlToken) {
+        alert('当前补充请求缺少可恢复的 Run 身份，请刷新对话后重试。');
+        return;
+      }
       const authStore = useAuthStore();
-      const sessionStore = useSessionStore();
-
-      if (!authStore.isAuthenticated) {
-        alert('请先登录');
+      const runsStore = useRunsStore();
+      const run = runsStore.byId[hitl.runId];
+      if (!run) {
+        alert('运行状态尚未恢复，请刷新会话后重试。');
         return;
-      }
-
-      const text = this.userInput.trim();
-      if (!text) return;
-      if (this.isLoading) {
-        alert('当前已有回答正在生成，请先等待完成或回到该会话终止回答');
-        return;
-      }
-
-      const requestSessionId = this.sessionId;
-      const requestMessages = this.ensureSessionMessages(requestSessionId);
-      const pendingHitlAtSend = this.pendingHitlBySession[requestSessionId] || null;
-      if (this.sessionId === requestSessionId) {
-        this.messages = requestMessages;
-      }
-
-      requestMessages.push({
-        text: text,
-        isUser: true,
-        isHitlAnswer: !!pendingHitlAtSend,
-      });
-      if (pendingHitlAtSend) {
-        delete this.pendingHitlBySession[requestSessionId];
-      }
-
-      if (requestMessages.length === 1) {
-        const tempTitle = this.getLocalSessionTitle(requestSessionId, requestMessages);
-        const existingSession = sessionStore.sessions.find((s) => s.session_id === requestSessionId);
-        if (existingSession) {
-          existingSession.title = existingSession.title || tempTitle;
-          existingSession.message_count = requestMessages.length;
-          existingSession.updated_at = new Date().toISOString();
-          existingSession.isStreaming = true;
-        } else {
-          sessionStore.sessions.unshift({
-            session_id: requestSessionId,
-            title: tempTitle,
-            message_count: requestMessages.length,
-            updated_at: new Date().toISOString(),
-            isStreaming: true,
-          });
-        }
       }
 
       this.userInput = '';
-      this.isLoading = true;
-      this.streamingSessionId = requestSessionId;
-
-      requestMessages.push({
-        text: '',
-        isUser: false,
-        isThinking: true,
-        thinkingStartedAt: Date.now(),
-        hitlResumeText: pendingHitlAtSend ? text : undefined,
-        ragTrace: null,
-        ragSteps: [],
-        _groupedSteps: [],
-      });
-      const botMsgIdx = requestMessages.length - 1;
-      this.mergeCachedSessionsIntoHistory();
-
-      this.abortController = new AbortController();
-      let receivedHitlRequest = false;
-      let streamHadError = false;
+      this.attachRunProjection(hitl.runId, run.threadId);
+      const assistant = this.ensureThreadMessages(run.threadId).find(
+        (message) => !message.isUser && message.runId === hitl.runId
+      );
+      if (assistant) {
+        assistant.hitlResumeText = answer;
+        assistant.isHitlRequest = false;
+        assistant.isThinking = true;
+        assistant.text = run.messageText;
+      }
 
       try {
-        const response = await fetch('/chat/stream', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authStore.token}`,
-          },
-          body: JSON.stringify({
-            message: text,
-            session_id: requestSessionId,
-          }),
-          signal: this.abortController.signal,
+        await runsStore.resume(hitl.runId, {
+          token: authStore.token,
+          hitlToken: hitl.hitlToken,
+          answer,
         });
+      } catch (error) {
+        this.userInput = answer;
+        this.projectRunState(run);
+        const publicError = getPublicError(error);
+        alert(publicError.message);
+      } finally {
+        this.projectRunState(runsStore.byId[hitl.runId] || run);
+      }
+    },
 
-        if (!response.ok) {
-          if (response.status === 401) {
-            authStore.handleLogout();
-            throw new Error('登录已过期，请重新登录');
-          }
-          throw new Error(`HTTP ${response.status}`);
+    async handleSend(options: SendOptions = {}) {
+      const authStore = useAuthStore();
+      const threadStore = useThreadStore();
+      const runsStore = useRunsStore();
+      const capabilityStore = useCapabilityStore();
+      try {
+        if (!authStore.isAuthenticated) {
+          alert('请先登录');
+          return;
         }
 
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error('无法读取响应流');
+        const text = this.userInput.trim();
+        if (!text) return;
+        const pendingHitl = this.currentPendingHitl;
+        if (pendingHitl) {
+          await this.resumeHitl(pendingHitl, text);
+          return;
+        }
+        if (this.isLoading) {
+          alert('当前会话已有回答正在生成，请先等待或终止该运行');
+          return;
+        }
 
-        const decoder = new TextDecoder();
-        let buffer = '';
+        if (capabilityStore.selectedModeUnavailableReason) {
+          alert(
+            capabilityStore.selectedModeUnavailableReason === 'permission_required'
+              ? '当前账号没有使用所选能力的权限，请切换模式。'
+              : '所选能力的运行配置尚未就绪，请切换模式或稍后重试。'
+          );
+          return;
+        }
+        if (capabilityStore.selectedSkill?.approval_tools.length && !options.approvalConfirmed) {
+          try {
+            capabilityStore.openApproval();
+          } catch (error) {
+            alert(getPublicError(error).message);
+          }
+          return;
+        }
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        let executionMessage: CapabilityExecutionMessage;
+        try {
+          executionMessage = capabilityStore.composeExecutionMessage(text);
+        } catch (error) {
+          alert(getPublicError(error).message);
+          return;
+        }
+        const selectedSkillName = capabilityStore.selectedSkill?.name || null;
+        const selectedSkillVersion = capabilityStore.selectedSkill?.version || null;
 
-          buffer += decoder.decode(value, { stream: true });
+        let threadId = this.threadId;
+        if (!threadId) {
+          try {
+            const thread = await this.createNewThread(
+              text.replace(/\s+/g, ' ').slice(0, 32),
+              selectedSkillName
+            );
+            if (!thread) return;
+            threadId = thread.thread_id;
+          } catch (error) {
+            const publicError = getPublicError(error);
+            alert(publicError.message);
+            return;
+          }
+        }
+        const messages = this.ensureThreadMessages(threadId);
+        const optimisticStartIndex = messages.length;
+        const userMessage: Message = {
+          text,
+          isUser: true,
+          status: 'completed',
+          skillName: selectedSkillName,
+          skillVersion: selectedSkillVersion,
+        };
+        const assistantMessage: Message = {
+          text: '',
+          isUser: false,
+          isThinking: true,
+          thinkingStartedAt: Date.now(),
+          status: 'creating',
+          skillName: selectedSkillName,
+          skillVersion: selectedSkillVersion,
+          ragTrace: null,
+          ragSteps: [],
+          runTimeline: [],
+          artifacts: [],
+          _groupedSteps: [],
+        };
+        messages.push(userMessage, assistantMessage);
+        if (this.threadId === threadId) this.messages = messages;
+        this.userInput = '';
+        this.mergeCachedThreadsIntoHistory();
 
-          let eventEndIndex;
-          while ((eventEndIndex = buffer.indexOf('\n\n')) !== -1) {
-            const eventStr = buffer.slice(0, eventEndIndex);
-            buffer = buffer.slice(eventEndIndex + 2);
-
-            if (eventStr.startsWith('data: ')) {
-              const dataStr = eventStr.slice(6);
-              if (dataStr === '[DONE]') continue;
-              try {
-                const data = JSON.parse(dataStr);
-                if (data.type === 'content') {
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) continue;
-                  if (botMsg.isThinking) {
-                    botMsg.isThinking = false;
-                  }
-                  if (botMsg.isHitlRequest) {
-                    continue;
-                  }
-                  botMsg.text += data.content;
-                } else if (data.type === 'trace') {
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (botMsg) {
-                    botMsg.ragTrace = data.rag_trace;
-                  }
-                } else if (data.type === 'hitl_request') {
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) continue;
-                  const hitl = this.normalizeHitlRequest(data.hitl, botMsg.ragTrace);
-                  receivedHitlRequest = true;
-                  this.pendingHitlBySession[requestSessionId] = hitl;
-                  botMsg.isThinking = false;
-                  botMsg.isHitlRequest = true;
-                  botMsg.hitlPrompt = hitl.prompt;
-                  botMsg.hitlOptions = hitl.options || [];
-                  botMsg.text = this.formatHitlText(hitl);
-                } else if (data.type === 'rag_step') {
-                  const msg = requestMessages[botMsgIdx];
-                  if (!msg) continue;
-                  if (!msg.ragSteps) msg.ragSteps = [];
-                  msg.ragSteps.push(data.step);
-                  msg._groupedSteps = this.appendRagStepToGroups(msg._groupedSteps || [], data.step);
-                } else if (data.type === 'session_title') {
-                  const s = sessionStore.sessions.find(
-                    (item) => item.session_id === data.session_id
-                  );
-                  if (s) {
-                    s.title = data.title;
-                    s.updated_at = new Date().toISOString();
-                    s.message_count = requestMessages.length;
-                    s.isStreaming = data.session_id === this.streamingSessionId;
-                  } else {
-                    sessionStore.sessions.unshift({
-                      session_id: data.session_id,
-                      title: data.title,
-                      message_count: requestMessages.length,
-                      updated_at: new Date().toISOString(),
-                      isStreaming: data.session_id === this.streamingSessionId,
-                    });
-                  }
-                } else if (data.type === 'error') {
-                  streamHadError = true;
-                  const botMsg = requestMessages[botMsgIdx];
-                  if (!botMsg) continue;
-                  botMsg.isThinking = false;
-                  botMsg.text += `\n[Error: ${data.content}]`;
-                }
-              } catch (e) {
-                console.warn('SSE parse error:', e);
-              }
+        try {
+          const thread = threadStore.threads.find((item) => item.thread_id === threadId);
+          const startPromise = runsStore.start(
+            {
+              threadId,
+              message: executionMessage.message,
+              token: authStore.token,
+              expectedThreadVersion: thread?.version,
+              multitaskStrategy: 'reject',
+              onDisconnect: 'continue',
+              approvedTools: executionMessage.approvedTools,
+            },
+            ({ reservation, state }) => {
+              capabilityStore.clearApprovalConfirmation();
+              const runId = reservation.runId;
+              userMessage.runId = runId;
+              assistantMessage.runId = runId;
+              if (thread) thread.version = reservation.threadVersion;
+              this.attachRunProjection(runId, threadId);
+              this.projectRunState(state);
             }
+          );
+          this.mergeCachedThreadsIntoHistory();
+          await startPromise;
+        } catch (error) {
+          const publicError = getPublicError(error);
+          if (options.approvalConfirmed && !assistantMessage.runId) {
+            const currentMessages = this.ensureThreadMessages(threadId);
+            currentMessages.splice(optimisticStartIndex, 2);
+            if (this.threadId === threadId) this.messages = currentMessages;
+            this.userInput = text;
+            throw publicError;
           }
-        }
-      } catch (error: any) {
-        streamHadError = true;
-        const botMsg = requestMessages[botMsgIdx];
-        if (!botMsg) return;
-        if (error.name === 'AbortError') {
-          botMsg.isThinking = false;
-          if (!botMsg.text) {
-            botMsg.text = '(已终止回答)';
-          } else {
-            botMsg.text += '\n\n_(回答已被终止)_';
-          }
-        } else {
-          botMsg.isThinking = false;
-          botMsg.text = `喵呜... 出了点问题：${error.message}`;
+          assistantMessage.isThinking = false;
+          assistantMessage.status = 'failed';
+          assistantMessage.text = appendPublicError(assistantMessage.text, publicError);
+        } finally {
+          this.mergeCachedThreadsIntoHistory();
         }
       } finally {
-        if (streamHadError && pendingHitlAtSend && !receivedHitlRequest) {
-          this.pendingHitlBySession[requestSessionId] = pendingHitlAtSend;
-        }
-        this.isLoading = false;
-        this.streamingSessionId = null;
-        this.abortController = null;
-        this.mergeCachedSessionsIntoHistory();
+        if (options.approvalConfirmed) capabilityStore.clearApprovalConfirmation();
       }
+    },
+
+    removeThreadState(threadId: string) {
+      const runsStore = useRunsStore();
+      Object.values(runsStore.byId)
+        .filter((run) => run.threadId === threadId)
+        .forEach((run) => {
+          projectionMap(this).get(run.runId)?.();
+          projectionMap(this).delete(run.runId);
+          runsStore.remove(run.runId);
+        });
+      delete this.messagesByThread[threadId];
+      delete this.messagePagesByThread[threadId];
+      useCapabilityStore().clearThreadSelection(threadId);
     },
   },
 });

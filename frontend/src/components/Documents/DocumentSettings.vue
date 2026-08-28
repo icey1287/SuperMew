@@ -17,6 +17,15 @@
       </button>
     </header>
 
+    <p
+      v-if="documentStore.workspaceNotice"
+      class="operation-notice"
+      role="status"
+      aria-live="polite"
+    >
+      {{ documentStore.workspaceNotice }}
+    </p>
+
     <section class="settings-stats">
       <article>
         <span>文档总数</span>
@@ -63,21 +72,23 @@
         <div v-if="documentStore.documentsLoading" class="loading-indicator">
           <span class="loading-orb"><i class="fa-solid fa-spinner fa-spin"></i></span>
           <strong>正在同步知识库</strong>
-          <p>从 Milvus 读取文档与片段统计。</p>
+          <p>正在读取 Document Catalog 与当前版本统计。</p>
         </div>
 
         <div v-else-if="filteredDocuments.length === 0" class="empty-documents">
-          <span class="empty-icon"><i class="fa-regular fa-folder-open"></i></span>
+          <img
+            v-if="!searchQuery"
+            :src="emptyKnowledge"
+            class="empty-illustration empty-knowledge-illustration"
+            alt=""
+          />
+          <span v-else class="empty-icon"><i class="fa-solid fa-magnifying-glass"></i></span>
           <h3>{{ searchQuery ? '没有匹配的文档' : '知识库还是空的' }}</h3>
           <p>{{ searchQuery ? '换一个关键词试试。' : '从右侧上传第一份资料，让喵喵开始学习。' }}</p>
         </div>
 
         <div v-else class="documents-list">
-          <DocumentItem
-            v-for="doc in filteredDocuments"
-            :key="doc.filename"
-            :doc="doc"
-          />
+          <DocumentItem v-for="doc in filteredDocuments" :key="doc.filename" :doc="doc" />
         </div>
       </section>
 
@@ -91,27 +102,28 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import UploadSection from './UploadSection.vue';
 import DocumentItem from './DocumentItem.vue';
 import { useDocumentStore } from '@/stores/documents';
+import emptyKnowledge from '@/assets/images/empty-knowledge.webp';
 
 const documentStore = useDocumentStore();
 const searchQuery = ref('');
 
-const totalChunks = computed(() => documentStore.documents.reduce(
-  (total, document) => total + Number(document.chunk_count || 0),
-  0
-));
+const totalChunks = computed(() =>
+  documentStore.documents.reduce((total, document) => total + Number(document.chunk_count || 0), 0)
+);
 
 const filteredDocuments = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();
   if (!query) return documentStore.documents;
-  return documentStore.documents.filter((document) =>
-    document.filename.toLowerCase().includes(query)
-    || document.file_type.toLowerCase().includes(query)
+  return documentStore.documents.filter(
+    (document) =>
+      document.filename.toLowerCase().includes(query) ||
+      document.file_type.toLowerCase().includes(query)
   );
 });
 
 const onRefresh = async () => {
   try {
-    await documentStore.loadDocuments();
+    await documentStore.initializeDocumentWorkspace();
   } catch (error: any) {
     alert(error.message);
   }

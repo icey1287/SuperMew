@@ -1,27 +1,38 @@
-import os
 import base64
 import hashlib
 import hmac
-from datetime import datetime, timedelta, timezone
+import os
+import re
+from collections.abc import Generator
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jwt import InvalidTokenError
 from sqlalchemy.orm import Session
 
-from backend.infra.database import SessionLocal
+from backend.auth.access import decode_access_token
+from backend.core.settings import get_settings
 from backend.db.models import User
+from backend.infra.database import SessionLocal
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-secret")
-ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
-ADMIN_INVITE_CODE = os.getenv("ADMIN_INVITE_CODE", "")
-PBKDF2_ROUNDS = int(os.getenv("PASSWORD_PBKDF2_ROUNDS", "310000"))
+_settings = get_settings().security
+ADMIN_INVITE_CODE = _settings.admin_invite_code.get_secret_value()
+PBKDF2_ROUNDS = _settings.password_pbkdf2_rounds
+
+_BCRYPT_SHA256_V1_RE = re.compile(
+    r"^\$bcrypt-sha256\$(?P<type>2[ab]),(?P<rounds>\d{1,2})"
+    r"\$(?P<salt>[^$]{22})\$(?P<digest>[^$]{31})$"
+)
+_BCRYPT_SHA256_V2_RE = re.compile(
+    r"^\$bcrypt-sha256\$v=2,t=(?P<type>2b),r=(?P<rounds>\d{1,2})"
+    r"\$(?P<salt>[^$]{22})\$(?P<digest>[^$]{31})$"
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
@@ -33,7 +44,6 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
     if not plain_password or not password_hash:
         return False
 
-    # New format: pbkdf2_sha256$<rounds>$<salt_b64>$<digest_b64>
     if password_hash.startswith("pbkdf2_sha256$"):
         try:
             _, rounds, salt_b64, digest_b64 = password_hash.split("$", 3)
@@ -49,15 +59,16 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
         except Exception:
             return False
 
-    # Backward compatibility for legacy passlib/bcrypt hashes.
-    if password_hash.startswith("$2") or password_hash.startswith("$bcrypt"):
+    if password_hash.startswith("$2"):
         try:
-            from passlib.context import CryptContext
-
-            legacy_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
-            return legacy_context.verify(plain_password, password_hash)
-        except Exception:
+            return bcrypt.checkpw(
+                plain_password.encode("utf-8")[:72],
+                password_hash.encode("ascii"),
+            )
+        except (TypeError, ValueError, UnicodeError):
             return False
+    if password_hash.startswith("$bcrypt-sha256$"):
+        return _verify_legacy_bcrypt_sha256(plain_password, password_hash)
 
     return False
 
@@ -78,14 +89,36 @@ def get_password_hash(password: str) -> str:
     return f"pbkdf2_sha256${PBKDF2_ROUNDS}${salt_b64}${digest_b64}"
 
 
-def create_access_token(username: str, role: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {
-        "sub": username,
-        "role": role,
-        "exp": expire,
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+def _verify_legacy_bcrypt_sha256(plain_password: str, password_hash: str) -> bool:
+    match = _BCRYPT_SHA256_V2_RE.fullmatch(password_hash)
+    version = 2
+    if match is None:
+        match = _BCRYPT_SHA256_V1_RE.fullmatch(password_hash)
+        version = 1
+    if match is None:
+        return False
+
+    try:
+        rounds = int(match.group("rounds"))
+        if not 4 <= rounds <= 31:
+            return False
+        salt = match.group("salt")
+        password_bytes = plain_password.encode("utf-8")
+        if version == 1:
+            digest = hashlib.sha256(password_bytes).digest()
+        else:
+            digest = hmac.new(
+                salt.encode("ascii"),
+                password_bytes,
+                hashlib.sha256,
+            ).digest()
+        prehash = base64.b64encode(digest)
+        bcrypt_hash = (
+            f"${match.group('type')}${rounds:02d}${salt}{match.group('digest')}"
+        ).encode("ascii")
+        return bcrypt.checkpw(prehash, bcrypt_hash)
+    except (TypeError, ValueError, UnicodeError):
+        return False
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
@@ -94,21 +127,22 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
         return None
     if not verify_password(password, user.password_hash):
         return None
+    if not user.password_hash.startswith("pbkdf2_sha256$"):
+        user.password_hash = get_password_hash(password)
     return user
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无效或过期的认证令牌",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        if not username:
-            raise credentials_exception
-    except JWTError:
+        username = decode_access_token(token).username
+    except InvalidTokenError:
         raise credentials_exception
 
     user = db.query(User).filter(User.username == username).first()
@@ -119,7 +153,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员权限不足")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="管理员权限不足"
+        )
     return current_user
 
 
@@ -127,6 +163,9 @@ def resolve_role(requested_role: str | None, admin_code: str | None) -> str:
     role = (requested_role or "user").strip().lower()
     if role != "admin":
         return "user"
-    if ADMIN_INVITE_CODE and admin_code == ADMIN_INVITE_CODE:
+    if ADMIN_INVITE_CODE and hmac.compare_digest(
+        admin_code or "",
+        ADMIN_INVITE_CODE,
+    ):
         return "admin"
     raise HTTPException(status_code=403, detail="管理员邀请码错误")

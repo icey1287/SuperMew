@@ -2,7 +2,7 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <div class="logo-icon" aria-hidden="true">
-        <i class="fa-solid fa-cat"></i>
+        <img :src="superMewMark" class="brand-mark-image" alt="" />
       </div>
       <div class="brand-copy">
         <h1>喵喵助手</h1>
@@ -32,14 +32,25 @@
       <button
         type="button"
         :class="['nav-btn', { active: chatStore.activeNav === 'history' }]"
-        aria-label="历史会话"
+        aria-label="历史对话"
         @click="onHistory"
       >
         <i class="fa-solid fa-clock-rotate-left"></i>
-        <span>历史会话</span>
-        <small v-if="sessionStore.sessions.length" class="nav-count">
-          {{ sessionStore.sessions.length }}
+        <span>历史对话</span>
+        <small v-if="threadStore.threads.length" class="nav-count">
+          {{ threadStore.threads.length }}
         </small>
+      </button>
+      <button
+        v-if="authStore.isAuthenticated"
+        type="button"
+        :class="['nav-btn', { active: capabilityStore.centerOpen }]"
+        aria-label="能力中心"
+        @click="capabilityStore.openCenter"
+      >
+        <i class="fa-solid fa-wand-magic-sparkles"></i>
+        <span>能力中心</span>
+        <small class="nav-shortcut">⌘K</small>
       </button>
       <button
         v-if="authStore.isAdmin"
@@ -51,30 +62,64 @@
         <i class="fa-regular fa-bookmark"></i>
         <span>知识库</span>
       </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
+        :class="['nav-btn', { active: chatStore.activeNav === 'models' }]"
+        aria-label="模型中心"
+        @click="onModels"
+      >
+        <i class="fa-solid fa-microchip"></i>
+        <span>模型中心</span>
+      </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
+        :class="['nav-btn', { active: chatStore.activeNav === 'capabilities-admin' }]"
+        aria-label="Skill 与 Tool 管理"
+        @click="onCapabilitiesAdmin"
+      >
+        <i class="fa-solid fa-puzzle-piece"></i>
+        <span>Skill / Tool</span>
+      </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
+        :class="['nav-btn', { active: chatStore.activeNav === 'evaluations' }]"
+        aria-label="RAG 评估"
+        @click="onEvaluations"
+      >
+        <i class="fa-solid fa-flask-vial"></i>
+        <span>RAG 评估</span>
+      </button>
     </nav>
 
     <template v-if="authStore.isAuthenticated">
-      <div class="sidebar-section-label">最近会话</div>
+      <div class="sidebar-section-label">最近对话</div>
       <div class="sidebar-recents">
         <button
-          v-for="session in recentSessions"
-          :key="session.session_id"
+          v-for="thread in recentThreads"
+          :key="thread.thread_id"
           type="button"
-          :class="['recent-session', { active: session.session_id === chatStore.sessionId }]"
-          @click="onLoadSession(session.session_id)"
+          :class="['recent-thread', { active: thread.thread_id === chatStore.threadId }]"
+          @click="onLoadThread(thread.thread_id)"
         >
           <span class="recent-dot" aria-hidden="true"></span>
           <span class="recent-copy">
-            <strong>{{ session.title || '未命名会话' }}</strong>
+            <strong>{{ thread.title || '未命名对话' }}</strong>
             <small>
-              {{ session.isStreaming ? '生成中' : session.message_count + ' 条消息' }}
-              · {{ formatRelativeTime(session.updated_at) }}
+              {{ threadStatusLabel(thread) }}
+              · {{ formatRelativeTime(thread.updated_at) }}
             </small>
           </span>
         </button>
 
-        <div v-if="!recentSessions.length" class="recent-empty">
-          还没有历史会话，问喵喵一个问题吧。
+        <p v-if="threadStore.historyError" class="sidebar-operation-notice" role="status">
+          对话同步失败：{{ threadStore.historyError }}
+        </p>
+
+        <div v-if="!recentThreads.length" class="recent-empty">
+          还没有历史对话，问喵喵一个问题吧。
         </div>
       </div>
     </template>
@@ -95,11 +140,29 @@
           <small>{{ roleLabel }}</small>
         </span>
         <span class="user-actions">
-          <button type="button" title="清空当前对话" aria-label="清空当前对话" @click="chatStore.handleClearChat">
+          <button
+            type="button"
+            title="清空当前对话"
+            aria-label="清空当前对话"
+            :disabled="threadStore.isDeletingThread(chatStore.threadId)"
+            @click="chatStore.handleClearChat"
+          >
             <i class="fa-regular fa-trash-can"></i>
           </button>
-          <button type="button" title="退出登录" aria-label="退出登录" @click="onLogout">
-            <i class="fa-solid fa-arrow-right-from-bracket"></i>
+          <button
+            type="button"
+            title="退出登录"
+            aria-label="退出登录"
+            :disabled="authStore.authLoading"
+            @click="onLogout"
+          >
+            <i
+              :class="
+                authStore.authLoading
+                  ? 'fa-solid fa-spinner fa-spin'
+                  : 'fa-solid fa-arrow-right-from-bracket'
+              "
+            ></i>
           </button>
         </span>
       </div>
@@ -112,7 +175,10 @@ import { computed, watch } from 'vue';
 import ThemeToggle from '@/components/ThemeToggle.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
-import { useSessionStore } from '@/stores/sessions';
+import { useThreadStore } from '@/stores/threads';
+import { useCapabilityStore } from '@/stores/capabilities';
+import type { ThreadListItem } from '@/types/threads';
+import superMewMark from '@/assets/images/supermew-mark.png';
 
 defineProps<{
   theme: 'dark' | 'light';
@@ -124,51 +190,52 @@ defineEmits<{
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
-const sessionStore = useSessionStore();
+const threadStore = useThreadStore();
+const capabilityStore = useCapabilityStore();
 
-const recentSessions = computed(() => sessionStore.sessions.slice(0, 4));
+const recentThreads = computed(() => threadStore.threads.slice(0, 4));
 
 const workspaceMeta = computed(() => {
   if (!authStore.isAuthenticated) return '登录后连接私有知识';
-  return (sessionStore.sessions.length || 0) + ' 个会话 · 私有';
+  return (threadStore.threads.length || 0) + ' 个对话 · 私有';
 });
 
-const roleLabel = computed(() => authStore.currentUser?.role === 'admin' ? '管理员' : '普通用户');
+const roleLabel = computed(() => (authStore.currentUser?.role === 'admin' ? '管理员' : '普通用户'));
 
 const userInitials = computed(() => {
   const name = authStore.currentUser?.username || 'ME';
   return name.slice(0, 2).toUpperCase();
 });
 
-const refreshSessions = async () => {
+const refreshThreads = async () => {
   if (!authStore.isAuthenticated) return;
   try {
-    await sessionStore.fetchSessions();
-    chatStore.mergeCachedSessionsIntoHistory();
-  } catch (error) {
-    console.warn('加载历史会话失败', error);
+    await threadStore.fetchThreads();
+    chatStore.mergeCachedThreadsIntoHistory();
+  } catch {
+    threadStore.historyError ||= '最近对话同步失败，请稍后重试';
   }
 };
 
 watch(
   () => authStore.isAuthenticated,
   (isAuthenticated) => {
-    if (isAuthenticated) refreshSessions();
+    if (isAuthenticated) refreshThreads();
   },
   { immediate: true }
 );
 
 const onNewChat = () => {
-  chatStore.handleNewChat();
+  void chatStore.handleNewChat();
 };
 
 const onHistory = async () => {
   chatStore.activeNav = 'history';
-  sessionStore.showHistorySidebar = !sessionStore.showHistorySidebar;
-  if (sessionStore.showHistorySidebar) {
+  threadStore.showHistorySidebar = !threadStore.showHistorySidebar;
+  if (threadStore.showHistorySidebar) {
     try {
-      await sessionStore.fetchSessions();
-      chatStore.mergeCachedSessionsIntoHistory();
+      await threadStore.fetchThreads();
+      chatStore.mergeCachedThreadsIntoHistory();
     } catch (error: any) {
       alert(error.message);
     }
@@ -181,20 +248,56 @@ const onSettings = () => {
     return;
   }
   chatStore.activeNav = 'settings';
-  sessionStore.showHistorySidebar = false;
+  threadStore.showHistorySidebar = false;
 };
 
-const onLoadSession = async (sessionId: string) => {
+const onModels = () => {
+  if (!authStore.isAdmin) {
+    alert('仅管理员可访问模型中心');
+    return;
+  }
+  chatStore.activeNav = 'models';
+  threadStore.showHistorySidebar = false;
+};
+
+const onCapabilitiesAdmin = () => {
+  if (!authStore.isAdmin) {
+    alert('仅管理员可访问 Skill 与 Tool 管理');
+    return;
+  }
+  capabilityStore.closeCenter();
+  chatStore.activeNav = 'capabilities-admin';
+  threadStore.showHistorySidebar = false;
+};
+
+const onEvaluations = () => {
+  if (!authStore.isAdmin) {
+    alert('仅管理员可访问 RAG 评估');
+    return;
+  }
+  chatStore.activeNav = 'evaluations';
+  threadStore.showHistorySidebar = false;
+};
+
+const onLoadThread = async (threadId: string) => {
   try {
-    await chatStore.loadSession(sessionId);
+    await chatStore.loadThread(threadId);
   } catch (error: any) {
-    alert('加载会话失败：' + error.message);
+    alert('加载对话失败：' + error.message);
   }
 };
 
-const onLogout = () => {
-  sessionStore.showHistorySidebar = false;
-  authStore.handleLogout();
+const onLogout = async () => {
+  capabilityStore.reset();
+  threadStore.showHistorySidebar = false;
+  await authStore.handleLogout();
+};
+
+const threadStatusLabel = (thread: ThreadListItem) => {
+  if (thread.activeRunStatus === 'waiting_input') return '等待补充';
+  if (thread.activeRunStatus === 'cancelling') return '终止中';
+  if (thread.isStreaming) return '生成中';
+  return `${thread.message_count} 条消息`;
 };
 
 const formatRelativeTime = (value: string) => {

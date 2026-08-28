@@ -7,12 +7,36 @@
       <Sidebar :theme="theme" @toggle-theme="toggleTheme" />
 
       <main class="main-content">
-        <AuthPanel v-if="!authStore.isAuthenticated" />
+        <section
+          v-if="!authStore.authResolved"
+          class="auth-page auth-restore-page"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="auth-panel auth-restore-panel">
+            <span class="auth-mini-logo" aria-hidden="true">
+              <img :src="superMewMark" class="brand-mark-image" alt="" />
+            </span>
+            <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+            <h1>正在恢复登录状态</h1>
+            <p>正在安全连接你的私有知识空间…</p>
+          </div>
+        </section>
+
+        <AuthPanel v-else-if="!authStore.isAuthenticated" />
 
         <template v-else>
           <DocumentSettings v-if="chatStore.activeNav === 'settings'" />
-          <HistorySidebar />
-          <ChatArea v-show="chatStore.activeNav !== 'settings'" />
+          <ModelCenter v-else-if="chatStore.activeNav === 'models'" />
+          <CapabilityAdmin v-else-if="chatStore.activeNav === 'capabilities-admin'" />
+          <RagEvaluationWorkbench v-else-if="chatStore.activeNav === 'evaluations'" />
+          <template v-else>
+            <HistorySidebar />
+            <ChatArea />
+          </template>
+          <CapabilityCenter />
+          <CommandPalette />
+          <ApprovalDialog />
         </template>
       </main>
     </div>
@@ -20,20 +44,50 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
 import Sidebar from '@/components/Sidebar.vue';
 import AuthPanel from '@/components/AuthPanel.vue';
-import HistorySidebar from '@/components/HistorySidebar.vue';
-import ChatArea from '@/components/Chat/ChatArea.vue';
-import DocumentSettings from '@/components/Documents/DocumentSettings.vue';
 
 import { useAuthStore } from '@/stores/auth';
 import { useChatStore } from '@/stores/chat';
-import { useSessionStore } from '@/stores/sessions';
+import { useThreadStore } from '@/stores/threads';
+import { useRunsStore } from '@/stores/runs';
+import { useCapabilityStore } from '@/stores/capabilities';
+import { useCapabilityAdminStore } from '@/stores/capabilityAdmin';
+import { useModelStore } from '@/stores/models';
+import { useEvaluationStore } from '@/stores/evaluations';
+import superMewMark from '@/assets/images/supermew-mark.png';
+
+const HistorySidebar = defineAsyncComponent(() => import('@/components/HistorySidebar.vue'));
+const ChatArea = defineAsyncComponent(() => import('@/components/Chat/ChatArea.vue'));
+const DocumentSettings = defineAsyncComponent(
+  () => import('@/components/Documents/DocumentSettings.vue')
+);
+const ModelCenter = defineAsyncComponent(() => import('@/components/Models/ModelCenter.vue'));
+const CapabilityAdmin = defineAsyncComponent(
+  () => import('@/components/Capabilities/CapabilityAdmin.vue')
+);
+const RagEvaluationWorkbench = defineAsyncComponent(
+  () => import('@/components/Evaluations/RagEvaluationWorkbench.vue')
+);
+const CapabilityCenter = defineAsyncComponent(
+  () => import('@/components/Capabilities/CapabilityCenter.vue')
+);
+const CommandPalette = defineAsyncComponent(
+  () => import('@/components/Capabilities/CommandPalette.vue')
+);
+const ApprovalDialog = defineAsyncComponent(
+  () => import('@/components/Capabilities/ApprovalDialog.vue')
+);
 
 const authStore = useAuthStore();
 const chatStore = useChatStore();
-const sessionStore = useSessionStore();
+const threadStore = useThreadStore();
+const runsStore = useRunsStore();
+const capabilityStore = useCapabilityStore();
+const capabilityAdminStore = useCapabilityAdminStore();
+const modelStore = useModelStore();
+const evaluationStore = useEvaluationStore();
 
 type Theme = 'dark' | 'light';
 
@@ -57,28 +111,48 @@ watch(
   (username, previousUsername) => {
     if (username === previousUsername) return;
     chatStore.resetWorkspace();
-    sessionStore.$reset();
+    threadStore.$reset();
+    modelStore.reset();
+    evaluationStore.reset();
+    capabilityAdminStore.reset();
+    if (username) void capabilityStore.fetchCatalog().catch(() => undefined);
   }
 );
 
 const handleUnauthorized = () => {
-  authStore.handleLogout();
+  authStore.clearSession();
   alert('登录已过期，请重新登录');
+};
+
+const handleGlobalShortcut = (event: KeyboardEvent) => {
+  if (!authStore.isAuthenticated) return;
+  if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
+    event.preventDefault();
+    if (capabilityStore.approvalOpen) return;
+    capabilityStore.togglePalette();
+  }
+};
+
+const handleCapabilitySelected = () => {
+  chatStore.activeNav = 'newChat';
+  threadStore.showHistorySidebar = false;
 };
 
 onMounted(async () => {
   window.addEventListener('unauthorized', handleUnauthorized);
-  
-  if (authStore.token) {
-    try {
-      await authStore.fetchMe();
-    } catch (_) {
-      authStore.handleLogout();
-    }
+  window.addEventListener('keydown', handleGlobalShortcut);
+  window.addEventListener('capability-selected', handleCapabilitySelected);
+  await authStore.restoreSession();
+  if (authStore.isAuthenticated && !capabilityStore.catalog && !capabilityStore.loading) {
+    void capabilityStore.fetchCatalog().catch(() => undefined);
   }
 });
 
 onUnmounted(() => {
   window.removeEventListener('unauthorized', handleUnauthorized);
+  window.removeEventListener('keydown', handleGlobalShortcut);
+  window.removeEventListener('capability-selected', handleCapabilitySelected);
+  runsStore.disconnectAll();
+  evaluationStore.stopPolling();
 });
 </script>

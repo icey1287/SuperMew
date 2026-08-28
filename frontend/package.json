@@ -3,28 +3,52 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0",
+    "npm": ">=10.0.0"
+  },
+  "packageManager": "npm@10.9.7",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "build": "npm run typecheck && vite build",
+    "build:check": "npm run build && npm run bundle:size",
+    "bundle:size": "node scripts/check-bundle-size.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "npm run test:unit",
+    "test:unit": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:install": "playwright install chromium",
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^6.4.0",
-    "axios": "^1.6.0",
+    "axios": "^1.18.1",
+    "dompurify": "^3.4.12",
     "highlight.js": "^11.7.0",
     "marked": "^9.1.0",
     "pinia": "^2.1.0",
-    "vue": "^3.3.0"
+    "vue": "^3.5.40"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.1",
     "@types/marked": "^4.3.0",
-    "@types/node": "^20.0.0",
-    "@vitejs/plugin-vue": "^4.2.0",
-    "sass": "^1.63.0",
-    "typescript": "^5.0.0",
-    "vite": "^4.3.0",
-    "vitest": "^0.34.6",
-    "vue-tsc": "^3.3.4"
+    "@types/node": "^22.20.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.9.2",
+    "globals": "^17.7.0",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.9.5",
+    "sass": "^1.101.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.64.0",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^3.3.7"
   }
 }

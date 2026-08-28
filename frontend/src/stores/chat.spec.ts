@@ -1,388 +1,1193 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearAuthSession, installAuthSession } from '@/auth/session';
+import { connectRunEventStream, createRunEventStream } from '@/events/runEventStream';
+import { cancelRun, createRun, getRun, getRunEvents, resumeRun } from '@/runs/runClient';
+import { createThread, deleteThread, getThreadMessages } from '@/threads/threadClient';
+import type { RunEventType, RunEventV1 } from '@/types/chat';
 import { useAuthStore } from './auth';
 import { useChatStore } from './chat';
-import { useSessionStore } from './sessions';
-import api from '@/utils/api';
+import { useRunsStore } from './runs';
+import { useThreadStore } from './threads';
+import { useCapabilityStore } from './capabilities';
 
-vi.mock('@/utils/api', () => ({
-  default: {
-    get: vi.fn(),
-    delete: vi.fn(),
-  },
+vi.mock('@/runs/runClient', () => ({
+  cancelRun: vi.fn(),
+  createIdempotencyKey: vi.fn((scope: string) => `${scope}_stable_key`),
+  createRun: vi.fn(),
+  getRun: vi.fn(),
+  getRunEvents: vi.fn(),
+  resumeRun: vi.fn(),
 }));
 
-type PendingRead = {
-  resolve: (value: ReadableStreamReadResult<Uint8Array>) => void;
-  reject: (reason?: unknown) => void;
-};
+vi.mock('@/events/runEventStream', () => ({
+  connectRunEventStream: vi.fn(),
+  createRunEventStream: vi.fn(),
+}));
 
-const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
+vi.mock('@/threads/threadClient', () => ({
+  createThread: vi.fn(),
+  deleteThread: vi.fn(),
+  getThreadMessages: vi.fn(),
+  listThreads: vi.fn(),
+}));
 
-const createLocalStorageMock = () => {
-  const store = new Map<string, string>();
-  return {
-    getItem: vi.fn((key: string) => store.get(key) || null),
-    setItem: vi.fn((key: string, value: string) => {
-      store.set(key, value);
-    }),
-    removeItem: vi.fn((key: string) => {
-      store.delete(key);
-    }),
-    clear: vi.fn(() => {
-      store.clear();
-    }),
-  };
-};
+type StreamOptions = Parameters<typeof connectRunEventStream>[0];
+type CreateStreamOptions = Parameters<typeof createRunEventStream>[0];
 
-const createAbortError = () => {
-  if (typeof DOMException !== 'undefined') {
-    return new DOMException('The operation was aborted.', 'AbortError');
-  }
-  const error = new Error('The operation was aborted.');
-  error.name = 'AbortError';
-  return error;
-};
-
-const createControlledSseFetch = () => {
-  const encoder = new TextEncoder();
-  const chunks: Uint8Array[] = [];
-  const pendingReads: PendingRead[] = [];
-  let closed = false;
-
-  const reader = {
-    read: vi.fn(() => {
-      if (chunks.length) {
-        return Promise.resolve({ done: false, value: chunks.shift() });
-      }
-      if (closed) {
-        return Promise.resolve({ done: true, value: undefined });
-      }
-      return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
-        pendingReads.push({ resolve, reject });
-      });
-    }),
-  };
-
-  const resolveNextRead = (value: ReadableStreamReadResult<Uint8Array>) => {
-    const pending = pendingReads.shift();
-    if (pending) {
-      pending.resolve(value);
-    } else if (!value.done && value.value) {
-      chunks.push(value.value);
-    }
-  };
-
-  const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
-    init?.signal?.addEventListener('abort', () => {
-      closed = true;
-      const abortError = createAbortError();
-      pendingReads.splice(0).forEach((pending) => pending.reject(abortError));
-    });
-
-    return Promise.resolve({
-      ok: true,
-      status: 200,
-      body: {
-        getReader: () => reader,
-      },
-    } as unknown as Response);
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
   });
+  return { promise, resolve, reject };
+}
 
+function event(
+  runId: string,
+  threadId: string,
+  sequence: number,
+  type: RunEventType,
+  data: Record<string, unknown> = {}
+): RunEventV1 {
   return {
-    fetchMock,
-    pushEvent(event: object) {
-      resolveNextRead({
-        done: false,
-        value: encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
-      });
-    },
-    close() {
-      closed = true;
-      resolveNextRead({ done: true, value: undefined });
-    },
+    schema_version: 1,
+    event_id: `evt_${runId}_${sequence}`,
+    sequence,
+    run_id: runId,
+    thread_id: threadId,
+    type,
+    timestamp: '2026-07-16T00:00:00Z',
+    data,
   };
-};
+}
 
-const setupStores = () => {
+function runRecord(runId = 'run_1', threadId = 'thread-1', status = 'pending') {
+  return {
+    id: runId,
+    thread_id: threadId,
+    status,
+    idempotency_key: 'run_stable_key',
+    request_hash: 'hash',
+    multitask_strategy: 'reject',
+    fencing_token: 1,
+    user_message_id: Number(runId.replace(/\D/g, '') || '1') * 10 + 1,
+    assistant_message_id: Number(runId.replace(/\D/g, '') || '1') * 10 + 2,
+    model_name: 'test-model',
+    on_disconnect: 'continue',
+    input_tokens: 0,
+    output_tokens: 0,
+    cost: '0',
+    created_at: '2026-07-16T00:00:00Z',
+    updated_at: '2026-07-16T00:00:00Z',
+  } as any;
+}
+
+function threadDetail(threadId = 'thread-1') {
+  return {
+    thread_id: threadId,
+    title: '新对话',
+    message_count: 0,
+    version: 0,
+    thread_status: 'active',
+    active_run_id: null,
+    active_run_status: null,
+    created_at: '2026-07-16T00:00:00Z',
+    updated_at: '2026-07-16T00:00:00Z',
+  };
+}
+
+function threadListItem(threadId = 'thread-1') {
+  return {
+    ...threadDetail(threadId),
+    activeRunId: null,
+    activeRunStatus: null,
+    isStreaming: false,
+  };
+}
+
+function threadMessage(
+  sequence: number,
+  role: 'user' | 'assistant' | 'system',
+  content: string,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    id: sequence,
+    run_id: null,
+    sequence,
+    status: 'completed',
+    role,
+    content,
+    timestamp: `2026-07-16T00:00:${String(sequence).padStart(2, '0')}Z`,
+    rag_trace: null,
+    ...overrides,
+  } as any;
+}
+
+function createLocalStorageMock() {
+  const values = new Map<string, string>();
+  return {
+    getItem: vi.fn((key: string) => values.get(key) || null),
+    setItem: vi.fn((key: string, value: string) => values.set(key, value)),
+    removeItem: vi.fn((key: string) => values.delete(key)),
+    clear: vi.fn(() => values.clear()),
+  };
+}
+
+function setupStores(threadId = 'thread-1') {
   setActivePinia(createPinia());
-
+  installAuthSession({
+    access_token: 'test-token',
+    username: 'tester',
+    role: 'user',
+  });
   const authStore = useAuthStore();
-  authStore.token = 'test-token';
-  authStore.currentUser = { username: 'tester', role: 'user' };
-
   const chatStore = useChatStore();
-  chatStore.setViewedSession('session_current', []);
-
+  const threadStore = useThreadStore();
+  if (threadId) threadStore.threads = [threadListItem(threadId)];
+  chatStore.setViewedThread(threadId, []);
   return {
     authStore,
     chatStore,
-    sessionStore: useSessionStore(),
+    runsStore: useRunsStore(),
+    threadStore,
+    capabilityStore: useCapabilityStore(),
   };
-};
+}
 
-describe('chat store streaming sessions', () => {
+function installCapabilityCatalog() {
+  const store = useCapabilityStore();
+  store.catalog = {
+    schema_version: 1,
+    catalog_hash: 'a'.repeat(64),
+    skills: [
+      {
+        name: 'web-research',
+        version: '1.0.0',
+        description: 'Research public web evidence.',
+        activation: '/web-research',
+        available: true,
+        availability_reason: null,
+        required_roles: [],
+        tool_names: ['web_search', 'web_fetch'],
+        approval_tools: [],
+        network_policies: ['restricted'],
+        resource_scopes: ['public-web'],
+      },
+      {
+        name: 'sandbox',
+        version: '1.0.0',
+        description: 'Execute isolated code.',
+        activation: '/sandbox',
+        available: true,
+        availability_reason: null,
+        required_roles: ['admin'],
+        tool_names: ['sandbox_execute'],
+        approval_tools: ['sandbox_execute'],
+        network_policies: ['none'],
+        resource_scopes: ['code-execution'],
+      },
+    ],
+    tools: [],
+  };
+  return store;
+}
+
+function installControlledStreams() {
+  const connections = new Map<
+    string,
+    {
+      options: StreamOptions | CreateStreamOptions;
+      result: ReturnType<typeof deferred<number>>;
+      create: boolean;
+    }
+  >();
+  vi.mocked(connectRunEventStream).mockImplementation((options) => {
+    const result = deferred<number>();
+    connections.set(options.runId, { options, result, create: false });
+    options.onOpen?.(options.after || 0);
+    return result.promise;
+  });
+  vi.mocked(createRunEventStream).mockImplementation(async (options) => {
+    const runId =
+      options.threadId === 'thread-2' || options.request.approved_tools?.includes('sandbox_execute')
+        ? 'run_2'
+        : 'run_1';
+    const reservation = {
+      runId,
+      threadId: options.threadId,
+      threadVersion: 2,
+    };
+    const result = deferred<number>();
+    connections.set(runId, { options, result, create: true });
+    return {
+      reservation,
+      connect: () => result.promise,
+    };
+  });
+  return {
+    connections,
+    emit(runId: string, item: RunEventV1) {
+      connections.get(runId)?.options.onEvent(item);
+    },
+    finish(runId: string, sequence: number) {
+      connections.get(runId)?.result.resolve(sequence);
+    },
+  };
+}
+
+const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe('durable chat projection', () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
+    clearAuthSession();
+    vi.clearAllMocks();
     vi.stubGlobal('localStorage', createLocalStorageMock());
     vi.stubGlobal('alert', vi.fn());
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+    vi.mocked(createThread).mockResolvedValue(threadDetail());
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [],
+      previous_cursor: null,
+    });
   });
 
-  it('clears account-scoped chat state when the authenticated workspace changes', () => {
-    const { chatStore } = setupStores();
-    const previousSessionId = chatStore.sessionId;
-
-    chatStore.messagesBySession.session_current = [
-      { text: '上一个账号的消息', isUser: true },
-    ];
-    chatStore.messages = chatStore.messagesBySession.session_current;
-    chatStore.userInput = '未发送的草稿';
-    chatStore.activeNav = 'settings';
-    chatStore.pendingHitlBySession.session_current = {
-      prompt: '请补充信息',
-      options: [],
-    };
+  it('clears account-scoped messages, Run state, and local stream ownership', () => {
+    const { chatStore, runsStore } = setupStores();
+    chatStore.messagesByThread['thread-1'] = [{ text: '旧账号消息', isUser: true }];
+    chatStore.messages = chatStore.messagesByThread['thread-1'];
+    chatStore.userInput = '草稿';
+    runsStore.ensure('run_1', 'thread-1').status = 'running';
 
     chatStore.resetWorkspace();
 
+    expect(chatStore.messagesByThread).toEqual({});
     expect(chatStore.messages).toEqual([]);
-    expect(chatStore.messagesBySession).toEqual({});
     expect(chatStore.userInput).toBe('');
-    expect(chatStore.activeNav).toBe('newChat');
-    expect(chatStore.pendingHitlBySession).toEqual({});
-    expect(chatStore.sessionId).not.toBe(previousSessionId);
+    expect(runsStore.byId).toEqual({});
   });
 
-  it('creates a local history session with the user message and thinking placeholder immediately', async () => {
-    const stream = createControlledSseFetch();
-    vi.stubGlobal('fetch', stream.fetchMock);
-    const { chatStore, sessionStore } = setupStores();
+  it('creates a server-owned Thread before the first durable Run', async () => {
+    const streams = installControlledStreams();
+    vi.mocked(createThread).mockResolvedValue(threadDetail('thread-server'));
+    const { chatStore } = setupStores('');
+    chatStore.userInput = '第一条问题';
 
-    chatStore.userInput = '帮我总结一下文档';
-    const sendPromise = chatStore.handleSend();
+    const sending = chatStore.handleSend();
     await flushPromises();
 
-    expect(sessionStore.sessions[0]).toMatchObject({
-      session_id: 'session_current',
-      isStreaming: true,
+    expect(createThread).toHaveBeenCalledWith({ title: '第一条问题' });
+    expect(createRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-server',
+        request: expect.objectContaining({ expected_thread_version: 0 }),
+        token: 'test-token',
+      })
+    );
+    expect(chatStore.threadId).toBe('thread-server');
+
+    streams.emit('run_1', event('run_1', 'thread-server', 1, 'run.created'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-server', 2, 'message.completed', { content: '第一条回答' })
+    );
+    streams.emit('run_1', event('run_1', 'thread-server', 3, 'run.completed'));
+    streams.finish('run_1', 3);
+    await sending;
+  });
+
+  it('returns from history to a local draft without creating an empty Thread', async () => {
+    const { chatStore, threadStore } = setupStores('thread-1');
+    chatStore.activeNav = 'history';
+    threadStore.showHistorySidebar = true;
+
+    await chatStore.handleNewChat();
+
+    expect(createThread).not.toHaveBeenCalled();
+    expect(threadStore.threads.map((thread) => thread.thread_id)).toEqual(['thread-1']);
+    expect(chatStore.threadId).toBe('');
+    expect(chatStore.messages).toEqual([]);
+    expect(chatStore.activeNav).toBe('newChat');
+    expect(threadStore.showHistorySidebar).toBe(false);
+  });
+
+  it('keeps the user-facing prompt clean while activating Web Research for the Run', async () => {
+    const streams = installControlledStreams();
+    const { chatStore } = setupStores();
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('web-research');
+    chatStore.userInput = '核验今天的公开发布信息';
+
+    const sending = chatStore.handleSend();
+    await flushPromises();
+
+    expect(createRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        request: expect.objectContaining({
+          message: '/web-research\n核验今天的公开发布信息',
+          approved_tools: [],
+        }),
+        token: 'test-token',
+      })
+    );
+    expect(chatStore.messages[0]).toMatchObject({
+      text: '核验今天的公开发布信息',
+      skillName: 'web-research',
     });
-    expect(chatStore.messagesBySession.session_current).toHaveLength(2);
-    expect(chatStore.messagesBySession.session_current[0]).toMatchObject({
-      text: '帮我总结一下文档',
+
+    streams.emit('run_1', event('run_1', 'thread-1', 1, 'run.created'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 2, 'message.completed', { content: '研究完成' })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 3, 'run.completed'));
+    streams.finish('run_1', 3);
+    await sending;
+  });
+
+  it('opens a real pre-Run approval flow before sending Sandbox source', async () => {
+    const streams = installControlledStreams();
+    const { chatStore } = setupStores();
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('sandbox');
+    capabilityStore.setSandboxLanguage('python');
+    chatStore.userInput = 'print(6 * 7)';
+
+    await chatStore.handleSend();
+
+    expect(capabilityStore.approvalOpen).toBe(true);
+    expect(createRunEventStream).not.toHaveBeenCalled();
+
+    capabilityStore.confirmPendingApproval();
+    const sending = chatStore.handleSend({ approvalConfirmed: true });
+    await flushPromises();
+
+    expect(createRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        request: expect.objectContaining({
+          message: expect.stringContaining('"source": "print(6 * 7)"'),
+          approved_tools: ['sandbox_execute'],
+        }),
+        token: 'test-token',
+      })
+    );
+    expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
+
+    streams.emit('run_2', event('run_2', 'thread-1', 1, 'run.created'));
+    streams.emit(
+      'run_2',
+      event('run_2', 'thread-1', 2, 'message.completed', { content: '输出 42' })
+    );
+    streams.emit('run_2', event('run_2', 'thread-1', 3, 'run.completed'));
+    streams.finish('run_2', 3);
+    await sending;
+  });
+
+  it('restores an approved Sandbox draft when Run creation fails before reservation', async () => {
+    vi.mocked(createRunEventStream).mockRejectedValue({
+      code: 'SERVICE_UNAVAILABLE',
+      message: '运行服务暂不可用',
+      retryable: true,
+      category: 'run',
+    });
+    const { chatStore } = setupStores();
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('sandbox');
+    chatStore.userInput = 'print("retry")';
+    capabilityStore.openApproval();
+    capabilityStore.confirmPendingApproval();
+
+    await expect(chatStore.handleSend({ approvalConfirmed: true })).rejects.toMatchObject({
+      code: 'SERVICE_UNAVAILABLE',
+    });
+
+    expect(chatStore.userInput).toBe('print("retry")');
+    expect(chatStore.messages).toEqual([]);
+    expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
+  });
+
+  it('clears approved Sandbox state when creating the first Thread fails', async () => {
+    vi.mocked(createThread).mockRejectedValue({
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'Thread 服务暂不可用',
+      retryable: true,
+      category: 'thread',
+    });
+    const { chatStore } = setupStores('');
+    const capabilityStore = installCapabilityCatalog();
+    capabilityStore.selectSkill('sandbox');
+    chatStore.userInput = 'print("new thread")';
+    capabilityStore.openApproval();
+    capabilityStore.confirmPendingApproval();
+
+    await chatStore.handleSend({ approvalConfirmed: true });
+
+    expect(createRunEventStream).not.toHaveBeenCalled();
+    expect(chatStore.userInput).toBe('print("new thread")');
+    expect(capabilityStore.pendingApprovalDraft?.confirmed).toBe(false);
+    expect(alert).toHaveBeenCalledWith('Thread 服务暂不可用');
+  });
+
+  it('authoritatively deletes the current Thread before returning to a local draft', async () => {
+    vi.mocked(deleteThread).mockResolvedValue({
+      thread_id: 'thread-1',
+      message: '成功删除 Thread',
+    });
+    const { chatStore, threadStore } = setupStores();
+    chatStore.messagesByThread['thread-1'] = [{ text: '旧消息', isUser: true }];
+    chatStore.messages = chatStore.messagesByThread['thread-1'];
+
+    await chatStore.handleClearChat();
+
+    expect(deleteThread).toHaveBeenCalledWith('thread-1');
+    expect(createThread).not.toHaveBeenCalled();
+    expect(chatStore.threadId).toBe('');
+    expect(chatStore.messages).toEqual([]);
+    expect(chatStore.messagesByThread['thread-1']).toBeUndefined();
+    expect(threadStore.threads).toEqual([]);
+  });
+
+  it('keeps the current Thread intact when authoritative deletion reports an active Run', async () => {
+    vi.mocked(deleteThread).mockRejectedValue({
+      code: 'RUN_ACTIVE',
+      message: 'Thread 仍有活跃 Run',
+      retryable: false,
+      category: 'thread',
+    });
+    const { chatStore, threadStore } = setupStores();
+    chatStore.messagesByThread['thread-1'] = [{ text: '仍需保留', isUser: true }];
+    chatStore.messages = chatStore.messagesByThread['thread-1'];
+
+    await chatStore.handleClearChat();
+
+    expect(createThread).not.toHaveBeenCalled();
+    expect(chatStore.threadId).toBe('thread-1');
+    expect(chatStore.messages[0].text).toBe('仍需保留');
+    expect(threadStore.threads[0].thread_id).toBe('thread-1');
+    expect(alert).toHaveBeenCalledWith('Thread 仍有活跃 Run');
+  });
+
+  it('locks input from canonical active Run metadata until the Run is restored', () => {
+    const { chatStore, threadStore } = setupStores();
+    threadStore.threads[0].active_run_id = 'run-server';
+    threadStore.threads[0].active_run_status = 'running';
+    threadStore.threads[0].activeRunId = 'run-server';
+    threadStore.threads[0].activeRunStatus = 'running';
+    threadStore.threads[0].isStreaming = true;
+
+    expect(chatStore.currentRunStatus).toBe('running');
+    expect(chatStore.isInputLocked).toBe(true);
+    expect(chatStore.isViewingStreamingThread).toBe(false);
+  });
+
+  it('clears stale active Run metadata when the newer durable Message is terminal', async () => {
+    const { chatStore, threadStore } = setupStores();
+    threadStore.threads[0].active_run_id = 'run-server';
+    threadStore.threads[0].active_run_status = 'running';
+    threadStore.threads[0].activeRunId = 'run-server';
+    threadStore.threads[0].activeRunStatus = 'running';
+    threadStore.threads[0].isStreaming = true;
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '问题', { run_id: 'run-server' }),
+        threadMessage(2, 'assistant', '完成回答', {
+          run_id: 'run-server',
+          status: 'completed',
+        }),
+      ],
+      previous_cursor: null,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    expect(threadStore.threads[0]).toMatchObject({
+      activeRunId: null,
+      activeRunStatus: null,
+      isStreaming: false,
+    });
+    expect(chatStore.isInputLocked).toBe(false);
+    expect(getRunEvents).not.toHaveBeenCalled();
+  });
+
+  it('restores an active Run missing from the latest Message page', async () => {
+    const { chatStore, threadStore } = setupStores();
+    threadStore.threads[0].active_run_id = 'run-server';
+    threadStore.threads[0].active_run_status = 'running';
+    threadStore.threads[0].activeRunId = 'run-server';
+    threadStore.threads[0].activeRunStatus = 'running';
+    threadStore.threads[0].isStreaming = true;
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [],
+      previous_cursor: null,
+    });
+    vi.mocked(getRunEvents).mockResolvedValue({
+      events: [
+        event('run-server', 'thread-1', 1, 'run.created', { status: 'pending' }),
+        event('run-server', 'thread-1', 2, 'run.started'),
+      ],
+      next_after: 2,
+    });
+    vi.mocked(connectRunEventStream).mockResolvedValue(2);
+
+    await chatStore.loadThread('thread-1');
+
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledWith(
+      'run-server',
+      'test-token',
+      expect.objectContaining({ after: 0 })
+    );
+    expect(connectRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-server', threadId: 'thread-1', after: 2 })
+    );
+  });
+
+  it('restores the persisted Skill when reopening a Thread', async () => {
+    const { chatStore, capabilityStore } = setupStores();
+    installCapabilityCatalog();
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '/web-research\n旧问题', {
+          run_id: 'run-history',
+          skill_name: 'web-research',
+        }),
+        threadMessage(2, 'assistant', '旧回答', {
+          run_id: 'run-history',
+          skill_name: 'web-research',
+        }),
+      ],
+      previous_cursor: null,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    expect(capabilityStore.selectedSkillName).toBe('web-research');
+    expect(chatStore.messages[0].skillName).toBe('web-research');
+    expect(chatStore.messages[0].text).toBe('旧问题');
+  });
+
+  it('treats the latest general Run as an explicit null Skill selection', async () => {
+    const { chatStore, capabilityStore } = setupStores();
+    installCapabilityCatalog();
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '/web-research\n旧问题', {
+          run_id: 'run-web',
+          skill_name: 'web-research',
+        }),
+        threadMessage(2, 'assistant', '旧回答', {
+          run_id: 'run-web',
+          skill_name: 'web-research',
+        }),
+        threadMessage(3, 'user', '最新通用问题', {
+          run_id: 'run-general',
+          skill_name: null,
+        }),
+        threadMessage(4, 'assistant', '最新通用回答', {
+          run_id: 'run-general',
+          skill_name: null,
+        }),
+      ],
+      previous_cursor: null,
+    });
+    await chatStore.loadThread('thread-1');
+
+    expect(capabilityStore.selectedSkillName).toBeNull();
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).not.toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'loads a persisted %s Message without querying its terminal Run',
+    async (messageStatus) => {
+      const runId = `run-${messageStatus}`;
+      const content = `${messageStatus} 持久正文`;
+      const { chatStore, runsStore } = setupStores();
+      vi.mocked(getThreadMessages).mockResolvedValue({
+        messages: [
+          threadMessage(1, 'user', '问题', { run_id: runId }),
+          threadMessage(2, 'assistant', content, {
+            run_id: runId,
+            status: messageStatus,
+          }),
+        ],
+        previous_cursor: null,
+      });
+      await chatStore.loadThread('thread-1');
+
+      expect(chatStore.messages[1]).toMatchObject({
+        status: messageStatus,
+        isThinking: false,
+        text: content,
+      });
+      expect(runsStore.byId[runId]).toBeUndefined();
+      expect(getRun).not.toHaveBeenCalled();
+      expect(getRunEvents).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'keeps a persisted %s Message authoritative when on-demand Event replay fails',
+    async (messageStatus) => {
+      const runId = `run-${messageStatus}`;
+      const content = `${messageStatus} 持久正文`;
+      const { chatStore } = setupStores();
+      vi.mocked(getThreadMessages).mockResolvedValue({
+        messages: [
+          threadMessage(1, 'user', '问题', { run_id: runId }),
+          threadMessage(2, 'assistant', content, {
+            run_id: runId,
+            status: messageStatus,
+          }),
+        ],
+        previous_cursor: null,
+      });
+      vi.mocked(getRunEvents).mockRejectedValue(new TypeError('offline journal'));
+
+      await chatStore.loadThread('thread-1');
+      await expect(chatStore.restoreRunProjection(runId, 'thread-1')).rejects.toThrow(
+        'offline journal'
+      );
+
+      expect(chatStore.messages[1]).toMatchObject({
+        status: messageStatus,
+        isThinking: false,
+        text: content,
+      });
+      expect(getRun).not.toHaveBeenCalled();
+      expect(getRunEvents).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('loads terminal Run timeline and Artifacts on demand without a Run metadata hop', async () => {
+    const { chatStore } = setupStores();
+    vi.mocked(getThreadMessages).mockResolvedValue({
+      messages: [
+        threadMessage(1, 'user', '生成报告', { run_id: 'run-terminal' }),
+        threadMessage(2, 'assistant', '报告完成', {
+          run_id: 'run-terminal',
+          status: 'completed',
+        }),
+      ],
+      previous_cursor: null,
+    });
+    vi.mocked(getRunEvents).mockResolvedValue({
+      events: [
+        event('run-terminal', 'thread-1', 1, 'run.created', { status: 'pending' }),
+        event('run-terminal', 'thread-1', 2, 'run.started'),
+        event('run-terminal', 'thread-1', 3, 'tool.started', {
+          tool_name: 'sandbox_execute',
+          tool_call_id: 'call-terminal',
+        }),
+        event('run-terminal', 'thread-1', 4, 'tool.completed', {
+          tool_name: 'sandbox_execute',
+          tool_call_id: 'call-terminal',
+          duration_ms: 20,
+          guardrail_decision: 'ALLOW',
+          reason_code: 'ALLOWED',
+        }),
+        event('run-terminal', 'thread-1', 5, 'artifact.created', {
+          artifact_id: 'art_terminal',
+          name: 'report.json',
+          media_type: 'application/json',
+          uri: '/api/artifacts/art_terminal',
+          tool_name: 'sandbox_execute',
+          tool_call_id: 'call-terminal',
+        }),
+        event('run-terminal', 'thread-1', 6, 'message.completed', {
+          content: '报告完成',
+          status: 'completed',
+        }),
+        event('run-terminal', 'thread-1', 7, 'run.completed'),
+      ] as any,
+      next_after: 7,
+    });
+
+    await chatStore.loadThread('thread-1');
+
+    let assistant = chatStore.messages.find((message) => !message.isUser);
+    expect(assistant?.runTimeline).toBeUndefined();
+    expect(assistant?.artifacts).toBeUndefined();
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).not.toHaveBeenCalled();
+
+    await chatStore.restoreRunProjection('run-terminal', 'thread-1');
+
+    assistant = chatStore.messages.find((message) => !message.isUser);
+    expect(assistant?.runTimeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'tool:call-terminal',
+          status: 'completed',
+          guardrailDecision: 'ALLOW',
+        }),
+      ])
+    );
+    expect(assistant?.artifacts).toEqual([
+      expect.objectContaining({ artifactId: 'art_terminal', name: 'report.json' }),
+    ]);
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledOnce();
+    expect(connectRunEventStream).not.toHaveBeenCalled();
+  });
+
+  it('creates optimistic messages, reserves a durable Run, and projects final authority', async () => {
+    const streams = installControlledStreams();
+    const { chatStore, threadStore } = setupStores();
+    chatStore.userInput = '帮我总结文档';
+
+    const sending = chatStore.handleSend();
+    await flushPromises();
+
+    expect(chatStore.messages).toHaveLength(2);
+    expect(chatStore.messages[0]).toMatchObject({
+      runId: 'run_1',
+      text: '帮我总结文档',
       isUser: true,
     });
-    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
-      text: '',
-      isUser: false,
+    expect(chatStore.messages[1]).toMatchObject({
+      runId: 'run_1',
       isThinking: true,
     });
-
-    stream.close();
-    await sendPromise;
-  });
-
-  it('keeps streaming chunks on the originating session after viewing another history session', async () => {
-    const stream = createControlledSseFetch();
-    vi.stubGlobal('fetch', stream.fetchMock);
-    vi.mocked(api.get).mockResolvedValue({
-      data: {
-        messages: [
-          {
-            type: 'human',
-            content: '旧问题',
-            timestamp: '2026-07-08T00:00:00',
-          },
-          {
-            type: 'ai',
-            content: '旧回答',
-            timestamp: '2026-07-08T00:00:01',
-          },
-        ],
-      },
+    expect(chatStore.messages[0].id).toBeUndefined();
+    expect(chatStore.messages[1].id).toBeUndefined();
+    expect(threadStore.threads[0]).toMatchObject({
+      thread_id: 'thread-1',
+      isStreaming: true,
     });
+    expect(createRun).not.toHaveBeenCalled();
+    expect(connectRunEventStream).not.toHaveBeenCalled();
+    expect(createRunEventStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        request: expect.objectContaining({
+          message: '帮我总结文档',
+          multitask_strategy: 'reject',
+          on_disconnect: 'continue',
+          approved_tools: [],
+        }),
+        token: 'test-token',
+      })
+    );
 
-    const { chatStore } = setupStores();
-    chatStore.userInput = '新的问题';
-    const sendPromise = chatStore.handleSend();
-    await flushPromises();
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        status: 'pending',
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
+    expect(chatStore.messages[0].id).toBe(11);
+    expect(chatStore.messages[1].id).toBe(12);
+    streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'message.delta', {
+        content: '临时片段',
+      })
+    );
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'message.completed', {
+        content: '最终回答',
+        status: 'completed',
+        rag_trace: { retrieval_outcome: 'ANSWERABLE' },
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 5, 'run.completed'));
+    streams.finish('run_1', 5);
+    await sending;
 
-    await chatStore.loadSession('session_old');
-    expect(chatStore.sessionId).toBe('session_old');
-    expect(chatStore.messages.map((msg) => msg.text)).toEqual(['旧问题', '旧回答']);
-
-    stream.pushEvent({ type: 'rag_step', step: { label: '检索中', group: null } });
-    await flushPromises();
-
-    stream.pushEvent({ type: 'content', content: '正在回答' });
-    await flushPromises();
-
-    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
-      text: '正在回答',
-      isThinking: false,
-    });
-    expect(chatStore.messagesBySession.session_current[1].ragSteps?.[0]).toMatchObject({
-      label: '检索中',
-    });
-    expect(chatStore.messages.map((msg) => msg.text)).toEqual(['旧问题', '旧回答']);
-
-    vi.mocked(api.get).mockClear();
-    await chatStore.loadSession('session_current');
-
-    expect(api.get).not.toHaveBeenCalled();
-    expect(chatStore.sessionId).toBe('session_current');
     expect(chatStore.messages[1]).toMatchObject({
-      text: '正在回答',
+      text: '最终回答',
+      status: 'completed',
       isThinking: false,
+      ragTrace: { retrieval_outcome: 'ANSWERABLE' },
     });
-
-    stream.close();
-    await sendPromise;
+    expect(threadStore.threads[0].isStreaming).toBe(false);
   });
 
-  it('writes abort state only to the streaming session', async () => {
-    const stream = createControlledSseFetch();
-    vi.stubGlobal('fetch', stream.fetchMock);
-    vi.mocked(api.get).mockResolvedValue({
-      data: {
-        messages: [
-          {
-            type: 'human',
-            content: '另一个会话',
-            timestamp: '2026-07-08T00:00:00',
-          },
-        ],
-      },
-    });
-
+  it('keeps Event projection on the originating Thread after navigation', async () => {
+    const streams = installControlledStreams();
     const { chatStore } = setupStores();
-    chatStore.userInput = '要被终止的问题';
-    const sendPromise = chatStore.handleSend();
+    chatStore.userInput = '原会话问题';
+    const sending = chatStore.handleSend();
     await flushPromises();
 
-    await chatStore.loadSession('session_other');
-    chatStore.handleStop();
-    await sendPromise;
-
-    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
-      text: '(已终止回答)',
-      isThinking: false,
+    vi.mocked(getThreadMessages).mockResolvedValueOnce({
+      messages: [threadMessage(1, 'user', '另一会话', { id: 21 })],
+      previous_cursor: null,
     });
-    expect(chatStore.messagesBySession.session_other.map((msg) => msg.text)).toEqual([
-      '另一个会话',
-    ]);
-    expect(chatStore.sessionId).toBe('session_other');
-    expect(chatStore.isLoading).toBe(false);
-    expect(chatStore.streamingSessionId).toBeNull();
+    await chatStore.loadThread('thread-2');
+
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'tool.progress', {
+        tool_name: 'search_knowledge_base',
+        step: { label: '检索中', group: 'retrieval' },
+      })
+    );
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'message.completed', {
+        content: '原会话回答',
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 5, 'run.completed'));
+    streams.finish('run_1', 5);
+    await sending;
+
+    expect(chatStore.threadId).toBe('thread-2');
+    expect(chatStore.messages.map((message) => message.text)).toEqual(['另一会话']);
+    expect(chatStore.messagesByThread['thread-1'][1]).toMatchObject({
+      text: '原会话回答',
+      ragSteps: [{ label: '检索中', group: 'retrieval' }],
+    });
   });
 
-  it('turns hitl_request events into a pending HITL prompt', async () => {
-    const stream = createControlledSseFetch();
-    vi.stubGlobal('fetch', stream.fetchMock);
-    const { chatStore } = setupStores();
-
-    chatStore.userInput = '这个角色的属性是什么？';
-    const sendPromise = chatStore.handleSend();
-    await flushPromises();
-
-    stream.pushEvent({
-      type: 'trace',
-      rag_trace: {
-        retrieval_status: 'needs_clarification',
-        route: 'clarify',
-        hitl_prompt: '请补充角色名',
-        hitl_options: ['丹瑾', '丹恒'],
-      },
+  it('resumes HITL on the same Run and same assistant message', async () => {
+    const streams = installControlledStreams();
+    vi.mocked(resumeRun).mockResolvedValue({
+      run: runRecord('run_1', 'thread-1', 'pending'),
+      checkpoint_id: 'checkpoint_1',
+      created: true,
     });
+    const { chatStore } = setupStores();
+    chatStore.userInput = '这个角色是什么属性？';
+    const firstTurn = chatStore.handleSend();
     await flushPromises();
 
-    stream.pushEvent({
-      type: 'hitl_request',
-      hitl: {
-        id: 'hitl-1',
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'message.delta', {
+        content: '请补充角色名\n\n可选方向：\n- 丹瑾\n- 丹恒',
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 4, 'run.waiting_input'));
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 5, 'hitl.required', {
+        hitl_token: 'hitl_1',
+        checkpoint_id: 'checkpoint_1',
         prompt: '请补充角色名',
         options: ['丹瑾', '丹恒'],
         route: 'clarify',
         retrieval_status: 'needs_clarification',
-        original_question: '这个角色的属性是什么？',
-      },
-    });
-    stream.close();
-    await sendPromise;
+      })
+    );
+    streams.finish('run_1', 5);
+    await firstTurn;
 
-    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
-      isThinking: false,
+    expect(chatStore.messages).toHaveLength(2);
+    expect(chatStore.currentPendingHitl).toMatchObject({
+      runId: 'run_1',
+      hitlToken: 'hitl_1',
+      prompt: '请补充角色名',
+    });
+    expect(chatStore.messages[1]).toMatchObject({
+      id: 12,
+      runId: 'run_1',
+      text: '',
       isHitlRequest: true,
-      hitlPrompt: '请补充角色名',
       hitlOptions: ['丹瑾', '丹恒'],
     });
-    expect(chatStore.pendingHitlBySession.session_current).toMatchObject({
-      prompt: '请补充角色名',
-      options: ['丹瑾', '丹恒'],
-    });
-    expect(chatStore.inputPlaceholder).toBe('输入自定义补充，或选择上方选项后发送...');
-  });
-
-  it('marks the next user message as a HITL answer and clears pending state after content streams', async () => {
-    const stream = createControlledSseFetch();
-    vi.stubGlobal('fetch', stream.fetchMock);
-    const { chatStore } = setupStores();
-    chatStore.pendingHitlBySession.session_current = {
-      id: 'hitl-1',
-      prompt: '请补充角色名',
-      options: ['丹瑾'],
-    };
 
     chatStore.userInput = '丹瑾';
-    const sendPromise = chatStore.handleSend();
+    const resumed = chatStore.handleSend();
     await flushPromises();
+    const resumedConnection = streams.connections.get('run_1');
+    expect(resumeRun).toHaveBeenCalledWith(
+      'run_1',
+      expect.objectContaining({ hitl_token: 'hitl_1', answer: '丹瑾' }),
+      'test-token'
+    );
 
-    expect(chatStore.messagesBySession.session_current[0]).toMatchObject({
-      text: '丹瑾',
-      isUser: true,
-      isHitlAnswer: true,
-    });
-    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
-      isUser: false,
+    resumedConnection?.options.onEvent(
+      event('run_1', 'thread-1', 6, 'hitl.resumed', { answer: '丹瑾' })
+    );
+    expect(chatStore.messages[1]).toMatchObject({
+      text: '',
       hitlResumeText: '丹瑾',
+      isHitlRequest: false,
     });
-    expect(chatStore.pendingHitlBySession.session_current).toBeUndefined();
+    resumedConnection?.options.onEvent(
+      event('run_1', 'thread-1', 7, 'message.completed', {
+        content: '丹瑾是湮灭属性。',
+      })
+    );
+    resumedConnection?.options.onEvent(event('run_1', 'thread-1', 8, 'run.completed'));
+    resumedConnection?.result.resolve(8);
+    await resumed;
 
-    stream.pushEvent({ type: 'content', content: '丹瑾是湮灭属性。' });
-    stream.close();
-    await sendPromise;
-
-    expect(chatStore.messagesBySession.session_current[1]).toMatchObject({
+    expect(chatStore.messages).toHaveLength(2);
+    expect(chatStore.messages[1]).toMatchObject({
+      id: 12,
+      runId: 'run_1',
       text: '丹瑾是湮灭属性。',
-      isThinking: false,
       hitlResumeText: '丹瑾',
+      isHitlRequest: false,
     });
-    expect(chatStore.pendingHitlBySession.session_current).toBeUndefined();
+    expect(chatStore.currentPendingHitl).toBeNull();
   });
 
-  it('maps persisted HITL answer turns as continuation state instead of normal chat turns', () => {
+  it('requests cancel without aborting SSE and waits for the authoritative terminal', async () => {
+    const streams = installControlledStreams();
+    vi.mocked(cancelRun).mockResolvedValue(runRecord('run_1', 'thread-1', 'cancelling'));
+    const { chatStore } = setupStores();
+    chatStore.userInput = '需要停止的问题';
+    const sending = chatStore.handleSend();
+    await flushPromises();
+
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 1, 'run.created', {
+        user_message_id: 11,
+        assistant_message_id: 12,
+      })
+    );
+    streams.emit('run_1', event('run_1', 'thread-1', 2, 'run.started'));
+    chatStore.handleStop();
+    await flushPromises();
+
+    expect(cancelRun).toHaveBeenCalledWith('run_1', 'test-token');
+    expect(streams.connections.get('run_1')?.options.signal?.aborted).toBe(false);
+    expect(chatStore.currentRunStatus).toBe('cancelling');
+
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 3, 'message.completed', {
+        content: '已保存部分回答',
+        status: 'incomplete',
+      })
+    );
+    streams.emit(
+      'run_1',
+      event('run_1', 'thread-1', 4, 'run.cancelled', {
+        error: { code: 'RUN_CANCELLED', message: '运行已取消', retryable: false },
+      })
+    );
+    streams.finish('run_1', 4);
+    await sending;
+
+    expect(chatStore.messages[1]).toMatchObject({
+      text: '已保存部分回答',
+      status: 'incomplete',
+      isThinking: false,
+    });
+    expect(chatStore.currentRunStatus).toBeNull();
+  });
+
+  it('restores a waiting Run by replaying durable events after page load', async () => {
+    vi.mocked(getThreadMessages).mockResolvedValueOnce({
+      messages: [
+        threadMessage(1, 'user', '角色属性？', { id: 11, run_id: 'run_1' }),
+        threadMessage(2, 'assistant', '', {
+          id: 12,
+          run_id: 'run_1',
+          status: 'waiting_input',
+        }),
+      ],
+      previous_cursor: null,
+    });
+    vi.mocked(getRunEvents).mockResolvedValue({
+      events: [
+        event('run_1', 'thread-1', 1, 'run.created', {
+          user_message_id: 11,
+          assistant_message_id: 12,
+        }),
+        event('run_1', 'thread-1', 2, 'run.started'),
+        event('run_1', 'thread-1', 3, 'run.waiting_input'),
+        event('run_1', 'thread-1', 4, 'hitl.required', {
+          hitl_token: 'hitl_1',
+          checkpoint_id: 'checkpoint_1',
+          prompt: '请补充角色名',
+        }),
+      ] as any,
+      next_after: 4,
+    });
     const { chatStore } = setupStores();
 
-    const messages = chatStore.mapServerMessages([
-      { type: 'human', content: '这个角色的属性是什么？' },
-      {
-        type: 'ai',
-        content: '请补充角色名',
-        rag_trace: {
-          retrieval_status: 'needs_clarification',
-          route: 'clarify',
-          hitl_prompt: '请补充角色名',
-        },
-      },
-      { type: 'human', content: '丹瑾' },
-      { type: 'ai', content: '丹瑾是湮灭属性。' },
-    ]);
+    await chatStore.loadThread('thread-1');
 
-    expect(messages[1]).toMatchObject({ isHitlRequest: true });
-    expect(messages[2]).toMatchObject({ isHitlAnswer: true });
-    expect(messages[3]).toMatchObject({
-      text: '丹瑾是湮灭属性。',
-      hitlResumeText: '丹瑾',
+    expect(getRun).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledWith(
+      'run_1',
+      'test-token',
+      expect.objectContaining({ after: 0 })
+    );
+    expect(connectRunEventStream).not.toHaveBeenCalled();
+    expect(chatStore.currentPendingHitl).toMatchObject({
+      runId: 'run_1',
+      hitlToken: 'hitl_1',
+      prompt: '请补充角色名',
     });
+    expect(chatStore.messages[1].isHitlRequest).toBe(true);
+  });
+
+  it('allows different Threads to run concurrently without cross-writing', async () => {
+    const streams = installControlledStreams();
+    const { chatStore } = setupStores();
+    chatStore.userInput = '线程一';
+    const first = chatStore.handleSend();
+    await flushPromises();
+
+    chatStore.setViewedThread('thread-2', []);
+    expect(chatStore.isLoading).toBe(false);
+    chatStore.userInput = '线程二';
+    const second = chatStore.handleSend();
+    await flushPromises();
+
+    expect(createRun).not.toHaveBeenCalled();
+    expect(createRunEventStream).toHaveBeenCalledTimes(2);
+    expect(chatStore.messagesByThread['thread-1'][0].text).toBe('线程一');
+    expect(chatStore.messagesByThread['thread-2'][0].text).toBe('线程二');
+
+    for (const [runId, threadId, answer] of [
+      ['run_1', 'thread-1', '回答一'],
+      ['run_2', 'thread-2', '回答二'],
+    ] as const) {
+      streams.emit(
+        runId,
+        event(runId, threadId, 1, 'run.created', {
+          user_message_id: runId === 'run_1' ? 11 : 21,
+          assistant_message_id: runId === 'run_1' ? 12 : 22,
+        })
+      );
+      streams.emit(runId, event(runId, threadId, 2, 'run.started'));
+      streams.emit(runId, event(runId, threadId, 3, 'message.completed', { content: answer }));
+      streams.emit(runId, event(runId, threadId, 4, 'run.completed'));
+      streams.finish(runId, 4);
+    }
+    await Promise.all([first, second]);
+
+    expect(chatStore.messagesByThread['thread-1'][1].text).toBe('回答一');
+    expect(chatStore.messagesByThread['thread-2'][1].text).toBe('回答二');
+  });
+
+  it('loads the latest message page and prepends older messages on demand', async () => {
+    vi.mocked(getThreadMessages)
+      .mockResolvedValueOnce({
+        messages: [threadMessage(3, 'user', '最近问题'), threadMessage(4, 'assistant', '最近回答')],
+        previous_cursor: 3,
+      })
+      .mockResolvedValueOnce({
+        messages: [threadMessage(1, 'user', '更早问题'), threadMessage(2, 'assistant', '更早回答')],
+        previous_cursor: null,
+      });
+    const { chatStore } = setupStores();
+
+    await chatStore.loadThread('thread-1');
+
+    expect(getThreadMessages).toHaveBeenCalledTimes(1);
+    expect(getThreadMessages).toHaveBeenCalledWith('thread-1', { limit: 200 });
+    expect(chatStore.messages.map((message) => message.text)).toEqual(['最近问题', '最近回答']);
+    expect(chatStore.hasOlderMessages).toBe(true);
+
+    await chatStore.loadOlderMessages();
+
+    expect(getThreadMessages).toHaveBeenNthCalledWith(2, 'thread-1', {
+      before: 3,
+      limit: 200,
+    });
+    expect(chatStore.messages.map((message) => message.text)).toEqual([
+      '更早问题',
+      '更早回答',
+      '最近问题',
+      '最近回答',
+    ]);
+    expect(chatStore.hasOlderMessages).toBe(false);
+  });
+
+  it('renders a safe create failure without exposing transport details', async () => {
+    vi.mocked(createRunEventStream).mockRejectedValue(new TypeError('secret socket detail'));
+    const { chatStore } = setupStores();
+    chatStore.userInput = '触发故障';
+
+    await chatStore.handleSend();
+
+    expect(chatStore.messages[1].text).toContain('[NETWORK_UNAVAILABLE]');
+    expect(chatStore.messages[1].text).not.toContain('secret socket detail');
+    expect(chatStore.messages[1]).toMatchObject({ status: 'failed', isThinking: false });
+  });
+
+  it('does not reconstruct HITL state from Messages without a Run identity', async () => {
+    vi.mocked(getThreadMessages).mockResolvedValueOnce({
+      messages: [
+        threadMessage(1, 'assistant', '请补充角色名', {
+          rag_trace: {
+            route: 'clarify',
+            retrieval_status: 'needs_clarification',
+            hitl_prompt: '请补充角色名',
+          },
+        }),
+      ],
+      previous_cursor: null,
+    });
+    const { chatStore } = setupStores();
+
+    await chatStore.loadThread('thread-1');
+
+    expect(chatStore.currentPendingHitl).toBeNull();
+    expect(chatStore.messages[0]).toMatchObject({
+      isHitlRequest: false,
+      isHitlAnswer: false,
+    });
+  });
+
+  it('keeps Message lifecycle authoritative when only Run transport fails', async () => {
+    vi.mocked(createRunEventStream).mockImplementation(async () => {
+      const reservation = {
+        runId: 'run_1',
+        threadId: 'thread-1',
+        threadVersion: 2,
+      };
+      return {
+        reservation,
+        connect: async () => {
+          throw Object.assign(new Error('offline'), {
+            code: 'NETWORK_UNAVAILABLE',
+            retryable: true,
+          });
+        },
+      };
+    });
+    const { chatStore, runsStore } = setupStores();
+    chatStore.userInput = '继续执行';
+
+    await chatStore.handleSend();
+
+    expect(runsStore.byId.run_1).toMatchObject({
+      status: 'creating',
+      terminal: false,
+      transportStatus: 'closed',
+    });
+    expect(runsStore.byId.run_1.transportError?.code).toBe('NETWORK_UNAVAILABLE');
+    expect(chatStore.messages[1].status).not.toBe('failed');
+    expect(chatStore.messages[1].text).not.toContain('[NETWORK_UNAVAILABLE]');
   });
 });

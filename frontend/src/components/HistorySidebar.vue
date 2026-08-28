@@ -1,55 +1,74 @@
 <template>
-  <div v-if="sessionStore.showHistorySidebar" class="history-backdrop" @click.self="closeHistory">
+  <div v-if="threadStore.showHistorySidebar" class="history-backdrop" @click.self="closeHistory">
     <aside class="history-sidebar">
       <div class="history-header">
         <div>
           <span class="panel-eyebrow">Conversation memory</span>
-          <h2>历史会话</h2>
+          <h2>历史对话</h2>
         </div>
-        <button type="button" class="close-btn" aria-label="关闭历史会话" @click="closeHistory">
+        <button type="button" class="close-btn" aria-label="关闭历史对话" @click="closeHistory">
           <i class="fa-solid fa-xmark"></i>
         </button>
       </div>
 
       <div class="history-summary">
-        <span><strong>{{ sessionStore.sessions.length }}</strong> 个会话</span>
-        <button type="button" @click="refreshSessions">
-          <i class="fa-solid fa-rotate" :class="{ 'fa-spin': refreshing }"></i>
+        <span
+          ><strong>{{ threadStore.threads.length }}</strong> 个对话</span
+        >
+        <button type="button" :disabled="threadStore.historyLoading" @click="refreshThreads">
+          <i class="fa-solid fa-rotate" :class="{ 'fa-spin': threadStore.historyLoading }"></i>
           刷新
         </button>
       </div>
 
+      <p v-if="threadStore.historyError" class="operation-notice" role="status" aria-live="polite">
+        历史对话同步失败：{{ threadStore.historyError }}
+      </p>
+
       <div class="history-list">
-        <div v-if="sessionStore.sessions.length === 0" class="empty-history">
-          <span class="empty-icon"><i class="fa-regular fa-comments"></i></span>
+        <div v-if="threadStore.threads.length === 0" class="empty-history">
+          <img :src="emptyHistory" class="empty-illustration empty-history-illustration" alt="" />
           <h3>暂无历史记录</h3>
           <p>开始一段新对话后，喵喵会在这里替你保存。</p>
         </div>
 
         <article
-          v-for="session in sessionStore.sessions"
-          :key="session.session_id"
-          :class="['history-item', { active: session.session_id === chatStore.sessionId }]"
+          v-for="thread in threadStore.threads"
+          :key="thread.thread_id"
+          :class="['history-item', { active: thread.thread_id === chatStore.threadId }]"
         >
-          <button type="button" class="session-body" @click="onLoadSession(session.session_id)">
-            <span class="session-state-dot" aria-hidden="true"></span>
-            <span class="session-info">
-              <strong class="session-title">{{ session.title || '未命名会话' }}</strong>
-              <span class="session-meta">
-                <span>{{ session.message_count }} 条消息</span>
-                <span v-if="session.isStreaming" class="session-status">生成中</span>
-                <span>{{ formatDate(session.updated_at) }}</span>
+          <button type="button" class="thread-body" @click="onLoadThread(thread.thread_id)">
+            <span class="thread-state-dot" aria-hidden="true"></span>
+            <span class="thread-info">
+              <strong class="thread-title">{{ thread.title || '未命名对话' }}</strong>
+              <span class="thread-meta">
+                <span>{{ thread.message_count }} 条消息</span>
+                <span v-if="thread.activeRunStatus === 'waiting_input'" class="thread-status"
+                  >等待补充</span
+                >
+                <span v-else-if="thread.activeRunStatus === 'cancelling'" class="thread-status"
+                  >终止中</span
+                >
+                <span v-else-if="thread.isStreaming" class="thread-status">生成中</span>
+                <span>{{ formatDate(thread.updated_at) }}</span>
               </span>
             </span>
           </button>
           <button
             type="button"
             class="history-delete-btn"
-            title="删除会话"
-            aria-label="删除会话"
-            @click.stop="onDeleteSession(session.session_id)"
+            title="删除对话"
+            aria-label="删除对话"
+            :disabled="threadStore.isDeletingThread(thread.thread_id)"
+            @click.stop="onDeleteThread(thread.thread_id)"
           >
-            <i class="fa-regular fa-trash-can"></i>
+            <i
+              :class="
+                threadStore.isDeletingThread(thread.thread_id)
+                  ? 'fa-solid fa-spinner fa-spin'
+                  : 'fa-regular fa-trash-can'
+              "
+            ></i>
           </button>
         </article>
       </div>
@@ -58,62 +77,61 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
-import { useSessionStore } from '@/stores/sessions';
+import { useThreadStore } from '@/stores/threads';
+import { useRunsStore } from '@/stores/runs';
+import emptyHistory from '@/assets/images/empty-history.webp';
 
 const chatStore = useChatStore();
-const sessionStore = useSessionStore();
-const refreshing = ref(false);
+const threadStore = useThreadStore();
+const runsStore = useRunsStore();
 
 const closeHistory = () => {
-  sessionStore.showHistorySidebar = false;
+  threadStore.showHistorySidebar = false;
   if (chatStore.activeNav === 'history') {
     chatStore.activeNav = 'newChat';
   }
 };
 
-const refreshSessions = async () => {
-  refreshing.value = true;
+const refreshThreads = async () => {
   try {
-    await sessionStore.fetchSessions();
-    chatStore.mergeCachedSessionsIntoHistory();
-  } catch (error: any) {
-    alert(error.message);
-  } finally {
-    refreshing.value = false;
+    await threadStore.fetchThreads();
+    chatStore.mergeCachedThreadsIntoHistory();
+  } catch {
+    threadStore.historyError ||= '历史对话同步失败，请稍后重试';
   }
 };
 
-const onLoadSession = async (sessionId: string) => {
+const onLoadThread = async (threadId: string) => {
   try {
-    await chatStore.loadSession(sessionId);
+    await chatStore.loadThread(threadId);
   } catch (error: any) {
-    alert('加载会话失败：' + error.message);
+    alert('加载对话失败：' + error.message);
   }
 };
 
-const onDeleteSession = async (sessionId: string) => {
-  if (chatStore.streamingSessionId === sessionId) {
-    alert('该会话正在生成回答，请先终止或等待完成后再删除');
+const onDeleteThread = async (threadId: string) => {
+  if (runsStore.activeForThread(threadId) || threadStore.threadById(threadId)?.isStreaming) {
+    alert('该对话仍有活跃运行，请先终止或等待完成后再删除');
     return;
   }
 
-  const sessionLabel = sessionStore.sessions.find((session) => session.session_id === sessionId)?.title || sessionId;
-  if (!confirm('确定要删除会话“' + sessionLabel + '”吗？')) {
+  const threadLabel =
+    threadStore.threads.find((thread) => thread.thread_id === threadId)?.title || threadId;
+  if (!confirm('确定要删除对话“' + threadLabel + '”吗？')) {
     return;
   }
 
   try {
-    await sessionStore.deleteSession(sessionId);
-    delete chatStore.messagesBySession[sessionId];
-    if (chatStore.sessionId === sessionId) {
+    await threadStore.deleteThread(threadId);
+    chatStore.removeThreadState(threadId);
+    if (chatStore.threadId === threadId) {
       chatStore.handleNewChat();
     } else {
-      chatStore.mergeCachedSessionsIntoHistory();
+      chatStore.mergeCachedThreadsIntoHistory();
     }
   } catch (error: any) {
-    alert('删除会话失败：' + error.message);
+    alert('删除对话失败：' + error.message);
   }
 };
 
