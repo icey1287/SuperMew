@@ -399,7 +399,7 @@ watch(resultItems, resetActiveIndex);
   color: var(--text);
   background: transparent;
   font: inherit;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .command-palette kbd,
@@ -413,7 +413,7 @@ watch(resultItems, resetActiveIndex);
   border-radius: 6px;
   color: var(--muted);
   background: var(--surface-soft);
-  font-size: 7px;
+  font-size: 11px;
   font-family: inherit;
 }
 
@@ -421,7 +421,7 @@ watch(resultItems, resetActiveIndex);
   padding: 8px 15px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .command-palette-results {
@@ -489,19 +489,21 @@ watch(resultItems, resetActiveIndex);
 }
 
 .command-option-copy strong {
-  font-size: 10px;
+  font-size: 15px;
+  line-height: 1.35;
 }
 
 .command-option-copy small {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .command-option-state,
 .command-option-shortcut {
   color: var(--muted);
-  font-size: 7px;
+  font-size: 12px;
 }
 
 .command-option-state.is-selected {
@@ -519,11 +521,11 @@ watch(resultItems, resetActiveIndex);
 
 .command-palette-empty strong {
   color: var(--text-soft);
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .command-palette-empty span {
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .command-palette-footer {
@@ -534,7 +536,7 @@ watch(resultItems, resetActiveIndex);
   padding: 9px 14px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 7px;
+  font-size: 12px;
 }
 
 .command-palette-footer span {
