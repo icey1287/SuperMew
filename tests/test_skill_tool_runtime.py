@@ -295,18 +295,14 @@ def test_project_web_research_skill_allows_user_and_admin_but_requires_runtime()
     assert "search_knowledge_base" not in activated.allowed_tools
     assert "sql_query" not in activated.allowed_tools
     instructions = activated.instructions.casefold()
-    assert "untrusted evidence" in instructions
-    assert activated.version == "1.1.0"
+    assert "untrusted data" in instructions
+    assert activated.version == "2.0.0"
     assert "allowed_domains" in instructions
-    assert "exactly once" in instructions
-    assert "<current month> <current year>" in instructions
-    assert "old patch" in instructions
-    assert "content` as its search-result summary" in instructions
-    assert "citation_token" in instructions
-    assert "server renders" in instructions
-    assert "raw `http://`" in instructions
-    assert "web_evidence_budget_exhausted" in instructions
-    assert "source conflicts" in instructions
+    assert "source_id" in instructions
+    assert "[s1]" in instructions
+    assert "query` is optional" in instructions
+    assert "five query-ranked chunks" in instructions
+    assert "not the whole page" in instructions
     assert "coverage gaps" in instructions
     assert "example.com" not in instructions
 

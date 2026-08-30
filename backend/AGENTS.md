@@ -33,7 +33,7 @@ backend/
 ├── capabilities/        # 持久 Capability control plane
 ├── skills/              # 版本化 Skill 装载
 ├── tools/               # Tool contract、Registry、控制面和生成类型
-├── guardrails/          # 确定性 policy、approval、destination capability
+├── guardrails/          # 确定性 policy 与 Run-bound approval
 ├── sandbox/             # 隔离执行 Adapter 与资源预算
 ├── sql_assistant/       # 管理员只读 SQL 边界
 ├── web_research/        # 搜索/抓取、URL policy、Evidence、citation
@@ -96,7 +96,7 @@ uv run --no-sync pytest -q \
 
 ### Request context 与并发
 
-- Run-local 状态通过 `RunRequestContext` 显式传递：Tenant、Queue、event loop、RAG Trace、retrieval/model snapshot、deadline、cancellation、Web Evidence、预算和 destination authority。
+- Run-local 状态通过 `RunRequestContext` 显式传递：Tenant、Queue、event loop、RAG Trace、retrieval/model snapshot、deadline、cancellation、Web Source ID 和预算。
 - 不新增模块级可变请求状态、ContextVar 隐式兜底或“最后一次结果”缓存。必须共享时，按进程资源、Tenant 资源或 Run 资源明确所有权和关闭时机。
 - 从 worker thread 向 asyncio Queue 投递，使用 Queue 所属 loop 的线程安全调度；不要在错误 loop 直接 `put_nowait`。
 - 异步测试等待可观察条件，不依赖固定 sleep 或任务调度好运气。

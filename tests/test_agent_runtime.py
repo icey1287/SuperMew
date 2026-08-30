@@ -128,7 +128,6 @@ def _context(*, note="", allowed_tools=None, budget=None):
         ),
         resident_tools=(DEFAULT_GUARDRAIL_POLICY.resident_tools | resolved_allowed),
     )
-    request_context.configure_guardrail_context(tenant_id="default", run_id="run-1")
     context = AgentRuntimeContext(
         request_context=request_context,
         user_id="alice",
@@ -147,9 +146,8 @@ def _context(*, note="", allowed_tools=None, budget=None):
 
 def _web_result(*, content_bytes: int = 20 * 1024) -> WebResearchResult:
     evidence = WebEvidence.create(
-        canonical_url="https://example.com/research",
+        url="https://example.com/research",
         title="Architecture research",
-        snippet="Bounded public evidence",
         content="x" * content_bytes,
         retrieved_at=datetime(2026, 7, 16, tzinfo=UTC),
     )
@@ -159,8 +157,8 @@ def _web_result(*, content_bytes: int = 20 * 1024) -> WebResearchResult:
 def _web_tool_result(*, content_bytes: int = 20 * 1024) -> str:
     result = _web_result(content_bytes=content_bytes)
     return new_tool_success(
-        data=result.to_public_dict(),
-        observability_metadata=result.observability_metadata(),
+        data=result.to_tool_dict(("S1",)),
+        observability_metadata=result.tool_observability_metadata(),
     ).model_dump_json()
 
 
@@ -507,7 +505,7 @@ class RuntimeMiddlewareTests(unittest.TestCase):
             tool_calls=[
                 {
                     "name": "web_fetch",
-                    "args": {"evidence_id": "web_ev_" + ("a" * 64)},
+                    "args": {"source_id": "S1"},
                     "id": "call-web",
                     "type": "tool_call",
                 }
@@ -590,15 +588,14 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertIn("call-web-second", retained_call_ids)
         self.assertEqual(second_result, packed.messages[-1].content)
 
-    def test_context_packing_keeps_substantive_web_evidence_over_later_empty_result(
+    def test_context_packing_keeps_substantive_web_sources_over_later_empty_result(
         self,
     ):
         evidence_result = _web_tool_result(content_bytes=900)
         empty_result = new_tool_success(
-            data=WebResearchResult.create([], truncated=True).to_public_dict(),
+            data=WebResearchResult.create([], truncated=True).to_tool_dict(()),
             observability_metadata={
-                "citation_count": 0,
-                "evidence_count": 0,
+                "source_count": 0,
                 "output_bytes": 66,
                 "truncated": True,
             },
@@ -1040,21 +1037,16 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         self.assertIsInstance(update["messages"][0], AIMessage)
         self.assertIn("最终回答", update["messages"][0].content)
 
-    def test_terminal_guard_renders_only_current_run_web_citations(self):
+    def test_terminal_guard_renders_current_run_source_ids(self):
         request_context, context = _context()
         result = _web_result(content_bytes=32)
         evidence = result.evidence[0]
-        request_context.record_web_search_result(result)
+        request_context.record_web_search_result(result, query="architecture")
         try:
             update = TerminalResponseMiddleware().after_agent(
                 {
                     "messages": [
-                        AIMessage(
-                            content=(
-                                "Verified claim "
-                                f"[invented](webcite:{evidence.evidence_id})."
-                            )
-                        )
+                        AIMessage(content="Verified claim [S1].")
                     ]
                 },
                 SimpleNamespace(context=context),
@@ -1063,19 +1055,17 @@ class RuntimeMiddlewareTests(unittest.TestCase):
             request_context.close()
 
         rendered = update["messages"][0].content
-        self.assertIn("[Architecture research]", rendered)
-        self.assertIn(evidence.canonical_url, rendered)
-        self.assertNotIn("webcite:", rendered)
+        self.assertIn("[S1]", rendered)
+        self.assertIn(evidence.url, rendered)
         self.assertIn(
-            "web.citation_validated",
+            "web.source_citation_rendered",
             [item["stage"] for item in context.trace_events],
         )
 
-    def test_terminal_guard_appends_run_local_source_when_model_omits_citation(self):
+    def test_terminal_guard_leaves_answer_unchanged_when_model_omits_source_id(self):
         request_context, context = _context()
         result = _web_result(content_bytes=32)
-        evidence = result.evidence[0]
-        request_context.record_web_search_result(result)
+        request_context.record_web_search_result(result, query="architecture")
         try:
             update = TerminalResponseMiddleware().after_agent(
                 {
@@ -1088,19 +1078,18 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         finally:
             request_context.close()
 
-        rendered = update["messages"][0].content
-        self.assertIn("Python currently has a newer release.", rendered)
-        self.assertIn("参考来源", rendered)
-        self.assertIn(evidence.canonical_url, rendered)
-        self.assertNotIn("引用未通过校验", rendered)
+        self.assertIsNone(update)
         self.assertIn(
-            "web.citation_validated",
+            "web.source_citation_rendered",
             [item["stage"] for item in context.trace_events],
         )
 
-    def test_terminal_guard_replaces_raw_or_cross_run_web_links(self):
+    def test_terminal_guard_does_not_block_ordinary_raw_links(self):
         request_context, context = _context()
-        request_context.record_web_search_result(_web_result(content_bytes=32))
+        request_context.record_web_search_result(
+            _web_result(content_bytes=32),
+            query="architecture",
+        )
         try:
             update = TerminalResponseMiddleware().after_agent(
                 {
@@ -1113,15 +1102,7 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         finally:
             request_context.close()
 
-        rendered = update["messages"][0].content
-        self.assertIn("引用未通过校验", rendered)
-        self.assertNotIn("https://", rendered)
-        rejected = [
-            item
-            for item in context.trace_events
-            if item["stage"] == "web.citation_rejected"
-        ]
-        self.assertEqual("WEB_CITATION_RAW_URL", rejected[-1]["error_code"])
+        self.assertIsNone(update)
 
 
 class AgentRuntimeFactoryTests(unittest.TestCase):
@@ -1213,14 +1194,15 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_stream_buffers_unvalidated_deltas_until_terminal_state(self):
         result = _web_result(content_bytes=32)
         evidence = result.evidence[0]
-        safe_content = (
-            f"Verified claim [Architecture research](<{evidence.canonical_url}>)."
-        )
+        rendered_content = f"Verified claim [S1](<{evidence.url}>)."
 
         class WebCompiledAgent(FakeCompiledAgent):
             async def astream(self, payload, *, stream_mode, config, context):
                 self.invocations.append((payload, config, context))
-                context.request_context.record_web_search_result(result)
+                context.request_context.record_web_search_result(
+                    result,
+                    query="architecture",
+                )
                 yield (
                     "messages",
                     (
@@ -1228,7 +1210,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         {},
                     ),
                 )
-                yield "values", {"messages": [AIMessage(content=safe_content)]}
+                yield "values", {"messages": [AIMessage(content=rendered_content)]}
 
         request_context, context = _context()
         runtime = AgentRuntime(agent=WebCompiledAgent(), context=context)
@@ -1243,8 +1225,8 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             request_context.close()
 
         content_events = [item.content for item in events if item.type == "content"]
-        self.assertEqual([safe_content], content_events)
-        self.assertEqual(safe_content, events[-1].result.content)
+        self.assertEqual([rendered_content], content_events)
+        self.assertEqual(rendered_content, events[-1].result.content)
         self.assertNotIn("untrusted.example", "".join(content_events))
 
 

@@ -98,34 +98,32 @@ class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
             ctx_a.close()
             ctx_b.close()
 
-    async def test_web_fetch_capabilities_are_request_owned_and_cannot_rebind(self):
+    async def test_web_source_ids_are_request_owned(self):
         ctx_a = RunRequestContext.for_sync(user_id="a", thread_id="s1")
         ctx_b = RunRequestContext.for_sync(user_id="b", thread_id="s2")
         evidence = WebEvidence.create(
-            canonical_url="https://research.dev/article",
+            url="https://research.dev/article",
             title="Research",
-            snippet="Evidence",
             content="Evidence body",
             retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
         )
-        evidence_id = evidence.evidence_id
-        url = evidence.canonical_url
+        url = evidence.url
 
-        ctx_a.record_web_search_result(
+        source_ids = ctx_a.record_web_search_result(
             WebResearchResult.create([evidence]),
-            allowed_domains=("research.dev",),
+            query="research question",
         )
 
-        self.assertEqual(url, ctx_a.resolve_web_evidence(evidence_id))
-        self.assertEqual(
-            (url, ("research.dev",)),
-            ctx_a.resolve_web_fetch_authorization(evidence_id),
-        )
-        self.assertIsNone(ctx_b.resolve_web_evidence(evidence_id))
+        self.assertEqual(("S1",), source_ids)
+        source = ctx_a.resolve_web_source("S1")
+        assert source is not None
+        self.assertEqual(url, source.url)
+        self.assertEqual("research question", source.default_query)
+        self.assertIsNone(ctx_b.resolve_web_source("S1"))
         self.assertNotIn(url, repr(ctx_a))
 
         ctx_a.close()
-        self.assertIsNone(ctx_a.resolve_web_evidence(evidence_id))
+        self.assertIsNone(ctx_a.resolve_web_source("S1"))
 
 
 class KnowledgeToolFactoryTests(unittest.TestCase):

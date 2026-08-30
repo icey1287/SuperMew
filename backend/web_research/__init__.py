@@ -1,42 +1,56 @@
-"""Deep Web Research Module contracts and SSRF policy seam."""
+"""Web Research contracts, Source IDs, and Tavily runtime."""
 
+from backend.web_research.citations import (
+    WebSourceFinalization,
+    WebSourceLedger,
+    WebSourceLedgerCode,
+    WebSourceLedgerError,
+    WebSourceLedgerStatus,
+    WebSourceReference,
+)
 from backend.web_research.contracts import (
     DEFAULT_WEB_RESEARCH_LIMITS,
-    WebCitation,
     WebEvidence,
     WebResearchContractCode,
     WebResearchContractError,
     WebResearchLimits,
     WebResearchQuery,
     WebResearchResult,
+    validate_source_id,
 )
-from backend.web_research.url_policy import (
-    CancellationProbe,
-    DnsPinSnapshot,
-    ResolvedWebUrl,
-    SystemWebDnsResolver,
-    WebDnsResolver,
-    WebUrlPolicy,
-    WebUrlPolicyCode,
-    WebUrlPolicyError,
+from backend.web_research.runtime import (
+    TavilyKeylessProvider,
+    WebExtractResult,
+    WebResearchError,
+    WebResearchErrorCode,
+    WebResearchRuntime,
+    WebResearchRuntimeConfig,
+    WebSearchHit,
+    build_web_research_runtime,
 )
 
 
 __all__ = [
     "DEFAULT_WEB_RESEARCH_LIMITS",
-    "CancellationProbe",
-    "DnsPinSnapshot",
-    "ResolvedWebUrl",
-    "SystemWebDnsResolver",
-    "WebCitation",
-    "WebDnsResolver",
+    "TavilyKeylessProvider",
     "WebEvidence",
+    "WebExtractResult",
     "WebResearchContractCode",
     "WebResearchContractError",
+    "WebResearchError",
+    "WebResearchErrorCode",
     "WebResearchLimits",
     "WebResearchQuery",
     "WebResearchResult",
-    "WebUrlPolicy",
-    "WebUrlPolicyCode",
-    "WebUrlPolicyError",
+    "WebResearchRuntime",
+    "WebResearchRuntimeConfig",
+    "WebSearchHit",
+    "WebSourceFinalization",
+    "WebSourceLedger",
+    "WebSourceLedgerCode",
+    "WebSourceLedgerError",
+    "WebSourceLedgerStatus",
+    "WebSourceReference",
+    "build_web_research_runtime",
+    "validate_source_id",
 ]

@@ -97,7 +97,8 @@ class WebSearchInput(_StrictInput):
 
 
 class WebFetchInput(_StrictInput):
-    evidence_id: str = Field(pattern=r"^web_ev_[0-9a-f]{64}$")
+    source_id: str = Field(pattern=r"^S[1-9][0-9]{0,2}$")
+    query: str | None = Field(default=None, min_length=1, max_length=16_384)
 
 
 class SandboxExecuteInput(_StrictInput):
@@ -145,6 +146,10 @@ def build_default_tool_registry(
     web_search_schema["properties"]["max_results"].update(
         default=web_settings.default_search_results,
         maximum=web_settings.max_search_results,
+    )
+    web_fetch_schema = WebFetchInput.model_json_schema()
+    web_fetch_schema["properties"]["query"]["anyOf"][0]["maxLength"] = (
+        web_settings.max_query_bytes
     )
     sandbox_schema = SandboxExecuteInput.model_json_schema()
     sandbox_schema["properties"]["source"]["maxLength"] = (
@@ -304,11 +309,11 @@ def build_default_tool_registry(
         ToolDescriptor(
             name="web_search",
             description=(
-                "Search the public web for bounded evidence with stable citation "
-                "identities and optional official-domain filtering."
+                "Search the public web and return compact Run-local Source IDs "
+                "with optional official-domain filtering."
             ),
             group="web-research",
-            version="1.1.0",
+            version="2.0.0",
             input_schema=web_search_schema,
             output_schema=TOOL_RESULT_V1_SCHEMA,
             timeout=web_settings.request_timeout_seconds + 1.0,
@@ -318,7 +323,7 @@ def build_default_tool_registry(
             required_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             requires_approval=False,
             network_policy="restricted",
-            result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
+            result_size_limit=web_settings.max_total_source_bytes + 65_536,
             resource_scope="public-web",
             observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
         ),
@@ -326,7 +331,7 @@ def build_default_tool_registry(
             make_web_search,
             runtime=web_runtime,
             default_results=web_settings.default_search_results,
-            max_total_evidence_bytes=web_settings.max_total_evidence_bytes,
+            max_total_source_bytes=web_settings.max_total_source_bytes,
         ),
         exposure=ToolExposure.DEFERRED,
     )
@@ -334,12 +339,12 @@ def build_default_tool_registry(
         ToolDescriptor(
             name="web_fetch",
             description=(
-                "Fetch and extract one public page previously authorized by "
-                "web_search in this Run."
+                "Use Tavily Extract to return up to five query-ranked chunks from "
+                "one Source ID returned by web_search in this Run."
             ),
             group="web-research",
-            version="1.1.0",
-            input_schema=WebFetchInput.model_json_schema(),
+            version="2.0.0",
+            input_schema=web_fetch_schema,
             output_schema=TOOL_RESULT_V1_SCHEMA,
             timeout=web_settings.request_timeout_seconds + 1.0,
             max_concurrency=web_settings.max_concurrency,
@@ -348,14 +353,14 @@ def build_default_tool_registry(
             required_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             requires_approval=False,
             network_policy="restricted",
-            result_size_limit=web_settings.max_total_evidence_bytes + 65_536,
+            result_size_limit=web_settings.max_total_source_bytes + 65_536,
             resource_scope="public-web",
             observability_metadata_keys=WEB_RESEARCH_METADATA_KEYS,
         ),
         partial(
             make_web_fetch,
             runtime=web_runtime,
-            max_total_evidence_bytes=web_settings.max_total_evidence_bytes,
+            max_total_source_bytes=web_settings.max_total_source_bytes,
         ),
         exposure=ToolExposure.DEFERRED,
     )

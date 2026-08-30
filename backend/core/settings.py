@@ -986,38 +986,40 @@ class SqlAssistantSettings(_EnvSettings):
         return tuple(filter(None, self.sensitive_columns_raw.split(",")))
 
 
-class WebResearchSettings(_EnvSettings):
-    """Fail-closed configuration for bounded public Web Research."""
+class CustomHttpSettings(_EnvSettings):
+    """Network settings for administrator-defined Custom HTTP tools."""
 
-    enabled: bool = Field(
-        default=False,
-        validation_alias="WEB_RESEARCH_ENABLED",
+    dns_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+        allow_inf_nan=False,
+        validation_alias="CUSTOM_HTTP_DNS_TIMEOUT_SECONDS",
     )
+    dns_max_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        validation_alias="CUSTOM_HTTP_DNS_MAX_CONCURRENCY",
+    )
+    max_dns_addresses: int = Field(
+        default=8,
+        ge=1,
+        le=32,
+        validation_alias="CUSTOM_HTTP_MAX_DNS_ADDRESSES",
+    )
+
+
+class WebResearchSettings(_EnvSettings):
+    """Configuration for Tavily Search and query-ranked Extract."""
+
+    enabled: bool = Field(default=False, validation_alias="WEB_RESEARCH_ENABLED")
     request_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
         le=120,
         allow_inf_nan=False,
         validation_alias="WEB_RESEARCH_REQUEST_TIMEOUT_SECONDS",
-    )
-    dns_timeout_seconds: float = Field(
-        default=2.0,
-        gt=0,
-        le=30,
-        allow_inf_nan=False,
-        validation_alias="WEB_RESEARCH_DNS_TIMEOUT_SECONDS",
-    )
-    dns_max_concurrency: int = Field(
-        default=4,
-        ge=1,
-        le=32,
-        validation_alias="WEB_RESEARCH_DNS_MAX_CONCURRENCY",
-    )
-    max_dns_addresses: int = Field(
-        default=8,
-        ge=1,
-        le=32,
-        validation_alias="WEB_RESEARCH_MAX_DNS_ADDRESSES",
     )
     max_query_bytes: int = Field(
         default=4_096,
@@ -1037,35 +1039,23 @@ class WebResearchSettings(_EnvSettings):
         le=4_096,
         validation_alias="WEB_RESEARCH_MAX_TITLE_BYTES",
     )
-    max_snippet_bytes: int = Field(
-        default=1_024,
-        ge=1,
-        le=32_768,
-        validation_alias="WEB_RESEARCH_MAX_SNIPPET_BYTES",
-    )
     max_content_bytes: int = Field(
         default=3_072,
         ge=1,
         le=2_097_152,
         validation_alias="WEB_RESEARCH_MAX_CONTENT_BYTES",
     )
-    max_total_evidence_bytes: int = Field(
+    max_total_source_bytes: int = Field(
         default=3_072,
         ge=1,
         le=8_388_608,
-        validation_alias="WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES",
+        validation_alias="WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES",
     )
     max_response_bytes: int = Field(
         default=2_097_152,
         ge=1_024,
         le=8_388_608,
         validation_alias="WEB_RESEARCH_MAX_RESPONSE_BYTES",
-    )
-    max_compressed_bytes: int = Field(
-        default=1_000_000,
-        ge=1_024,
-        le=8_388_608,
-        validation_alias="WEB_RESEARCH_MAX_COMPRESSED_BYTES",
     )
     default_search_results: int = Field(
         default=5,
@@ -1079,18 +1069,6 @@ class WebResearchSettings(_EnvSettings):
         le=50,
         validation_alias="WEB_RESEARCH_MAX_SEARCH_RESULTS",
     )
-    max_citations: int = Field(
-        default=32,
-        ge=1,
-        le=100,
-        validation_alias="WEB_RESEARCH_MAX_CITATIONS",
-    )
-    max_redirects: int = Field(
-        default=5,
-        ge=0,
-        le=10,
-        validation_alias="WEB_RESEARCH_MAX_REDIRECTS",
-    )
     max_concurrency: int = Field(
         default=4,
         ge=1,
@@ -1098,7 +1076,7 @@ class WebResearchSettings(_EnvSettings):
         validation_alias="WEB_RESEARCH_MAX_CONCURRENCY",
     )
     user_agent: str = Field(
-        default="SuperMew-WebResearch/1.0",
+        default="SuperMew-WebResearch/2.0",
         min_length=1,
         max_length=256,
         validation_alias="WEB_RESEARCH_USER_AGENT",
@@ -1148,6 +1126,9 @@ class AppSettings(BaseModel):
         default_factory=lambda: SandboxSettings(_env_file=None)
     )
     sql_assistant: SqlAssistantSettings
+    custom_http: CustomHttpSettings = Field(
+        default_factory=lambda: CustomHttpSettings(_env_file=None)
+    )
     web_research: WebResearchSettings
 
     def validate_startup(self) -> None:
@@ -1419,34 +1400,21 @@ class AppSettings(BaseModel):
                 "WEB_RESEARCH_DEFAULT_SEARCH_RESULTS 不能大于 "
                 "WEB_RESEARCH_MAX_SEARCH_RESULTS"
             )
-        if web.dns_timeout_seconds > web.request_timeout_seconds:
-            problems.append(
-                "WEB_RESEARCH_DNS_TIMEOUT_SECONDS 不能大于 "
-                "WEB_RESEARCH_REQUEST_TIMEOUT_SECONDS"
-            )
-        if web.max_search_results > web.max_citations:
-            problems.append(
-                "WEB_RESEARCH_MAX_SEARCH_RESULTS 不能大于 WEB_RESEARCH_MAX_CITATIONS"
-            )
         if web.max_title_bytes > web.max_content_bytes:
             problems.append(
                 "WEB_RESEARCH_MAX_TITLE_BYTES 不能大于 WEB_RESEARCH_MAX_CONTENT_BYTES"
             )
-        if web.max_snippet_bytes > web.max_content_bytes:
-            problems.append(
-                "WEB_RESEARCH_MAX_SNIPPET_BYTES 不能大于 WEB_RESEARCH_MAX_CONTENT_BYTES"
-            )
-        if web.max_content_bytes > web.max_total_evidence_bytes:
+        if web.max_content_bytes > web.max_total_source_bytes:
             problems.append(
                 "WEB_RESEARCH_MAX_CONTENT_BYTES 不能大于 "
-                "WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES"
+                "WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES"
             )
         if (
             web.enabled
-            and web.max_total_evidence_bytes > self.agent.input_token_budget // 2
+            and web.max_total_source_bytes > self.agent.input_token_budget // 2
         ):
             problems.append(
-                "WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES 不能大于 "
+                "WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES 不能大于 "
                 "Agent 输入 token 预算的一半"
             )
         if problems:
@@ -1500,6 +1468,7 @@ def get_settings() -> AppSettings:
         skills=SkillSettings(),
         sandbox=SandboxSettings(),
         sql_assistant=SqlAssistantSettings(),
+        custom_http=CustomHttpSettings(),
         web_research=WebResearchSettings(),
     )
 

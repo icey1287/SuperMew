@@ -6,6 +6,7 @@ from backend.core.settings import (
     AgentSettings,
     AppSettings,
     ApplicationSettings,
+    CustomHttpSettings,
     EmbeddingSettings,
     ModelSettings,
     ObservabilitySettings,
@@ -442,9 +443,9 @@ class SettingsSecurityTests(unittest.TestCase):
 
         self.assertFalse(web.enabled)
         self.assertFalse(web.search_configured)
-        self.assertEqual(8, web.max_dns_addresses)
         self.assertEqual(3_072, web.max_content_bytes)
-        self.assertEqual(3_072, web.max_total_evidence_bytes)
+        self.assertEqual(3_072, web.max_total_source_bytes)
+        self.assertEqual("SuperMew-WebResearch/2.0", web.user_agent)
 
     def test_enabled_web_research_is_keyless_in_every_environment(self):
         settings = make_settings(secret="x" * 40)
@@ -459,32 +460,26 @@ class SettingsSecurityTests(unittest.TestCase):
             settings.validate_startup()
 
         settings = make_settings(secret="x" * 40)
-        settings.web_research.dns_timeout_seconds = 11
-        settings.web_research.request_timeout_seconds = 10
-        with self.assertRaisesRegex(ValueError, "DNS_TIMEOUT_SECONDS"):
-            settings.validate_startup()
-
-        settings = make_settings(secret="x" * 40)
         settings.web_research.max_content_bytes = 600_000
-        settings.web_research.max_total_evidence_bytes = 500_000
+        settings.web_research.max_total_source_bytes = 500_000
         with self.assertRaisesRegex(ValueError, "MAX_CONTENT_BYTES"):
             settings.validate_startup()
 
         settings = make_settings(secret="x" * 40)
         settings.web_research.enabled = True
         settings.web_research.max_content_bytes = 10_000
-        settings.web_research.max_total_evidence_bytes = 20_000
+        settings.web_research.max_total_source_bytes = 20_000
         with self.assertRaisesRegex(ValueError, "Agent 输入 token 预算"):
             settings.validate_startup()
 
         settings.agent.max_context_tokens = 50_000
         settings.validate_startup()
 
-    def test_web_research_hard_dns_cap_and_header_safety_are_validated(self):
+    def test_custom_http_dns_cap_and_web_user_agent_are_validated(self):
         with self.assertRaises(ValidationError):
-            WebResearchSettings(
+            CustomHttpSettings(
                 _env_file=None,
-                WEB_RESEARCH_MAX_DNS_ADDRESSES=33,
+                CUSTOM_HTTP_MAX_DNS_ADDRESSES=33,
             )
 
         with self.assertRaises(ValidationError):

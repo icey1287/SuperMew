@@ -40,7 +40,7 @@ from backend.providers import (
     provider_executor,
 )
 from backend.tools.contracts import ToolResultV1, new_tool_failure
-from backend.web_research.citations import WebCitationLedgerError
+from backend.web_research.citations import WebSourceLedgerError
 
 
 DEFAULT_MIDDLEWARE_ORDER = (
@@ -258,12 +258,12 @@ def _is_atomic_dynamic_context(message: BaseMessage) -> bool:
     )
 
 
-def _web_tool_result_has_evidence(message: ToolMessage) -> bool:
+def _web_tool_result_has_sources(message: ToolMessage) -> bool:
     result = _typed_tool_result(message)
     if result is None or not result.success or not isinstance(result.data, dict):
         return False
-    evidence = result.data.get("evidence")
-    return isinstance(evidence, list) and bool(evidence)
+    sources = result.data.get("sources")
+    return isinstance(sources, list) and bool(sources)
 
 
 def _ordered_atomic_web_tool_results(
@@ -277,7 +277,7 @@ def _ordered_atomic_web_tool_results(
         if tool_call.get("id") and str(tool_call.get("name") or "") in _WEB_TOOL_NAMES
     }
     return [
-        (message.tool_call_id, _web_tool_result_has_evidence(message))
+        (message.tool_call_id, _web_tool_result_has_sources(message))
         for message in messages
         if isinstance(message, ToolMessage)
         and (
@@ -973,12 +973,6 @@ class ToolPolicyMiddleware(AgentMiddleware):
                 ),
                 channel=context.channel,
                 network_policy=getattr(descriptor, "network_policy", None),
-                destination_capability=(
-                    context.request_context.destination_capability_for_tool(
-                        tool_name,
-                        arguments,
-                    )
-                ),
                 resource_scope=getattr(descriptor, "resource_scope", None),
                 descriptor_requires_approval=getattr(
                     descriptor,
@@ -1055,7 +1049,6 @@ class ToolPolicyMiddleware(AgentMiddleware):
                         "channel": context.channel,
                         "context_complete": False,
                         "descriptor_requires_approval": None,
-                        "destination_capability_present": False,
                         "network_policy": "unknown",
                         "resource_scope": "unknown",
                         "role_count": len(context.roles),
@@ -1160,28 +1153,28 @@ class TerminalResponseMiddleware(AgentMiddleware):
                 ]
             }
         content = _message_text(last)
-        if context.request_context.web_research_requires_terminal_validation():
+        if context.request_context.web_research_requires_source_rendering():
             try:
-                rendered = context.request_context.finalize_web_citations(content)
-            except WebCitationLedgerError as exc:
+                rendered = context.request_context.render_web_source_citations(content)
+            except WebSourceLedgerError as exc:
                 context.record_trace(
-                    "web.citation_rejected",
+                    "web.source_citation_rejected",
                     error_code=exc.code.value,
-                    evidence_count=context.request_context.web_evidence_count(),
+                    source_count=context.request_context.web_source_count(),
                 )
                 return {
                     "messages": [
                         AIMessage(
                             content=(
-                                "网页证据引用未通过校验，本次回答未发布。"
+                                "网页来源引用无法解析，本次回答未发布。"
                                 "请重试或缩小检索范围。"
                             )
                         )
                     ]
                 }
             context.record_trace(
-                "web.citation_validated",
-                evidence_count=context.request_context.web_evidence_count(),
+                "web.source_citation_rendered",
+                source_count=context.request_context.web_source_count(),
             )
             if rendered != content:
                 context.record_trace("agent.completed")

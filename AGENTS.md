@@ -127,7 +127,8 @@ npm run test:e2e
 - Access Token 只驻留浏览器内存；Refresh Token 只通过 HttpOnly `Path=/auth` Cookie 传输。
 - API Key、DSN 密码、Header Secret 和原始 credential 不进入数据库公开字段、Run、Checkpoint、Event、评测报告或前端状态。
 - Tool 可见性由 Registry/Skill session 决定，执行前仍必须经过 Guardrail；Sandbox 只隔离已获准执行，不替代授权。
-- Web fetch 只消费同一 Run 内已验证的 Evidence identity；不得重新开放任意 URL 抓取。
+- Web Research 只用同一 Run 的 `S<n>` Source ID；`web_fetch` 解析后调用固定 Tavily Extract，
+  不得恢复模型 URL 输入、整页抓取或旧 Evidence/capability 协议。
 
 ### 版本化事实
 

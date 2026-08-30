@@ -3,6 +3,9 @@
 - 状态：已接受
 - 日期：2026-07-16
 
+> ADR-0026 已取代本文的 Request-owned destination capability、HMAC verifier 与 Web
+> destination Guardrail 串联；普通 Tool Guardrail、approval 与 Sandbox 决策仍以本文为准。
+
 ## 背景
 
 ADR-0011 已把 durable Run 执行集中到 `AgentRuntimeFactory` 与 `RunAgentExecutor`，

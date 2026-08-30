@@ -69,8 +69,9 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
   其他安全响应头全局应用。
 - **只读 SQL Assistant**：只对 `admin` 开放，并同时受独立数据库账号、schema/table allowlist、
   AST、权限、RLS、成本、超时、结果大小和敏感字段脱敏约束，不提供 DDL 或 DML。
-- **受控 Web Research**：模型不能直接提交任意抓取 URL，只能消费同一 Run 内搜索产生的
-  `evidence_id`；Runtime 负责 SSRF policy、DNS pin、逐跳重定向复核和引用身份校验。
+- **定向 Web Research**：`web_search` 为当前 Run 分配 `S1`、`S2` 等 Source ID；
+  `web_fetch(source_id, query?)` 使用 Tavily Extract 返回最多五个 query-ranked chunks，不再抓取
+  或注入整篇网页。
 - **可审计 Tool 执行**：Registry 决定能力是否可见，Guardrail 在 handler 前执行确定性约束，
   Sandbox 只隔离已经获准的代码执行。普通 `ALLOW` 不在前端展示；用户只会看到拒绝或需要审批的
   结果，详细 policy reason 仅进入脱敏 ToolAudit。
@@ -90,7 +91,7 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
 - **Knowledge Base**：使用当前发布的 Document Version 进行 RAG 问答，并展示检索、评判、重写、
   合并与引用信息。
 - **Web Research**：调查公开问题、时间范围或来源偏好。只有 feature flag、Tavily Keyless
-  Runtime、角色与受限公网策略同时满足时才可用，外部事实必须引用当前 Run 的 Web Evidence。
+  Runtime、角色与受限公网策略同时满足时才可用，外部事实使用当前 Run 的 Source ID 引用。
 - **SQL Assistant**：以自然语言描述指标、维度、筛选条件和时间范围，仅查询 allowlist 内的
   PostgreSQL catalog，不提供写入能力。
 - **Sandbox**：选择 Python 或 Shell 后提交源码。该模式固定无网络、无宿主挂载、无持久
@@ -296,12 +297,12 @@ WEB_RESEARCH_ENABLED=true
 ```
 
 `web_search` 与 `web_fetch` 只有在 feature flag、Tavily Keyless Runtime、active Skill、角色和
-`restricted` network policy 同时满足时才披露。`web_fetch` 不接受模型提交的任意 URL，只接受
-同一 Run 内 `web_search` 返回的不可变 `evidence_id`。Runtime 会重新执行 SSRF policy、DNS pin、
-逐跳 redirect、内容类型、压缩与解压字节、并发和总 Evidence 预算检查。
+`restricted` network policy 同时满足时才披露。`web_search` 的模型投影只有 Run-local
+`source_id`、`title` 与 `content`；`web_fetch` 只接受同一 Run 的 Source ID 和可选 query。
 
-模型输出 Run-local `webcite:` token，服务端终态校验通过后才渲染 canonical Markdown 链接；事实
-应就近引用，并披露来源冲突、检索时间和覆盖缺口。完整上线、预算与事件响应流程见
+Runtime 只连接固定 Tavily `/search` 与 `/extract`。Extract 固定使用
+`chunks_per_source=5`、`extract_depth=basic`，每个 chunk 在进入模型上下文前限制为约 500 字符。
+模型用 `[S1]` 就近引用，服务端终态把已知 Source ID 渲染为对应链接。完整上线、预算与事件响应见
 [Web Research Runbook](docs/runbooks/web-research.md)。
 
 ### Guardrail 与 Sandbox
@@ -407,10 +408,10 @@ Thread Run、知识检索、HITL resume、上传与 general API 使用独立 pol
   Judge Runtime 和报告构建。
 - `model_control/`：Model Profile、Assignment、Model Snapshot 和兼容性校验。
 - `capabilities/`、`skills/` 与 `tools/`：能力目录、持久控制面、Skill 装载与 Tool Adapter。
-- `guardrails/`：Tool 调用前的确定性 policy、Run-bound approval 和 destination capability。
+- `guardrails/`：Tool 调用前的确定性 policy 与 Run-bound approval。
 - `sandbox/`：隔离执行契约、预算、disabled Adapter 与 Docker Adapter。
 - `sql_assistant/`：只读 PostgreSQL catalog、AST policy、查询预算、结果编码和脱敏。
-- `web_research/`：搜索、抓取、URL policy、Evidence 和 citation 校验。
+- `web_research/`：Tavily Search/Extract、Run-local Source ID 与短引用渲染。
 - `providers/`：模型、Embedding、Rerank 等 Provider Adapter，以及错误分类、重试和生命周期。
 - `auth/`：Access/Refresh 签发、opaque hash、rotation、replay detection、撤销和 ledger cleanup。
 - `rate_limits/`：入口 policy、HMAC identity、fixed-window limiter 与 memory/Redis Adapter。
@@ -784,7 +785,8 @@ Case，并由独立 worker 执行。CLI 更适合仓库 Gate、分支比较与�
 ### 可选能力
 
 - `SQL_ASSISTANT_*`：只读 DSN、预期数据库角色、allowlist、敏感列、超时、成本和结果预算。
-- `WEB_RESEARCH_*`：搜索、DNS、URL、redirect、响应、Evidence、citation 和并发预算。
+- `WEB_RESEARCH_*`：Tavily Search/Extract、query、响应、Source ToolResult 和并发预算。
+- `CUSTOM_HTTP_*`：声明式 Custom HTTP Tool 的 DNS timeout、并发和地址数量边界。
 - `SANDBOX_*`：Docker Adapter、digest image、rootless daemon、CPU、内存、PID、workspace、源码、
   输出和清理预算。
 - `SKILL_DIR`、`SKILL_MANIFEST_NAME`、`SKILL_MAX_CONTENT_BYTES`：文件型 Skill Registry 输入。
@@ -1024,3 +1026,4 @@ docker compose -f docker-compose.prod.yml config
 - [单一正式实现](docs/adr/0023-single-canonical-implementation.md)
 - [模型控制面与 RAG Evaluation Runtime](docs/adr/0024-model-control-and-rag-evaluation-runtime.md)
 - [持久化能力控制面](docs/adr/0025-persistent-capability-control-plane.md)
+- [Run-local Source ID 与 Tavily Extract](docs/adr/0026-run-local-source-id-and-tavily-extract.md)

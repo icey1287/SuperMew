@@ -1,7 +1,10 @@
 # ADR-0019：Web Research、SSRF 防护与引用身份
 
-- 状态：已接受
+- 状态：已取代（由 ADR-0026）
 - 日期：2026-07-16
+
+> 本文保留历史决策。当前 Web Research 的 Source ID、Tavily Extract、引用与网络边界以
+> ADR-0026 为准，不再运行本文的 Evidence identity、SSRF/direct fetch 或 citation token 实现。
 
 ## 背景
 

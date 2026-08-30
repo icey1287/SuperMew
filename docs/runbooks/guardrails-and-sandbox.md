@@ -3,7 +3,7 @@
 ## 适用范围与不变量
 
 Guardrail 随 Agent Runtime 始终启用，没有“临时关闭策略”的环境变量。它在每次 Tool handler
-前返回 `ALLOW`、`DENY` 或 `REQUIRE_APPROVAL`；上下文缺失、策略异常和未知 capability 均
+前返回 `ALLOW`、`DENY` 或 `REQUIRE_APPROVAL`；上下文缺失、策略异常和未知 policy 值均
 fail-closed。`shell`、`code`、`process`、`network-private`、`high-risk` 是 hard-deny group，
 任何审批都不能放行。
 
@@ -145,7 +145,6 @@ uv run --frozen python -m backend.tools.registry_cli list-tools \
 
 uv run --frozen pytest -q \
   tests/test_guardrail_policy.py \
-  tests/test_destination_capability.py \
   tests/test_guardrail_approval.py \
   tests/test_sandbox_contracts.py \
   tests/test_sandbox_runtime.py \
@@ -205,13 +204,13 @@ curl --fail-with-body http://127.0.0.1:8000/health/ready
 4. 创建 workspace 文件只增加 `files_created`，回答中没有宿主路径或下载链接；
 5. 下一次 invocation 看不到上一次文件；
 6. timeout、cancel、output/file/path 超限返回稳定 `SANDBOX_*` code，容器均被删除；
-7. Run Event/SSE 不含 `guardrail_audit`、capability、approval 或 Docker metadata。
+7. Run Event/SSE 不含 `guardrail_audit`、approval 或 Docker metadata。
 
 ## ToolAudit 检查
 
 ToolAudit 应记录 Tool/catalog identity、`ALLOW|DENY|REQUIRE_APPROVAL`、reason code、policy
 version/hash、success、error code、duration/result size 与 allowlist 内聚合 metadata。禁止记录
-args、Sandbox source、SQL、query、URL、evidence/capability、签名、Secret 或内部异常。
+args、Sandbox source、SQL、query、URL、Secret 或内部异常。
 
 可使用最小字段检查最近记录：
 
@@ -267,5 +266,5 @@ disabled。若怀疑 daemon 或 image 被攻破，同时撤销进程对专用 so
 轮换 image digest，并检查 ToolAudit 与 daemon audit，但不要收集/传播用户 source。
 
 Guardrail policy 变更必须升级 policy version，验证 canonical hash 与拒绝矩阵，再滚动重启所有
-执行 worker。不同 worker 不应长期运行不同 policy snapshot。hard-deny group、destination
-capability 绑定和公开 Event 脱敏不能作为应急恢复手段被关闭。
+执行 worker。不同 worker 不应长期运行不同 policy snapshot。hard-deny group 和公开 Event
+脱敏不能作为应急恢复手段被关闭。

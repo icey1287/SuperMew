@@ -8,7 +8,6 @@ import pytest
 
 from backend.guardrails import (
     DEFAULT_GUARDRAIL_POLICY,
-    DestinationCapability,
     GuardrailDecision,
     GuardrailDirective,
     GuardrailPolicy,
@@ -18,7 +17,6 @@ from backend.guardrails import (
     ToolGuardrail,
     ToolGuardrailRequest,
     ToolGuardrailResult,
-    destination_context_binding,
 )
 
 
@@ -39,7 +37,6 @@ def _request(**overrides: object) -> ToolGuardrailRequest:
         "active_skill_scope_allows": True,
         "channel": "run",
         "network_policy": "restricted",
-        "destination_capability": None,
         "resource_scope": "knowledge-read",
         "descriptor_requires_approval": False,
         "approval_granted": False,
@@ -66,62 +63,13 @@ def _web_fetch_request(**overrides: object) -> ToolGuardrailRequest:
     return _web_request(**values)
 
 
-def _capability(
-    request: ToolGuardrailRequest,
-    **overrides: object,
-) -> DestinationCapability:
-    assert request.user_id is not None
-    assert request.tenant_id is not None
-    assert request.thread_id is not None
-    assert request.run_id is not None
-    assert request.tool_name is not None
-    assert request.network_policy is not None
-    assert request.resource_scope is not None
-    values: dict[str, object] = {
-        "capability_id": f"destcap_{'1' * 64}",
-        "issuer": "web-url-policy",
-        "policy_hash": "2" * 64,
-        "context_binding": destination_context_binding(
-            user_id=request.user_id,
-            tenant_id=request.tenant_id,
-            thread_id=request.thread_id,
-            run_id=request.run_id,
-        ),
-        "destination_hash": "3" * 64,
-        "tool_name": request.tool_name,
-        "network_policy": request.network_policy,
-        "resource_scope": request.resource_scope,
-        "signature": "opaque-url-policy-signature",
-    }
-    values.update(overrides)
-    return DestinationCapability(**values)  # type: ignore[arg-type]
-
-
-class _Verifier:
-    def __init__(self, result: bool | Exception) -> None:
-        self.result = result
-        self.calls = 0
-
-    def verify(
-        self,
-        capability: DestinationCapability,
-        *,
-        request: ToolGuardrailRequest,
-    ) -> bool:
-        del capability, request
-        self.calls += 1
-        if isinstance(self.result, Exception):
-            raise self.result
-        return self.result
-
-
 def test_low_risk_skill_scoped_tool_is_allowed_with_stable_policy_identity() -> None:
     first = ToolGuardrail().evaluate(_request())
     second = ToolGuardrail().evaluate(_request())
 
     assert first.decision is GuardrailDecision.ALLOW
     assert first.reason_code is GuardrailReasonCode.ALLOWED
-    assert first.policy_version == "1.1.0"
+    assert first.policy_version == "1.2.0"
     assert re.fullmatch(r"[0-9a-f]{64}", first.policy_hash)
     assert first == second
     assert first.safe_metadata["context_complete"] is True
@@ -217,7 +165,6 @@ def test_session_authorized_web_search_does_not_require_an_active_skill() -> Non
             active_skill=None,
             active_skill_registered=False,
             active_skill_scope_allows=False,
-            destination_capability=None,
         )
     )
 
@@ -404,79 +351,14 @@ def test_non_sql_private_network_access_is_denied() -> None:
     assert result.reason_code is GuardrailReasonCode.PRIVATE_NETWORK_DENIED
 
 
-def test_restricted_web_requires_a_verified_url_policy_capability() -> None:
-    request = _web_fetch_request()
-    missing = ToolGuardrail().evaluate(request)
-    capability = _capability(request)
-    unverified = ToolGuardrail().evaluate(
-        replace(request, destination_capability=capability)
-    )
-    denied_verifier = _Verifier(False)
-    invalid = ToolGuardrail(destination_verifier=denied_verifier).evaluate(
-        replace(request, destination_capability=capability)
-    )
-    allowed_verifier = _Verifier(True)
-    allowed = ToolGuardrail(destination_verifier=allowed_verifier).evaluate(
-        replace(request, destination_capability=capability)
-    )
+def test_web_search_and_fetch_use_the_standard_tool_guardrail() -> None:
+    search = ToolGuardrail().evaluate(_web_request())
+    fetch = ToolGuardrail().evaluate(_web_fetch_request())
 
-    assert missing.reason_code is GuardrailReasonCode.DESTINATION_CAPABILITY_REQUIRED
-    assert (
-        unverified.reason_code is GuardrailReasonCode.DESTINATION_CAPABILITY_UNVERIFIED
-    )
-    assert invalid.reason_code is GuardrailReasonCode.DESTINATION_CAPABILITY_INVALID
-    assert allowed.decision is GuardrailDecision.ALLOW
-    assert denied_verifier.calls == 1
-    assert allowed_verifier.calls == 1
-
-
-def test_web_search_uses_fixed_provider_origin_without_a_run_destination_capability() -> (
-    None
-):
-    verifier = _Verifier(RuntimeError("web_search must not verify a capability"))
-    result = ToolGuardrail(destination_verifier=verifier).evaluate(_web_request())
-
-    assert result.decision is GuardrailDecision.ALLOW
-    assert result.reason_code is GuardrailReasonCode.ALLOWED
-    assert verifier.calls == 0
-
-
-def test_destination_capability_is_bound_before_signature_provider_runs() -> None:
-    request = _web_fetch_request()
-    wrong_binding = destination_context_binding(
-        user_id="user-1",
-        tenant_id="tenant-1",
-        thread_id="thread-1",
-        run_id="different-run",
-    )
-    verifier = _Verifier(True)
-    result = ToolGuardrail(destination_verifier=verifier).evaluate(
-        replace(
-            request,
-            destination_capability=_capability(
-                request,
-                context_binding=wrong_binding,
-            ),
-        )
-    )
-
-    assert result.decision is GuardrailDecision.DENY
-    assert result.reason_code is GuardrailReasonCode.DESTINATION_CAPABILITY_INVALID
-    assert verifier.calls == 0
-
-
-def test_destination_capability_provider_exception_fails_closed_and_redacted() -> None:
-    request = _web_fetch_request()
-    verifier = _Verifier(RuntimeError("private verifier failure"))
-    result = ToolGuardrail(destination_verifier=verifier).evaluate(
-        replace(request, destination_capability=_capability(request))
-    )
-
-    assert result.decision is GuardrailDecision.DENY
-    assert (
-        result.reason_code is GuardrailReasonCode.DESTINATION_CAPABILITY_PROVIDER_FAILED
-    )
-    assert "private verifier failure" not in repr(result)
+    assert search.decision is GuardrailDecision.ALLOW
+    assert search.reason_code is GuardrailReasonCode.ALLOWED
+    assert fetch.decision is GuardrailDecision.ALLOW
+    assert fetch.reason_code is GuardrailReasonCode.ALLOWED
 
 
 def test_policy_provider_exception_fails_closed_without_exception_details() -> None:
@@ -606,19 +488,6 @@ def test_guardrail_result_rejects_metadata_that_only_looks_audit_safe() -> None:
             policy_hash="a" * 64,
             safe_metadata={"role_count": 10_000},
         )
-
-
-def test_destination_signature_and_destination_are_not_rendered() -> None:
-    request = _web_fetch_request()
-    capability = _capability(
-        request,
-        signature="sensitive-capability-signature",
-        destination_hash="4" * 64,
-    )
-
-    assert "sensitive-capability-signature" not in repr(capability)
-    assert "4" * 64 not in repr(capability)
-    assert capability.capability_id not in repr(capability)
 
 
 def test_invalid_provider_result_is_denied() -> None:
