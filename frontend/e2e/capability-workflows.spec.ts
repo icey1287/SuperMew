@@ -77,6 +77,20 @@ function capabilityCatalog(role: 'user' | 'admin') {
         resource_scopes: ['public-web'],
       },
       {
+        name: 'weather',
+        version: '1.0.0',
+        description:
+          'Query structured current weather or forecast data for a Chinese city，查询天气、气温、湿度、风向、实况与预报；工具不可用时明确说明且不猜测。',
+        activation: '/weather',
+        available: true,
+        availability_reason: null,
+        required_roles: [],
+        tool_names: [],
+        approval_tools: [],
+        network_policies: ['restricted'],
+        resource_scopes: ['public-web'],
+      },
+      {
         name: 'sql-assistant',
         version: '1.0.0',
         description: 'Analyze authorized data with bounded read-only SQL.',
@@ -170,6 +184,23 @@ function sseBody(runId: string, threadId: string, events: Array<[string, object]
     .join('');
 }
 
+test('shows concise Chinese skill copy without repeating the selected mode', async ({ page }) => {
+  await mockAuthenticatedShell(page, 'admin');
+  await login(page, 'admin');
+
+  await page.keyboard.press('Control+K');
+  const palette = page.getByRole('dialog', { name: '能力命令面板' });
+  const weatherOption = palette.getByRole('option', { name: /天气查询/ });
+  await expect(weatherOption).toContainText('查询天气、气温和未来预报');
+  await expect(weatherOption).not.toContainText('Query structured');
+  await weatherOption.click();
+
+  const inputArea = page.locator('.input-area-wrapper');
+  await expect(inputArea.getByText('天气查询', { exact: true })).toHaveCount(1);
+  await expect(inputArea.getByText('查询天气、气温和未来预报', { exact: true })).toHaveCount(1);
+  await expect(inputArea.locator('.mode-composer-panel')).toHaveCount(0);
+});
+
 test('discovers Skills, enters Web Research, and renders Tool timeline plus Artifact', async ({
   page,
 }) => {
@@ -230,11 +261,11 @@ test('discovers Skills, enters Web Research, and renders Tool timeline plus Arti
   await page.getByRole('button', { name: '能力中心' }).click();
   const center = page.getByRole('dialog', { name: '能力中心' });
   await expect(center).toBeVisible();
-  const sqlCard = center.locator('article').filter({ hasText: 'SQL Assistant' });
+  const sqlCard = center.locator('article').filter({ hasText: '数据分析' });
   await expect(sqlCard.getByText('权限不足')).toBeVisible();
   await expect(sqlCard.getByText('角色：admin')).toBeVisible();
   await expect(sqlCard.getByRole('button', { name: '使用' })).toBeDisabled();
-  const webCard = center.locator('article').filter({ hasText: 'Web Research' });
+  const webCard = center.locator('article').filter({ hasText: '网页调研' });
   await webCard.getByRole('button', { name: '使用' }).click();
 
   const input = page.getByPlaceholder(/描述要调研的公开问题/);
@@ -317,17 +348,17 @@ test('opens the command palette and binds Sandbox approval to the created Run', 
   await page.keyboard.press('Control+K');
   const palette = page.getByRole('dialog', { name: '能力命令面板' });
   await expect(palette).toBeVisible();
-  await palette.getByRole('combobox').fill('Sandbox');
-  await palette.getByRole('option', { name: /Sandbox/ }).click();
+  await palette.getByRole('combobox').fill('代码沙盒');
+  await palette.getByRole('option', { name: /代码沙盒/ }).click();
 
-  const input = page.getByPlaceholder(/输入要在隔离 Sandbox/);
+  const input = page.getByPlaceholder(/输入要在隔离环境中执行的代码/);
   await input.fill('print(6 * 7)');
   await page.getByRole('button', { name: '发送消息' }).click();
 
-  const approval = page.getByRole('dialog', { name: '确认高风险 Tool 预授权' });
+  const approval = page.getByRole('dialog', { name: '确认高风险工具授权' });
   await expect(approval).toBeVisible();
   await expect(approval.getByText('sandbox_execute')).toBeVisible();
-  await expect(approval.getByText(/绑定当前 Thread 与即将创建的单个 Run/)).toBeVisible();
+  await expect(approval.getByText(/仅用于当前对话中即将发起的一次任务/)).toBeVisible();
   expect(createRequest).toBeNull();
 
   await approval.getByRole('button', { name: '确认并发送' }).click();
@@ -365,7 +396,7 @@ test('keeps the live Tool timeline reachable on a narrow screen before message o
   await login(page, 'user');
   await page
     .locator('.welcome-mode-grid')
-    .getByRole('button', { name: /Web Research/ })
+    .getByRole('button', { name: /网页调研/ })
     .click();
   await page.getByPlaceholder(/描述要调研的公开问题/).fill('持续观察公开发布');
   await page.getByRole('button', { name: '发送消息' }).click();

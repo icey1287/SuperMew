@@ -31,7 +31,7 @@
               aria-expanded="true"
               aria-controls="capability-command-results"
               :aria-activedescendant="activeOptionId"
-              placeholder="搜索模式或 Skill…"
+              placeholder="搜索模式或能力…"
               @input="resetActiveIndex"
             />
           </label>
@@ -85,7 +85,7 @@
           <div v-if="!resultItems.length" class="command-palette-empty" role="status">
             <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
             <strong>没有匹配的能力</strong>
-            <span>换一个 Skill 名称或 Tool 关键词试试。</span>
+            <span>换一个能力名称或工具关键词试试。</span>
           </div>
         </div>
 
@@ -101,6 +101,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
+import {
+  skillDisplayIcon,
+  skillDisplayName,
+  skillDisplaySummary,
+} from '@/capabilities/skillPresentation';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type { CapabilityAvailabilityReason } from '@/types/capabilities';
 import { getPublicError } from '@/utils/api';
@@ -130,24 +135,6 @@ const activeIndex = ref(-1);
 let returnFocus: HTMLElement | null = null;
 let restoreFocusOnClose = true;
 
-const skillLabel = (name: string) => {
-  const labels: Record<string, string> = {
-    'knowledge-base': '知识库问答',
-    'web-research': 'Web Research',
-    'sql-assistant': 'SQL Assistant',
-    sandbox: 'Sandbox',
-  };
-  return labels[name] || name;
-};
-
-const skillIcon = (name: string) => {
-  if (name === 'knowledge-base') return 'fa-regular fa-bookmark';
-  if (name === 'web-research') return 'fa-solid fa-globe';
-  if (name === 'sql-assistant') return 'fa-solid fa-database';
-  if (name === 'sandbox') return 'fa-solid fa-terminal';
-  return 'fa-solid fa-wand-magic-sparkles';
-};
-
 const unavailableLabel = (reason: CapabilityAvailabilityReason) =>
   reason === 'permission_required' ? '权限不足' : '尚未配置';
 
@@ -160,7 +147,7 @@ const resultItems = computed<CommandItem[]>(() => {
     key: 'mode:general',
     kind: 'mode',
     label: '智能对话',
-    description: '通用模式 · Agent 自动选择常驻 Tool',
+    description: '自动选择合适的工具回答',
     icon: 'fa-regular fa-message',
     skillName: null,
     disabled: false,
@@ -170,9 +157,9 @@ const resultItems = computed<CommandItem[]>(() => {
   const skills = store.skills.map<CommandItem>((skill) => ({
     key: `skill:${skill.name}`,
     kind: 'skill',
-    label: skillLabel(skill.name),
-    description: `${skill.activation} · ${skill.description}`,
-    icon: skillIcon(skill.name),
+    label: skillDisplayName(skill.name, skill.description),
+    description: skillDisplaySummary(skill),
+    icon: skillDisplayIcon(skill.name),
     skillName: skill.name,
     disabled: !skill.available,
     selected: store.selectedSkillName === skill.name,
@@ -182,7 +169,7 @@ const resultItems = computed<CommandItem[]>(() => {
     key: 'command:center',
     kind: 'command',
     label: '打开能力中心',
-    description: '查看完整 Skill、Tool、网络策略与资源范围',
+    description: '查看全部能力、工具和使用范围',
     icon: 'fa-solid fa-table-cells-large',
     skillName: null,
     disabled: false,

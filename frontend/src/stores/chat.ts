@@ -172,7 +172,7 @@ export const useChatStore = defineStore('chat', {
       const skillName = useCapabilityStore().selectedSkillName;
       if (skillName === 'web-research') return '描述要调研的公开问题、时间范围或来源偏好…';
       if (skillName === 'sql-assistant') return '描述要分析的业务问题、指标、维度与时间范围…';
-      if (skillName === 'sandbox') return '输入要在隔离 Sandbox 中执行的源码…';
+      if (skillName === 'sandbox') return '输入要在隔离环境中执行的代码…';
       if (skillName === 'knowledge-base') return '询问已上传文档，并说明需要引用的范围…';
       return '和喵喵说点什么吧... (Shift+Enter 换行)';
     },

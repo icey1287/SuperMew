@@ -82,17 +82,8 @@
         </button>
       </div>
 
-      <section v-if="capabilityStore.selectedSkill" class="mode-composer-panel">
-        <div class="mode-composer-heading">
-          <span><i :class="modeIcon"></i></span>
-          <div>
-            <strong>{{ modeLabel }}</strong>
-            <small>{{ modeGuidance }}</small>
-          </div>
-          <span class="mode-policy-chip">{{ modePolicy }}</span>
-        </div>
-
-        <div v-if="isSandbox" class="sandbox-language" aria-label="Sandbox 语言">
+      <section v-if="isSandbox || quickPrompts.length" class="mode-composer-panel">
+        <div v-if="isSandbox" class="sandbox-language" aria-label="代码沙盒执行语言">
           <span>执行语言</span>
           <button
             v-for="language in sandboxLanguages"
@@ -182,6 +173,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import {
+  skillDisplayIcon,
+  skillDisplayName,
+  skillDisplaySummary,
+} from '@/capabilities/skillPresentation';
 import { useChatStore } from '@/stores/chat';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type { SandboxLanguage } from '@/types/capabilities';
@@ -202,48 +198,20 @@ const selectedModeUnavailable = computed(() => capabilityStore.selectedModeUnava
 const modeLabel = computed(() => {
   const name = capabilityStore.selectedSkillName;
   if (!name) return '智能对话';
-  const labels: Record<string, string> = {
-    'knowledge-base': '知识库问答',
-    'web-research': 'Web Research',
-    'sql-assistant': 'SQL Assistant',
-    sandbox: 'Sandbox',
-  };
-  return labels[name] || name;
+  return skillDisplayName(name, capabilityStore.selectedSkill?.description);
 });
 
 const modeIcon = computed(() => {
   const name = capabilityStore.selectedSkillName;
-  if (name === 'knowledge-base') return 'fa-regular fa-bookmark';
-  if (name === 'web-research') return 'fa-solid fa-globe';
-  if (name === 'sql-assistant') return 'fa-solid fa-database';
-  if (name === 'sandbox') return 'fa-solid fa-terminal';
-  return 'fa-regular fa-message';
+  return name ? skillDisplayIcon(name) : 'fa-regular fa-message';
 });
 
 const modeSummary = computed(() => {
   if (capabilityStore.loading) return '能力目录同步中';
-  if (!capabilityStore.selectedSkill) return '自动选择常驻工具';
   if (selectedModeUnavailable.value === 'permission_required') return '当前账号权限不足';
   if (selectedModeUnavailable.value === 'not_configured') return '运行配置尚未就绪';
-  return capabilityStore.selectedSkill.description;
-});
-
-const modeGuidance = computed(() => {
-  const name = capabilityStore.selectedSkillName;
-  if (name === 'knowledge-base') return '只根据已发布 Document Version 与可引用证据回答。';
-  if (name === 'web-research') return '检索公开网络并把可核验结论链接到 Web Evidence。';
-  if (name === 'sql-assistant') return '先读取授权 schema，再执行有界只读 SELECT 分析。';
-  if (name === 'sandbox') return '源码将在无网络、无宿主挂载的隔离环境执行。';
-  return capabilityStore.selectedSkill?.description || '';
-});
-
-const modePolicy = computed(() => {
-  const name = capabilityStore.selectedSkillName;
-  if (name === 'web-research') return '受限公网';
-  if (name === 'sql-assistant') return '私有数据只读';
-  if (name === 'sandbox') return 'Run 预审批';
-  if (name === 'knowledge-base') return '知识库只读';
-  return 'Registry Skill';
+  if (!capabilityStore.selectedSkill) return '自动选择合适的工具回答';
+  return skillDisplaySummary(capabilityStore.selectedSkill);
 });
 
 const quickPrompts = computed(() => {
@@ -262,17 +230,17 @@ const quickPrompts = computed(() => {
 
 const unavailableModeMessage = computed(() =>
   selectedModeUnavailable.value === 'permission_required'
-    ? '当前账号没有使用此模式所需的角色，无法创建 Run。'
-    : '此模式所需的运行配置尚未就绪，无法创建 Run。'
+    ? '当前账号没有使用此模式所需的角色，无法发起任务。'
+    : '此模式所需的运行配置尚未就绪，无法发起任务。'
 );
 
 const footerNotice = computed(() => {
-  if (isSandbox.value) return '代码执行结果来自隔离 Sandbox；请勿提交 Secret 或私有文档正文。';
+  if (isSandbox.value) return '代码将在隔离环境中执行；请勿提交密钥或私有文档正文。';
   if (capabilityStore.selectedSkillName === 'sql-assistant') {
-    return 'SQL Assistant 只允许有界只读查询，结果仍需结合业务口径复核。';
+    return '数据分析只允许受限的只读查询，结果仍需结合业务口径复核。';
   }
   if (capabilityStore.selectedSkillName === 'web-research') {
-    return 'Web Evidence 具有时效性，请结合来源时间与覆盖范围复核。';
+    return '网页信息具有时效性，请结合来源时间与覆盖范围复核。';
   }
   return 'AI 生成内容可能有误，重要结论请结合引用复核。';
 });
@@ -479,63 +447,12 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
   background: var(--surface-soft);
 }
 
-.mode-composer-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mode-composer-heading > span:first-child {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--lilac);
-  background: rgba(200, 185, 255, 0.07);
-  font-size: var(--font-small);
-}
-
-.mode-composer-heading > div {
-  min-width: 0;
-  flex: 1;
-}
-
-.mode-composer-heading strong,
-.mode-composer-heading small {
-  display: block;
-}
-
-.mode-composer-heading strong {
-  color: var(--text-soft);
-  font-size: var(--font-small);
-}
-
-.mode-composer-heading small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: var(--font-micro);
-  line-height: 1.5;
-}
-
-.mode-policy-chip {
-  flex: none;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--mint);
-  font-size: var(--font-micro);
-}
-
 .mode-quick-prompts,
 .sandbox-language {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 5px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
 }
 
 .mode-quick-prompts > span,
@@ -576,7 +493,6 @@ onUnmounted(() => window.removeEventListener('capability-selected', focusTextare
 @media (max-width: 620px) {
   .mode-trigger kbd,
   .mode-center-link,
-  .mode-policy-chip,
   .sandbox-language small {
     display: none;
   }

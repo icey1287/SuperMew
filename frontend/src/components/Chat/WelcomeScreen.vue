@@ -1,7 +1,7 @@
 <template>
   <section class="welcome-screen">
     <img :src="superMewMascot" class="welcome-avatar" alt="" aria-hidden="true" />
-    <span class="welcome-eyebrow"><i class="fa-solid fa-sparkles"></i> Mew is ready</span>
+    <span class="welcome-eyebrow"><i class="fa-solid fa-sparkles"></i> 喵喵已准备好</span>
     <h2>你好，我是喵喵。</h2>
     <p>我会在回答时检索你的知识库、展示处理过程，并把每个关键结论链接回原始证据。</p>
 
@@ -13,7 +13,7 @@
       >
         <span><i class="fa-regular fa-message"></i></span>
         <strong>智能对话</strong>
-        <small>自动路由常驻 Tool</small>
+        <small>自动选择合适工具</small>
       </button>
       <button
         v-for="skill in featuredSkills"
@@ -21,24 +21,33 @@
         type="button"
         :class="{ active: capabilityStore.selectedSkillName === skill.name }"
         :disabled="!skill.available"
-        :title="skill.available ? `使用 ${skillLabel(skill.name)}` : unavailableLabel(skill)"
+        :title="
+          skill.available
+            ? `使用 ${skillCompactName(skill.name, skill.description)}`
+            : unavailableLabel(skill)
+        "
         @click="selectMode(skill.name)"
       >
-        <span><i :class="skillIcon(skill.name)"></i></span>
-        <strong>{{ skillLabel(skill.name) }}</strong>
-        <small>{{ skill.available ? skillHint(skill.name) : unavailableLabel(skill) }}</small>
+        <span><i :class="skillDisplayIcon(skill.name)"></i></span>
+        <strong>{{ skillCompactName(skill.name, skill.description) }}</strong>
+        <small>{{ skill.available ? skillDisplaySummary(skill) : unavailableLabel(skill) }}</small>
       </button>
     </div>
 
     <button type="button" class="welcome-center-link" @click="capabilityStore.openCenter">
       <i class="fa-solid fa-wand-magic-sparkles"></i>
-      浏览全部 Skill 与 Tool
+      浏览全部能力与工具
     </button>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import {
+  skillCompactName,
+  skillDisplayIcon,
+  skillDisplaySummary,
+} from '@/capabilities/skillPresentation';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type { CapabilitySkill } from '@/types/capabilities';
 import superMewMascot from '@/assets/images/supermew-mascot.webp';
@@ -54,32 +63,6 @@ const featuredSkills = computed(() =>
 const selectMode = (name: string | null) => {
   capabilityStore.selectSkill(name);
   window.dispatchEvent(new CustomEvent('capability-selected'));
-};
-
-const skillLabel = (name: string) => {
-  const labels: Record<string, string> = {
-    'knowledge-base': '知识库',
-    'web-research': 'Web Research',
-    'sql-assistant': 'SQL Assistant',
-    sandbox: 'Sandbox',
-  };
-  return labels[name] || name;
-};
-
-const skillHint = (name: string) => {
-  if (name === 'knowledge-base') return '基于文档证据';
-  if (name === 'web-research') return '公开网络调研';
-  if (name === 'sql-assistant') return '有界只读分析';
-  if (name === 'sandbox') return '隔离代码执行';
-  return 'Registry Skill';
-};
-
-const skillIcon = (name: string) => {
-  if (name === 'knowledge-base') return 'fa-regular fa-bookmark';
-  if (name === 'web-research') return 'fa-solid fa-globe';
-  if (name === 'sql-assistant') return 'fa-solid fa-database';
-  if (name === 'sandbox') return 'fa-solid fa-terminal';
-  return 'fa-solid fa-wand-magic-sparkles';
 };
 
 const unavailableLabel = (skill: CapabilitySkill) =>
