@@ -131,14 +131,14 @@ create/reserve Run
 
 ## 按变更类型验证
 
-| 变更 | 最低验证 |
-| --- | --- |
-| Auth/session | `session.spec.ts` + auth Store/401 测试 |
-| Event/Run | `runEventStream.spec.ts` + `runEventReducer.spec.ts` + Run Store |
-| Store | 对应 Store 单测，含 cleanup/stale response |
-| 组件 | 组件单测 + typecheck；关键流程加 E2E |
-| 样式/路由/依赖 | format/lint/typecheck/build:check |
-| Contract | 生成器 + 前后端 consumer 测试 |
+| 变更           | 最低验证                                                         |
+| -------------- | ---------------------------------------------------------------- |
+| Auth/session   | `session.spec.ts` + auth Store/401 测试                          |
+| Event/Run      | `runEventStream.spec.ts` + `runEventReducer.spec.ts` + Run Store |
+| Store          | 对应 Store 单测，含 cleanup/stale response                       |
+| 组件           | 组件单测 + typecheck；关键流程加 E2E                             |
+| 样式/路由/依赖 | format/lint/typecheck/build:check                                |
+| Contract       | 生成器 + 前后端 consumer 测试                                    |
 
 ## 文档更新
 
