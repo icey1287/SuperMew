@@ -13,7 +13,6 @@ from backend.tools.contracts import ToolResultV1, new_tool_failure, new_tool_suc
 from backend.web_research.contracts import (
     WebCitation,
     WebEvidence,
-    WebResearchLimits,
     WebResearchResult,
 )
 
@@ -56,12 +55,33 @@ def _web_evidence_budget_failure() -> ToolResultV1:
     )
 
 
-def _tool_result(result: WebResearchResult) -> ToolResultV1:
+def _tool_data_size(data: dict[str, object]) -> int:
+    return len(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+
+def _tool_result(
+    result: WebResearchResult,
+    *,
+    data: dict[str, object] | None = None,
+) -> ToolResultV1:
     if not isinstance(result, WebResearchResult):
         raise TypeError("Web runtime returned an invalid result contract")
+    projection = result.to_tool_dict() if data is None else data
     metadata = result.tool_observability_metadata()
+    metadata["output_bytes"] = _tool_data_size(projection)
+    projected_truncated = projection.get("truncated")
+    if isinstance(projected_truncated, bool):
+        metadata["truncated"] = projected_truncated
     return new_tool_success(
-        data=result.to_tool_dict(),
+        data=projection,
         observability_metadata={
             key: value
             for key, value in metadata.items()
@@ -70,24 +90,27 @@ def _tool_result(result: WebResearchResult) -> ToolResultV1:
     )
 
 
-def _registered_tool_result_size(result: WebResearchResult, *, tool_name: str) -> int:
+def _registered_tool_result_size(
+    result: ToolResultV1,
+    *,
+    tool_name: str,
+) -> int:
     """Estimate the complete Registry-wrapped payload seen by the model."""
 
-    base = _tool_result(result)
     encoded = json.dumps(
-        base.model_dump(mode="json"),
+        result.model_dump(mode="json"),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
     metadata = {
-        **base.observability_metadata,
+        **result.observability_metadata,
         "tool_name": tool_name,
         "tool_version": _WEB_TOOL_VERSION,
         "result_size": len(encoded),
     }
-    wrapped = base.model_copy(
+    wrapped = result.model_copy(
         update={
             "duration_ms": _MAX_WEB_TOOL_DURATION_MS,
             "observability_metadata": metadata,
@@ -101,32 +124,6 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
     if len(encoded) <= max_bytes:
         return value
     return encoded[: max(max_bytes, 0)].decode("utf-8", errors="ignore").rstrip()
-
-
-def _rebuild_evidence(
-    source: WebEvidence,
-    *,
-    title: str,
-    snippet: str,
-    content: str,
-) -> WebEvidence:
-    title_bytes = len(title.encode("utf-8"))
-    snippet_bytes = len(snippet.encode("utf-8"))
-    content_bytes = len(content.encode("utf-8"))
-    limits = WebResearchLimits(
-        max_title_bytes=max(title_bytes, 1),
-        max_snippet_bytes=max(snippet_bytes, 1),
-        max_content_bytes=max(content_bytes, 1),
-        max_total_evidence_bytes=max(content_bytes, 1),
-    )
-    return WebEvidence.create(
-        canonical_url=source.canonical_url,
-        title=title,
-        snippet=snippet,
-        content=content,
-        retrieved_at=source.retrieved_at,
-        limits=limits,
-    )
 
 
 def _research_result(
@@ -155,76 +152,63 @@ _MINIMUM_WEB_RESEARCH_RESULT = _research_result(
 )
 
 
-def _fit_web_result(
+def _fit_web_tool_result(
     result: WebResearchResult,
     max_bytes: int,
     *,
     tool_name: str,
-) -> WebResearchResult:
-    """Keep a valid structured result while fitting the remaining Run budget."""
+) -> ToolResultV1 | None:
+    """Trim only model-visible evidence bodies after building the ToolResult."""
 
-    if _registered_tool_result_size(result, tool_name=tool_name) <= max_bytes:
-        return result
-    empty = _research_result([], truncated=True)
-    if _registered_tool_result_size(empty, tool_name=tool_name) > max_bytes:
-        return empty
+    fitted = _tool_result(result)
+    if _registered_tool_result_size(fitted, tool_name=tool_name) <= max_bytes:
+        return fitted
 
-    fitted: list[WebEvidence] = []
-    for source in result.evidence:
-        title = source.title
-        snippet = source.snippet
-        content = source.content
-        while content:
-            item = _rebuild_evidence(
-                source,
-                title=title,
-                snippet=snippet,
-                content=content,
+    data = result.to_tool_dict()
+    evidence = data.get("evidence")
+    if not isinstance(evidence, list):
+        return None
+    data["truncated"] = True
+    fitted = _tool_result(result, data=data)
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            return None
+        content = item.get("content")
+        if not isinstance(content, str):
+            return None
+        while (
+            content
+            and (
+                excess := _registered_tool_result_size(fitted, tool_name=tool_name)
+                - max_bytes
             )
-            candidate = _research_result([*fitted, item], truncated=True)
-            excess = (
-                _registered_tool_result_size(candidate, tool_name=tool_name) - max_bytes
-            )
-            if excess <= 0:
-                fitted.append(item)
-                break
-            if snippet:
-                snippet = _truncate_utf8(
-                    snippet,
-                    max(len(snippet.encode("utf-8")) - excess, 0),
-                )
-                continue
-            if title:
-                title = _truncate_utf8(
-                    title,
-                    max(len(title.encode("utf-8")) - excess, 0),
-                )
-                continue
+            > 0
+        ):
             content_bytes = len(content.encode("utf-8"))
-            minimum_content_bytes = len(content[0].encode("utf-8"))
-            reduced = _truncate_utf8(
-                content,
-                max(content_bytes - excess, minimum_content_bytes),
-            )
-            if not reduced or reduced == content:
-                content = ""
-                break
+            reduced = _truncate_utf8(content, max(content_bytes - excess, 0))
+            if reduced == content:
+                reduced = _truncate_utf8(content, max(content_bytes - 1, 0))
+            item["content"] = reduced
             content = reduced
-        if not content:
-            break
-    return _research_result(fitted, truncated=True)
+            fitted = _tool_result(result, data=data)
+
+    if _registered_tool_result_size(fitted, tool_name=tool_name) > max_bytes:
+        return None
+    return fitted
 
 
-def _bounded_web_result(
+def _bounded_web_tool_result(
     ctx: RunRequestContext,
     result: WebResearchResult,
     *,
     max_total_evidence_bytes: int,
     tool_name: str,
-) -> WebResearchResult:
+) -> ToolResultV1 | None:
     remaining = ctx.remaining_web_tool_result_budget(max_total_evidence_bytes)
+    full = _tool_result(result)
     empty_size = _registered_tool_result_size(
-        _research_result([], truncated=True),
+        _tool_result(_research_result([], truncated=True)),
         tool_name=tool_name,
     )
     claimable = (
@@ -234,12 +218,12 @@ def _bounded_web_result(
     )
     claimed = ctx.claim_web_tool_result_budget(
         min(
-            _registered_tool_result_size(result, tool_name=tool_name),
+            _registered_tool_result_size(full, tool_name=tool_name),
             claimable,
         ),
         limit_bytes=max_total_evidence_bytes,
     )
-    return _fit_web_result(result, claimed, tool_name=tool_name)
+    return _fit_web_tool_result(result, claimed, tool_name=tool_name)
 
 
 def _web_failure(error: Exception) -> ToolResultV1 | None:
@@ -293,7 +277,7 @@ def make_web_search(
         if ctx.remaining_web_tool_result_budget(
             max_total_evidence_bytes
         ) < _registered_tool_result_size(
-            _MINIMUM_WEB_RESEARCH_RESULT,
+            _tool_result(_MINIMUM_WEB_RESEARCH_RESULT),
             tool_name="web_search",
         ):
             return _web_evidence_budget_failure()
@@ -316,15 +300,14 @@ def make_web_search(
                     deadline_at=deadline_at,
                     cancellation_probe=cancellation_probe,
                 )
-            bounded_result = _bounded_web_result(
+            bounded_result = _bounded_web_tool_result(
                 ctx,
                 result,
                 max_total_evidence_bytes=max_total_evidence_bytes,
                 tool_name="web_search",
             )
-            if result.evidence and not bounded_result.evidence:
+            if bounded_result is None:
                 return _web_evidence_budget_failure()
-            result = bounded_result
             ctx.record_web_search_result(
                 result,
                 allowed_domains=normalized_domains,
@@ -335,7 +318,7 @@ def make_web_search(
                 raise
             return failure
 
-        return _tool_result(result)
+        return bounded_result
 
     return web_search
 
@@ -359,7 +342,7 @@ def make_web_fetch(
         if ctx.remaining_web_tool_result_budget(
             max_total_evidence_bytes
         ) < _registered_tool_result_size(
-            _MINIMUM_WEB_RESEARCH_RESULT,
+            _tool_result(_MINIMUM_WEB_RESEARCH_RESULT),
             tool_name="web_fetch",
         ):
             return _web_evidence_budget_failure()
@@ -385,22 +368,21 @@ def make_web_fetch(
                     deadline_at=deadline_at,
                     cancellation_probe=cancellation_probe,
                 )
-            bounded_result = _bounded_web_result(
+            bounded_result = _bounded_web_tool_result(
                 ctx,
                 result,
                 max_total_evidence_bytes=max_total_evidence_bytes,
                 tool_name="web_fetch",
             )
-            if result.evidence and not bounded_result.evidence:
+            if bounded_result is None:
                 return _web_evidence_budget_failure()
-            result = bounded_result
             ctx.record_web_fetch_result(result)
         except Exception as exc:
             failure = _web_failure(exc)
             if failure is None:
                 raise
             return failure
-        return _tool_result(result)
+        return bounded_result
 
     return web_fetch
 

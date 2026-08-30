@@ -193,10 +193,11 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability():
 
     assert tool_result.success is True
     public_evidence = tool_result.data["evidence"][0]
-    assert public_evidence["citation_token"] == evidence.citation_token
-    assert public_evidence["source_domain"] == "www.example.edu"
-    assert public_evidence["content"] == evidence.content
-    assert "canonical_url" not in public_evidence
+    assert public_evidence == {
+        "citation": 1,
+        "content": evidence.content,
+        "title": evidence.title,
+    }
     assert result.to_public_dict()["evidence"][0]["canonical_url"] == (
         evidence.canonical_url
     )
@@ -219,6 +220,54 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability():
     ]
     assert "current public research" not in str(tool_result.observability_metadata)
     assert evidence.canonical_url not in str(tool_result.observability_metadata)
+    ctx.close()
+
+
+def test_web_search_trims_only_model_content_after_tool_result_wrapping():
+    settings = WebResearchSettings(
+        _env_file=None,
+        WEB_RESEARCH_ENABLED=True,
+        WEB_RESEARCH_MAX_CONTENT_BYTES=3_072,
+        WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES=3_072,
+    )
+    first = _result(
+        url="https://www.example.edu/research/first",
+        content="a" * 2_000,
+    ).evidence[0]
+    second = _result(
+        url="https://www.example.edu/research/second",
+        content="b" * 2_000,
+    ).evidence[0]
+    server_result = WebResearchResult.create([first, second])
+
+    class Runtime:
+        def search(self, query, *, limit, deadline_at, cancellation_probe):
+            return server_result
+
+    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-final-fit")
+    registry = build_default_tool_registry(
+        web_research_settings=settings,
+        web_runtime=Runtime(),
+    )
+    session = registry.bind(ctx, _access())
+    session.apply_skill({"web_search"})
+
+    payload = session.resolve("web_search").invoke({"query": "public evidence"})
+    tool_result = ToolResultV1.model_validate_json(payload)
+    model_evidence = tool_result.data["evidence"]
+
+    assert tool_result.success is True
+    assert tool_result.data["truncated"] is True
+    assert len(payload.encode("utf-8")) <= settings.max_total_evidence_bytes
+    assert [item["citation"] for item in model_evidence] == [1, 2]
+    assert all(set(item) == {"citation", "content", "title"} for item in model_evidence)
+    assert sum(len(item["content"].encode("utf-8")) for item in model_evidence) < 4_000
+    assert [item.content for item in server_result.evidence] == [
+        "a" * 2_000,
+        "b" * 2_000,
+    ]
+    assert ctx.resolve_web_evidence(first.evidence_id) == first.canonical_url
+    assert ctx.resolve_web_evidence(second.evidence_id) == second.canonical_url
     ctx.close()
 
 
@@ -327,7 +376,7 @@ def test_web_search_skips_provider_when_remaining_budget_cannot_fit_evidence():
             return _result(content="x" * 1_024)
 
     ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-fitted-empty")
-    ctx.claim_web_tool_result_budget(2_500, limit_bytes=3_072)
+    ctx.claim_web_tool_result_budget(2_800, limit_bytes=3_072)
     registry = build_default_tool_registry(
         web_research_settings=_settings(),
         web_runtime=Runtime(),

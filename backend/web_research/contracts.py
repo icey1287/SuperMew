@@ -483,12 +483,12 @@ class WebEvidence:
             "title": self.title,
         }
 
-    def to_tool_dict(self) -> dict[str, str | int]:
-        data = self.to_public_dict()
-        data.pop("canonical_url")
-        data["citation_token"] = self.citation_token
-        data["source_domain"] = self.source_domain
-        return data
+    def to_tool_dict(self, citation: int = 1) -> dict[str, str | int]:
+        return {
+            "citation": citation,
+            "content": self.content,
+            "title": self.title,
+        }
 
     def observability_metadata(self) -> dict[str, int]:
         """Return aggregate-safe sizes; never return URL, title, hash or body."""
@@ -653,9 +653,10 @@ class WebResearchResult:
 
     def to_tool_dict(self) -> dict[str, object]:
         return {
-            "citations": [item.to_public_dict() for item in self.citations],
-            "evidence": [item.to_tool_dict() for item in self.evidence],
-            "schema_version": self.schema_version,
+            "evidence": [
+                item.to_tool_dict(citation=index)
+                for index, item in enumerate(self.evidence, start=1)
+            ],
             "truncated": self.truncated,
         }
 

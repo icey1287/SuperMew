@@ -188,15 +188,47 @@ def test_citation_identity_is_derived_only_from_evidence_identity() -> None:
     assert item.source_domain == "news.research.dev"
     assert item.to_public_dict()["canonical_url"] == item.canonical_url
     assert "citation_token" not in item.to_public_dict()
-    assert item.to_tool_dict()["citation_token"] == item.citation_token
-    assert item.to_tool_dict()["source_domain"] == item.source_domain
-    assert "canonical_url" not in item.to_tool_dict()
+    assert item.to_tool_dict() == {
+        "citation": 1,
+        "content": item.content,
+        "title": item.title,
+    }
     assert citation.evidence_id == item.evidence_id
     assert citation.citation_id.startswith("web_cit_")
     assert citation == WebCitation.from_evidence(item)
 
     with pytest.raises(ValueError, match="does not match"):
         replace(citation, citation_id=f"web_cit_{'0' * 64}")
+
+
+def test_tool_projection_uses_only_short_citation_numbers_and_model_content() -> None:
+    first = evidence()
+    second = evidence(
+        url="https://news.research.dev/second",
+        content="Second source",
+    )
+    result = WebResearchResult.create([first, second], truncated=True)
+
+    assert result.to_tool_dict() == {
+        "evidence": [
+            {"citation": 1, "content": first.content, "title": first.title},
+            {"citation": 2, "content": second.content, "title": second.title},
+        ],
+        "truncated": True,
+    }
+    serialized = str(result.to_tool_dict())
+    for hidden in (
+        "citations",
+        "citation_id",
+        "citation_token",
+        "content_sha256",
+        "evidence_id",
+        "retrieved_at",
+        "schema_version",
+        "snippet",
+        "source_domain",
+    ):
+        assert hidden not in serialized
 
 
 def test_result_generates_citations_and_exposes_aggregate_observability_only() -> None:

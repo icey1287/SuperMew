@@ -80,7 +80,6 @@ def _search_evidence_content_limit(limits: WebResearchLimits) -> int:
     return min(
         limits.max_snippet_bytes,
         limits.max_content_bytes,
-        max(limits.max_total_evidence_bytes // 4, 1),
     )
 
 

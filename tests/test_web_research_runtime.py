@@ -128,7 +128,7 @@ def test_search_returns_deterministic_bounded_evidence_and_omits_private_hits() 
     assert search.calls[0][0] == "architecture research"
 
 
-def test_search_enforces_result_and_aggregate_byte_limits() -> None:
+def test_search_enforces_result_and_model_projection_byte_limits() -> None:
     limits = WebResearchLimits(
         max_title_bytes=16,
         max_snippet_bytes=24,
@@ -169,12 +169,12 @@ def test_search_enforces_result_and_aggregate_byte_limits() -> None:
     evidence = runtime.search("query", limit=20)
 
     assert len(evidence.evidence) <= 2
-    assert evidence.encoded_size <= 900
+    assert evidence.tool_encoded_size <= 900
     assert evidence.truncated is True
     assert all(len(item.content.encode("utf-8")) <= 32 for item in evidence.evidence)
 
 
-def test_search_keeps_multiple_results_without_duplicating_provider_snippets() -> None:
+def test_search_does_not_pretruncate_each_result_to_quarter_budget() -> None:
     limits = WebResearchLimits(
         max_content_bytes=3_072,
         max_total_evidence_bytes=3_072,
@@ -202,12 +202,13 @@ def test_search_keeps_multiple_results_without_duplicating_provider_snippets() -
 
     result = runtime.search("Python 3.13 latest release", limit=2)
 
-    assert len(result.evidence) == 2
+    assert len(result.evidence) == 1
     assert all(item.snippet == "" for item in result.evidence)
-    assert all(
-        len(item.content.encode("utf-8")) <= limits.max_total_evidence_bytes // 4
-        for item in result.evidence
+    assert len(result.evidence[0].content.encode("utf-8")) == 2_000
+    assert len(result.evidence[0].content.encode("utf-8")) > (
+        limits.max_total_evidence_bytes // 4
     )
+    assert result.truncated is True
 
 
 @pytest.mark.parametrize(("path_bytes", "count"), ((1_100, 2), (3_000, 1)))
