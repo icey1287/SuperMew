@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { getCapabilityCatalog } from '@/capabilities/capabilityClient';
+import { skillDisplayName, skillDisplaySummary } from '@/capabilities/skillPresentation';
 import type {
   CapabilityApprovalDraft,
   CapabilityAvailabilityFilter,
@@ -109,7 +110,14 @@ export const useCapabilityStore = defineStore('capabilities', {
         if (state.availabilityFilter === 'available' && !skill.available) return false;
         if (state.availabilityFilter === 'unavailable' && skill.available) return false;
         if (!query) return true;
-        return [skill.name, skill.description, skill.activation, ...skill.tool_names]
+        return [
+          skill.name,
+          skill.description,
+          skill.activation,
+          skillDisplayName(skill.name, skill.description),
+          skillDisplaySummary(skill),
+          ...skill.tool_names,
+        ]
           .join(' ')
           .toLocaleLowerCase()
           .includes(query);

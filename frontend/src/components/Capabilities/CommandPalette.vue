@@ -31,7 +31,7 @@
               aria-expanded="true"
               aria-controls="capability-command-results"
               :aria-activedescendant="activeOptionId"
-              placeholder="搜索模式或 Skill…"
+              placeholder="搜索模式或能力…"
               @input="resetActiveIndex"
             />
           </label>
@@ -85,7 +85,7 @@
           <div v-if="!resultItems.length" class="command-palette-empty" role="status">
             <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
             <strong>没有匹配的能力</strong>
-            <span>换一个 Skill 名称或 Tool 关键词试试。</span>
+            <span>换一个能力名称或工具关键词试试。</span>
           </div>
         </div>
 
@@ -101,6 +101,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
+import {
+  skillDisplayIcon,
+  skillDisplayName,
+  skillDisplaySummary,
+} from '@/capabilities/skillPresentation';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type { CapabilityAvailabilityReason } from '@/types/capabilities';
 import { getPublicError } from '@/utils/api';
@@ -130,24 +135,6 @@ const activeIndex = ref(-1);
 let returnFocus: HTMLElement | null = null;
 let restoreFocusOnClose = true;
 
-const skillLabel = (name: string) => {
-  const labels: Record<string, string> = {
-    'knowledge-base': '知识库问答',
-    'web-research': 'Web Research',
-    'sql-assistant': 'SQL Assistant',
-    sandbox: 'Sandbox',
-  };
-  return labels[name] || name;
-};
-
-const skillIcon = (name: string) => {
-  if (name === 'knowledge-base') return 'fa-regular fa-bookmark';
-  if (name === 'web-research') return 'fa-solid fa-globe';
-  if (name === 'sql-assistant') return 'fa-solid fa-database';
-  if (name === 'sandbox') return 'fa-solid fa-terminal';
-  return 'fa-solid fa-wand-magic-sparkles';
-};
-
 const unavailableLabel = (reason: CapabilityAvailabilityReason) =>
   reason === 'permission_required' ? '权限不足' : '尚未配置';
 
@@ -160,7 +147,7 @@ const resultItems = computed<CommandItem[]>(() => {
     key: 'mode:general',
     kind: 'mode',
     label: '智能对话',
-    description: '通用模式 · Agent 自动选择常驻 Tool',
+    description: '自动选择合适的工具回答',
     icon: 'fa-regular fa-message',
     skillName: null,
     disabled: false,
@@ -170,9 +157,9 @@ const resultItems = computed<CommandItem[]>(() => {
   const skills = store.skills.map<CommandItem>((skill) => ({
     key: `skill:${skill.name}`,
     kind: 'skill',
-    label: skillLabel(skill.name),
-    description: `${skill.activation} · ${skill.description}`,
-    icon: skillIcon(skill.name),
+    label: skillDisplayName(skill.name, skill.description),
+    description: skillDisplaySummary(skill),
+    icon: skillDisplayIcon(skill.name),
     skillName: skill.name,
     disabled: !skill.available,
     selected: store.selectedSkillName === skill.name,
@@ -182,7 +169,7 @@ const resultItems = computed<CommandItem[]>(() => {
     key: 'command:center',
     kind: 'command',
     label: '打开能力中心',
-    description: '查看完整 Skill、Tool、网络策略与资源范围',
+    description: '查看全部能力、工具和使用范围',
     icon: 'fa-solid fa-table-cells-large',
     skillName: null,
     disabled: false,
@@ -399,7 +386,7 @@ watch(resultItems, resetActiveIndex);
   color: var(--text);
   background: transparent;
   font: inherit;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .command-palette kbd,
@@ -413,7 +400,7 @@ watch(resultItems, resetActiveIndex);
   border-radius: 6px;
   color: var(--muted);
   background: var(--surface-soft);
-  font-size: 7px;
+  font-size: 11px;
   font-family: inherit;
 }
 
@@ -421,7 +408,7 @@ watch(resultItems, resetActiveIndex);
   padding: 8px 15px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .command-palette-results {
@@ -489,19 +476,21 @@ watch(resultItems, resetActiveIndex);
 }
 
 .command-option-copy strong {
-  font-size: 10px;
+  font-size: 15px;
+  line-height: 1.35;
 }
 
 .command-option-copy small {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .command-option-state,
 .command-option-shortcut {
   color: var(--muted);
-  font-size: 7px;
+  font-size: 12px;
 }
 
 .command-option-state.is-selected {
@@ -519,11 +508,11 @@ watch(resultItems, resetActiveIndex);
 
 .command-palette-empty strong {
   color: var(--text-soft);
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .command-palette-empty span {
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .command-palette-footer {
@@ -534,7 +523,7 @@ watch(resultItems, resetActiveIndex);
   padding: 9px 14px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 7px;
+  font-size: 12px;
 }
 
 .command-palette-footer span {

@@ -157,6 +157,15 @@ function appendTimelineItem(next: RunEventState, item: RunTimelineItem): void {
   next.timeline = [...next.timeline, item];
 }
 
+function settleRunningTimelineItems(
+  next: RunEventState,
+  status: Extract<RunTimelineStatus, 'completed' | 'failed'>
+): void {
+  next.timeline = next.timeline.map((item) =>
+    item.status === 'running' ? { ...item, status } : item
+  );
+}
+
 function baseTimelineItem(
   event: RuntimeRunEvent,
   data: UnknownRecord,
@@ -350,10 +359,12 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       break;
     case 'run.waiting_input':
       finishActiveInterval(next, event.timestamp);
+      settleRunningTimelineItems(next, 'completed');
       next.status = 'waiting_input';
       break;
     case 'run.completed':
       finishActiveInterval(next, event.timestamp);
+      settleRunningTimelineItems(next, 'completed');
       next.status = 'completed';
       next.terminal = true;
       next.terminalSequence = event.sequence;
@@ -371,6 +382,7 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       break;
     case 'run.failed':
       finishActiveInterval(next, event.timestamp);
+      settleRunningTimelineItems(next, 'failed');
       next.status = 'failed';
       next.terminal = true;
       next.terminalSequence = event.sequence;
@@ -390,6 +402,7 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
       break;
     case 'run.cancelled':
       finishActiveInterval(next, event.timestamp);
+      settleRunningTimelineItems(next, 'failed');
       next.status = 'cancelled';
       next.terminal = true;
       next.terminalSequence = event.sequence;

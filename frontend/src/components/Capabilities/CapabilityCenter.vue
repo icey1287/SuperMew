@@ -17,9 +17,9 @@
       >
         <header class="capability-center-header">
           <div>
-            <span class="capability-eyebrow">Capability control plane</span>
+            <span class="capability-eyebrow">能力与权限</span>
             <h2 id="capability-center-title">能力中心</h2>
-            <p>选择当前 Thread 的 Skill，查看 Tool 权限、网络策略与审批要求。</p>
+            <p>选择当前对话使用的能力，并查看工具权限、网络范围与审批要求。</p>
           </div>
           <button type="button" aria-label="关闭能力中心" @click="closeCenter">
             <i class="fa-solid fa-xmark"></i>
@@ -32,7 +32,7 @@
             <input
               v-model="store.searchQuery"
               type="search"
-              placeholder="搜索 Skill、Tool 或能力说明"
+              placeholder="搜索能力、工具或说明"
               aria-label="搜索能力"
             />
             <kbd>⌘ K</kbd>
@@ -47,7 +47,7 @@
               :class="{ active: activeTab === 'skills' }"
               @click="activeTab = 'skills'"
             >
-              Skills
+              能力
             </button>
             <button
               id="capability-tools-tab"
@@ -58,7 +58,7 @@
               :class="{ active: activeTab === 'tools' }"
               @click="activeTab = 'tools'"
             >
-              Tools
+              工具
             </button>
           </div>
         </div>
@@ -87,7 +87,7 @@
           <div v-if="store.loading" class="capability-state" role="status">
             <i class="fa-solid fa-spinner fa-spin"></i>
             <strong>正在同步能力目录</strong>
-            <p>读取当前账号可用的 Skill、Tool 与安全策略…</p>
+            <p>读取当前账号可用的能力、工具与安全策略…</p>
           </div>
 
           <div v-else-if="store.error" class="capability-state is-error" role="status">
@@ -100,7 +100,7 @@
           <div v-else-if="store.isEmpty" class="capability-state">
             <i class="fa-regular fa-compass"></i>
             <strong>暂无已发布能力</strong>
-            <p>Registry 中还没有可展示的 Skill 或 Tool。</p>
+            <p>当前还没有可展示的能力或工具。</p>
           </div>
 
           <template v-else-if="activeTab === 'skills'">
@@ -117,7 +117,7 @@
                   </div>
                   <span class="availability-badge is-available">可用</span>
                 </div>
-                <p>由 Agent 根据问题选择常驻 Tool，适合普通问答与知识库检索。</p>
+                <p>根据问题自动选择合适的工具，适合日常问答与知识库检索。</p>
                 <div class="skill-tags">
                   <span>自动路由</span>
                   <span>无需审批</span>
@@ -140,12 +140,12 @@
                   },
                 ]"
               >
-                <span class="skill-icon"><i :class="skillIcon(skill.name)"></i></span>
+                <span class="skill-icon"><i :class="skillDisplayIcon(skill.name)"></i></span>
                 <div class="skill-main">
                   <div class="skill-title-row">
                     <div>
-                      <span>{{ skill.activation }} · v{{ skill.version }}</span>
-                      <h3>{{ skillLabel(skill.name) }}</h3>
+                      <span>版本 v{{ skill.version }}</span>
+                      <h3>{{ skillDisplayName(skill.name, skill.description) }}</h3>
                     </div>
                     <span
                       :class="[
@@ -156,13 +156,13 @@
                       {{ availabilityLabel(skill.available, skill.availability_reason) }}
                     </span>
                   </div>
-                  <p>{{ skill.description }}</p>
+                  <p>{{ skillDisplaySummary(skill) }}</p>
                   <div class="skill-tags">
                     <span v-for="toolName in skill.tool_names" :key="toolName">
                       {{ toolName }}
                     </span>
                     <span v-if="skill.approval_tools.length" class="is-warning">
-                      <i class="fa-solid fa-shield-halved"></i> 创建 Run 前审批
+                      <i class="fa-solid fa-shield-halved"></i> 发送前需确认
                     </span>
                   </div>
                   <div class="skill-policy">
@@ -193,8 +193,8 @@
 
             <div v-else-if="!matchesGeneralMode" class="capability-state is-compact">
               <i class="fa-solid fa-magnifying-glass"></i>
-              <strong>没有匹配的 Skill</strong>
-              <p>试试能力名称、Tool 名称或调整可用性筛选。</p>
+              <strong>没有匹配的能力</strong>
+              <p>试试能力名称、工具名称或调整可用性筛选。</p>
             </div>
           </template>
 
@@ -225,13 +225,13 @@
               </div>
               <p v-if="tool.requires_approval" class="tool-approval-note">
                 <i class="fa-solid fa-shield-halved"></i>
-                需要绑定到当前 Run 的预审批
+                使用前需要单次确认
               </p>
             </article>
 
             <div v-if="!filteredTools.length" class="capability-state is-compact">
               <i class="fa-solid fa-magnifying-glass"></i>
-              <strong>没有匹配的 Tool</strong>
+              <strong>没有匹配的工具</strong>
               <p>调整搜索关键词或可用性筛选。</p>
             </div>
           </div>
@@ -243,6 +243,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
+import {
+  skillDisplayIcon,
+  skillDisplayName,
+  skillDisplaySummary,
+} from '@/capabilities/skillPresentation';
 import { useCapabilityStore } from '@/stores/capabilities';
 import type {
   CapabilityAvailabilityFilter,
@@ -346,24 +351,6 @@ const selectSkill = (skillName: string | null) => {
   } catch (error) {
     store.error = getPublicError(error).message;
   }
-};
-
-const skillLabel = (name: string) => {
-  const labels: Record<string, string> = {
-    'knowledge-base': '知识库问答',
-    'web-research': 'Web Research',
-    'sql-assistant': 'SQL Assistant',
-    sandbox: 'Sandbox',
-  };
-  return labels[name] || name;
-};
-
-const skillIcon = (name: string) => {
-  if (name === 'knowledge-base') return 'fa-regular fa-bookmark';
-  if (name === 'web-research') return 'fa-solid fa-globe';
-  if (name === 'sql-assistant') return 'fa-solid fa-database';
-  if (name === 'sandbox') return 'fa-solid fa-terminal';
-  return 'fa-solid fa-wand-magic-sparkles';
 };
 
 const toolIcon = (group: string) => {

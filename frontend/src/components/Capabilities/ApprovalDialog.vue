@@ -21,8 +21,8 @@
             <i class="fa-solid fa-shield-halved"></i>
           </span>
           <div>
-            <span>Run-bound approval</span>
-            <h2 id="approval-dialog-title">确认高风险 Tool 预授权</h2>
+            <span>单次授权</span>
+            <h2 id="approval-dialog-title">确认高风险工具授权</h2>
           </div>
           <button type="button" aria-label="取消工具预授权" :disabled="submitting" @click="cancel">
             <i class="fa-solid fa-xmark"></i>
@@ -31,14 +31,13 @@
 
         <div class="approval-content">
           <p id="approval-dialog-description" class="approval-intro">
-            <strong>{{ skillLabel(selectedSkill.name) }}</strong>
-            需要在创建 Run 前获得一次明确授权。授权只包含下面的 Tool 名称，不包含参数、Secret
-            或可复用凭证。
+            <strong>{{ skillDisplayName(selectedSkill.name, selectedSkill.description) }}</strong>
+            需要在发送前获得一次明确授权。授权仅包含下面的工具名称，不包含参数、密钥或可复用凭证。
           </p>
 
           <section class="approval-section" aria-labelledby="approval-tools-title">
             <div class="approval-section-heading">
-              <span id="approval-tools-title">本次预授权 Tool</span>
+              <span id="approval-tools-title">本次授权工具</span>
               <small>{{ draft.toolNames.length }} 项</small>
             </div>
             <ul class="approval-tool-list">
@@ -70,13 +69,12 @@
               <i class="fa-solid fa-link"></i>
             </span>
             <div>
-              <strong>绑定当前 Thread 与即将创建的单个 Run</strong>
+              <strong>仅用于当前对话中即将发起的一次任务</strong>
               <p>
-                Thread：<code>{{ store.activeThreadId || '发送时创建的新 Thread' }}</code>
+                对话：<code>{{ store.activeThreadId || '发送时创建的新对话' }}</code>
               </p>
               <p>
-                服务端会把 names-only Approval Grant 绑定用户、Tenant、Thread 和 Run；Run
-                结束后不能复用，也不会为后续 Run 自动续权。
+                服务端会把本次授权绑定到当前用户、对话和任务；任务结束后失效，也不会自动用于后续任务。
               </p>
             </div>
           </section>
@@ -93,7 +91,7 @@
               :class="submitting ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-shield-halved'"
               aria-hidden="true"
             ></i>
-            {{ submitting ? '正在创建 Run…' : '确认并发送' }}
+            {{ submitting ? '正在创建任务…' : '确认并发送' }}
           </button>
         </footer>
       </section>
@@ -103,6 +101,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
+import { skillDisplayName } from '@/capabilities/skillPresentation';
 import { useCapabilityStore } from '@/stores/capabilities';
 import { useChatStore } from '@/stores/chat';
 import { getPublicError } from '@/utils/api';
@@ -118,19 +117,8 @@ let returnFocus: HTMLElement | null = null;
 const selectedSkill = computed(() => store.selectedSkill);
 const draft = computed(() => store.pendingApprovalDraft);
 
-const skillLabel = (name: string) => {
-  const labels: Record<string, string> = {
-    sandbox: 'Sandbox',
-    'sql-assistant': 'SQL Assistant',
-    'web-research': 'Web Research',
-    'knowledge-base': '知识库问答',
-  };
-  return labels[name] || name;
-};
-
 const toolDescription = (toolName: string) =>
-  store.tools.find((tool) => tool.name === toolName)?.description ||
-  '受 Registry 策略约束的执行能力';
+  store.tools.find((tool) => tool.name === toolName)?.description || '受安全策略约束的执行能力';
 
 const networkLabel = (policy: string) => {
   const labels: Record<string, string> = {

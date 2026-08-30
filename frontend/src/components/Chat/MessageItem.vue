@@ -12,7 +12,7 @@
         <span>喵喵助手</span>
         <small v-if="msg.skillName" class="message-skill-badge">
           <i class="fa-solid fa-wand-magic-sparkles"></i>
-          {{ skillLabel(msg.skillName) }}
+          {{ skillCompactName(msg.skillName) }}
         </small>
         <small v-if="msg.ragTrace?.retrieved_chunks?.length">
           已引用 {{ msg.ragTrace.retrieved_chunks.length }} 个来源
@@ -53,7 +53,7 @@
         >
           <details :open="msg.isThinking" @toggle="loadInspector">
             <summary>
-              <span><i class="fa-solid fa-route"></i> Run 执行记录</span>
+              <span><i class="fa-solid fa-route"></i> 任务执行记录</span>
               <small>
                 {{
                   msg.runTimeline?.length
@@ -81,6 +81,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
+import { skillCompactName } from '@/capabilities/skillPresentation';
 import MessageContent from './MessageContent.vue';
 import ThinkingTrace from './ThinkingTrace.vue';
 import References from './References.vue';
@@ -116,16 +117,6 @@ const onCiteClick = (msgIndex: number, chunkIndex: number) => {
   emit('cite-click', msgIndex, chunkIndex);
 };
 
-const skillLabel = (name: string) => {
-  const labels: Record<string, string> = {
-    'knowledge-base': '知识库',
-    'web-research': 'Web Research',
-    'sql-assistant': 'SQL Assistant',
-    sandbox: 'Sandbox',
-  };
-  return labels[name] || name;
-};
-
 const loadInspector = async (event: Event) => {
   const details = event.currentTarget as HTMLDetailsElement | null;
   if (
@@ -142,7 +133,7 @@ const loadInspector = async (event: Event) => {
   try {
     await chatStore.restoreRunProjection(props.msg.runId);
   } catch (error) {
-    inspectorError.value = `Run 记录加载失败：${getPublicError(error).message}`;
+    inspectorError.value = `任务记录加载失败：${getPublicError(error).message}`;
   } finally {
     inspectorLoading.value = false;
   }
