@@ -96,6 +96,37 @@ describe('run event reducer', () => {
     expect(state.error?.code).toBe('RUN_CANCELLED');
   });
 
+  it.each([
+    ['run.completed', 'completed'],
+    ['run.failed', 'failed'],
+    ['run.cancelled', 'failed'],
+  ] as const)('settles running timeline items when %s arrives', (terminalType, expectedStatus) => {
+    let state = initialRunEventState('run_1', 'thread-1');
+    state = applyRunEvent(state, event(1, 'run.started'));
+    state = applyRunEvent(
+      state,
+      event(2, 'tool.started', {
+        tool_name: 'search_knowledge_base',
+        tool_call_id: 'call_1',
+      })
+    );
+    state = applyRunEvent(state, event(3, terminalType));
+
+    expect(state.timeline.filter((item) => item.status === 'running')).toEqual([]);
+    expect(state.timeline.slice(0, 2).map((item) => item.status)).toEqual([
+      expectedStatus,
+      expectedStatus,
+    ]);
+  });
+
+  it('stops active timeline spinners while waiting for HITL input', () => {
+    let state = initialRunEventState('run_1', 'thread-1');
+    state = applyRunEvent(state, event(1, 'run.started'));
+    state = applyRunEvent(state, event(2, 'run.waiting_input'));
+
+    expect(state.timeline[0]).toMatchObject({ title: '开始执行', status: 'completed' });
+  });
+
   it('projects same-Run HITL pause and resume state', () => {
     let state = initialRunEventState('run_1', 'thread-1');
     state = applyRunEvent(state, event(1, 'run.waiting_input'));
