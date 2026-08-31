@@ -35,6 +35,7 @@ const DEFAULT_MESSAGES: Record<string, string> = {
   PROVIDER_AUTHENTICATION_FAILED: '上游服务配置不可用，请联系管理员',
   PROVIDER_REQUEST_INVALID: '上游服务拒绝了当前请求，请联系管理员',
   WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED: '搜索结果超过上下文预算，请缩小搜索范围后重试',
+  CONTEXT_TRIMMED: '已自动整理较早上下文以继续运行',
   POLICY_DENIED: '当前操作被安全策略拒绝',
   TOOL_POLICY_DENIED: '当前工具不在本次运行的可用范围内',
   TOOL_GUARDRAIL_DENIED: '当前工具调用未通过安全策略',
@@ -67,6 +68,7 @@ const PROVIDER_CODES = new Set([
 
 const FIXED_CLIENT_MESSAGE_CODES = new Set([
   'WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED',
+  'CONTEXT_TRIMMED',
   'TOOL_POLICY_DENIED',
   'TOOL_GUARDRAIL_DENIED',
   'TOOL_APPROVAL_REQUIRED',

@@ -70,7 +70,7 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
 - **只读 SQL Assistant**：只对 `admin` 开放，并同时受独立数据库账号、schema/table allowlist、
   AST、权限、RLS、成本、超时、结果大小和敏感字段脱敏约束，不提供 DDL 或 DML。
 - **定向 Web Research**：`web_search` 为当前 Run 分配 `S1`、`S2` 等 Source ID；
-  `web_fetch(source_id, query?)` 使用 Tavily Extract 返回最多五个 query-ranked chunks，不再抓取
+  `web_fetch(source_id, query?)` 使用 Tavily Extract 返回最多三个 query-ranked chunks，不再抓取
   或注入整篇网页。
 - **可审计 Tool 执行**：Registry 决定能力是否可见，Guardrail 在 handler 前执行确定性约束，
   Sandbox 只隔离已经获准的代码执行。普通 `ALLOW` 不在前端展示；用户只会看到拒绝或需要审批的
@@ -294,14 +294,23 @@ Web Research 默认关闭，可由管理员在控制面启用：
 
 ```dotenv
 WEB_RESEARCH_ENABLED=true
+WEB_RESEARCH_SEARCH_PROVIDER_MAX_RESULTS=3
+WEB_RESEARCH_SEARCH_MODEL_VISIBLE_RESULTS=3
+WEB_RESEARCH_SEARCH_PER_SOURCE_MAX_BYTES=480
+WEB_RESEARCH_SEARCH_TOTAL_SNIPPET_MAX_BYTES=1440
+WEB_RESEARCH_FETCH_CHUNKS_PER_SOURCE=3
+WEB_RESEARCH_FETCH_RESPONSE_MAX_BYTES=6144
+WEB_RESEARCH_FETCH_RUN_TOTAL_MAX_BYTES=12288
 ```
 
 `web_search` 与 `web_fetch` 只有在 feature flag、Tavily Keyless Runtime、active Skill、角色和
 `restricted` network policy 同时满足时才披露。`web_search` 的模型投影只有 Run-local
-`source_id`、`title` 与 `content`；`web_fetch` 只接受同一 Run 的 Source ID 和可选 query。
+`source_id`、`title`、来源域名 `source` 与简短 `snippet`；完整 URL 和服务端 Evidence 留在后端。
+`web_fetch` 只接受同一 Run 的 Source ID 和可选 query。
 
-Runtime 只连接固定 Tavily `/search` 与 `/extract`。Extract 固定使用
-`chunks_per_source=5`、`extract_depth=basic`，每个 chunk 在进入模型上下文前限制为约 500 字符。
+Search 与 Fetch 使用独立模型可见预算；Search 不消耗 Fetch 的 Run 累计额度。Runtime 只连接固定
+Tavily `/search` 与 `/extract`。Extract 固定使用 `chunks_per_source=3`、`extract_depth=basic`，每个
+chunk 在进入模型上下文前限制为约 500 字符。
 模型用 `[S1]` 就近引用，服务端终态把已知 Source ID 渲染为对应链接。完整上线、预算与事件响应见
 [Web Research Runbook](docs/runbooks/web-research.md)。
 

@@ -296,12 +296,12 @@ def test_project_web_research_skill_allows_user_and_admin_but_requires_runtime()
     assert "sql_query" not in activated.allowed_tools
     instructions = activated.instructions.casefold()
     assert "untrusted data" in instructions
-    assert activated.version == "2.0.0"
+    assert activated.version == "2.2.0"
     assert "allowed_domains" in instructions
     assert "source_id" in instructions
     assert "[s1]" in instructions
     assert "query` is optional" in instructions
-    assert "five query-ranked chunks" in instructions
+    assert "three query-ranked chunks" in instructions
     assert "not the whole page" in instructions
     assert "coverage gaps" in instructions
     assert "example.com" not in instructions

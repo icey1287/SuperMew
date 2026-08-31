@@ -23,14 +23,15 @@ Web Research 只保留以下流程：
 
 ```text
 web_search(query, max_results?, allowed_domains?)
-  -> [{source_id: "S1", title, content}]
+  -> [{source_id: "S1", title, source, snippet}]
   -> web_fetch(source_id="S1", query?)
   -> Tavily Extract query-ranked chunks
 ```
 
 `web_search` 返回的服务端结果仍包含 URL 与 UTC `retrieved_at`，但模型投影只包含
-`source_id`、`title` 和 `content`。不再生成或传递 content hash、`evidence_id`、
-`citation_id`、`citation_token`、snippet、domain 或 Web Research schema version。
+`source_id`、`title`、来源 hostname `source` 和搜索结果的简短 `snippet`。不向模型传递完整 URL、
+服务端 `content`、content hash、`evidence_id`、`citation_id`、`citation_token`、时间或 Web
+Research schema version。
 
 `RunRequestContext` 为首次出现的来源 URL 依次分配 `S1`、`S2`……；同一 Run 再次出现相同 URL
 时复用 Source ID。映射同时保存标题与产生该来源的原始 search query，Run 关闭时整体清理，
@@ -55,12 +56,12 @@ Extract 请求固定为：
 {
   "urls": "<Source ID 对应 URL>",
   "query": "<显式 query 或原始 search query>",
-  "chunks_per_source": 5,
+  "chunks_per_source": 3,
   "extract_depth": "basic"
 }
 ```
 
-应用最多消费五个 chunk，并在模型投影前把每个 chunk 限制为约 500 字符。若 Provider 返回单个
+应用最多消费三个 chunk，并在模型投影前把每个 chunk 限制为约 500 字符。若 Provider 返回单个
 长字符串，只保留其前 500 字符，不把它重新解释成整页正文。`web_fetch` 不再执行目标页面
 GET、redirect、HTML/plain-text 解析或正文清洗。
 
@@ -82,10 +83,11 @@ Source ID。Source ID 的 Run-local 解析由 `RunRequestContext` 与 Web Tool A
 `[S1](<url>)`；未知 Source ID 拒绝发布。它不再禁止普通 raw URL/Markdown，也不会在模型漏写
 Source ID 时自动追加来源列表。
 
-Runtime 不按总预算的四分之一预截断每条搜索摘要，也不按旧结构协议估算正文。Tool Adapter 先
-构造完整 `ToolResultV1` 模型投影，再按当前 Run 实际剩余 byte budget 从低优先级来源开始简单
-裁剪 `content`。标题与 Source ID 不参与正文裁剪；若仅固定结构就无法容纳，返回
-`WEB_SOURCE_BUDGET_EXHAUSTED`。
+Runtime 不按总预算的四分之一预截断每条搜索摘要，也不按旧结构协议估算正文。Search 与 Fetch
+使用独立预算：Search 最多请求三条、展示三条，每条 `snippet` 最多 480 B，全部 `snippet` 合计
+最多 1440 B；这些限制不消费 Fetch 的 Run 预算。Fetch 先构造完整 `ToolResultV1`，再按单次
+6144 B 与同一 Run 累计 12288 B 的实际剩余额度简单裁剪 `content`。标题与 Source ID 不参与正文
+裁剪；若固定结构已经无法容纳，返回 `WEB_FETCH_BUDGET_EXHAUSTED`。
 
 Tool observability metadata 只保留：
 
@@ -96,10 +98,12 @@ source_count, output_bytes, truncated
 ## 不变量
 
 - Source ID 只在一个 Run 内有效，按来源 URL 稳定复用，Run 关闭后不可解析。
+- `web_search` 只向模型披露 Source ID、标题、来源 hostname 和简短 snippet，不披露完整 URL。
 - 模型不能向 `web_fetch` 提交 URL；服务端 URL 只来自同一 Run 的 `web_search` 结果。
 - Web Research 外部 HTTP 只连接固定 Tavily `/search` 与 `/extract`。
-- `web_fetch` 不返回整篇网页，最多返回五个约 500 字符的 query-ranked chunks。
+- `web_fetch` 不返回整篇网页，最多返回三个约 500 字符的 query-ranked chunks。
 - 只有 Tool Adapter 负责最终模型可见 byte budget；Runtime 不进行 `/4` 预截断。
+- Search 的 snippet 预算与 Fetch 的单次/Run 累计预算相互独立。
 - 不保留旧 Evidence identity、Destination Capability、direct fetch 或兼容 Adapter。
 
 ## 结果

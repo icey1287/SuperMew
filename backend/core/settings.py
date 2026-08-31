@@ -1039,35 +1039,53 @@ class WebResearchSettings(_EnvSettings):
         le=4_096,
         validation_alias="WEB_RESEARCH_MAX_TITLE_BYTES",
     )
-    max_content_bytes: int = Field(
-        default=3_072,
-        ge=1,
-        le=2_097_152,
-        validation_alias="WEB_RESEARCH_MAX_CONTENT_BYTES",
-    )
-    max_total_source_bytes: int = Field(
-        default=3_072,
-        ge=1,
-        le=8_388_608,
-        validation_alias="WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES",
-    )
-    max_response_bytes: int = Field(
+    provider_response_max_bytes: int = Field(
         default=2_097_152,
         ge=1_024,
         le=8_388_608,
-        validation_alias="WEB_RESEARCH_MAX_RESPONSE_BYTES",
+        validation_alias="WEB_RESEARCH_PROVIDER_RESPONSE_MAX_BYTES",
     )
-    default_search_results: int = Field(
-        default=5,
+    search_provider_max_results: int = Field(
+        default=3,
         ge=1,
         le=50,
-        validation_alias="WEB_RESEARCH_DEFAULT_SEARCH_RESULTS",
+        validation_alias="WEB_RESEARCH_SEARCH_PROVIDER_MAX_RESULTS",
     )
-    max_search_results: int = Field(
-        default=12,
+    search_model_visible_results: int = Field(
+        default=3,
         ge=1,
         le=50,
-        validation_alias="WEB_RESEARCH_MAX_SEARCH_RESULTS",
+        validation_alias="WEB_RESEARCH_SEARCH_MODEL_VISIBLE_RESULTS",
+    )
+    search_per_source_max_bytes: int = Field(
+        default=480,
+        ge=1,
+        le=2_097_152,
+        validation_alias="WEB_RESEARCH_SEARCH_PER_SOURCE_MAX_BYTES",
+    )
+    search_total_snippet_max_bytes: int = Field(
+        default=1_440,
+        ge=1,
+        le=8_388_608,
+        validation_alias="WEB_RESEARCH_SEARCH_TOTAL_SNIPPET_MAX_BYTES",
+    )
+    fetch_chunks_per_source: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        validation_alias="WEB_RESEARCH_FETCH_CHUNKS_PER_SOURCE",
+    )
+    fetch_response_max_bytes: int = Field(
+        default=6_144,
+        ge=1_024,
+        le=8_388_608,
+        validation_alias="WEB_RESEARCH_FETCH_RESPONSE_MAX_BYTES",
+    )
+    fetch_run_total_max_bytes: int = Field(
+        default=12_288,
+        ge=1_024,
+        le=16_777_216,
+        validation_alias="WEB_RESEARCH_FETCH_RUN_TOTAL_MAX_BYTES",
     )
     max_concurrency: int = Field(
         default=4,
@@ -1395,27 +1413,15 @@ class AppSettings(BaseModel):
             )
 
         web = self.web_research
-        if web.default_search_results > web.max_search_results:
+        if web.search_model_visible_results > web.search_provider_max_results:
             problems.append(
-                "WEB_RESEARCH_DEFAULT_SEARCH_RESULTS 不能大于 "
-                "WEB_RESEARCH_MAX_SEARCH_RESULTS"
+                "WEB_RESEARCH_SEARCH_MODEL_VISIBLE_RESULTS 不能大于 "
+                "WEB_RESEARCH_SEARCH_PROVIDER_MAX_RESULTS"
             )
-        if web.max_title_bytes > web.max_content_bytes:
+        if web.fetch_response_max_bytes > web.fetch_run_total_max_bytes:
             problems.append(
-                "WEB_RESEARCH_MAX_TITLE_BYTES 不能大于 WEB_RESEARCH_MAX_CONTENT_BYTES"
-            )
-        if web.max_content_bytes > web.max_total_source_bytes:
-            problems.append(
-                "WEB_RESEARCH_MAX_CONTENT_BYTES 不能大于 "
-                "WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES"
-            )
-        if (
-            web.enabled
-            and web.max_total_source_bytes > self.agent.input_token_budget // 2
-        ):
-            problems.append(
-                "WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES 不能大于 "
-                "Agent 输入 token 预算的一半"
+                "WEB_RESEARCH_FETCH_RESPONSE_MAX_BYTES 不能大于 "
+                "WEB_RESEARCH_FETCH_RUN_TOTAL_MAX_BYTES"
             )
         if problems:
             raise ValueError("；".join(problems))

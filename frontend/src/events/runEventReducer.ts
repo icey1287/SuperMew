@@ -460,7 +460,9 @@ export function applyRunEvent(state: RunEventState, event: RuntimeRunEvent): Run
           status: 'warning',
           title: isRerankFallback(data)
             ? '相关性排序已降级'
-            : safeString(data.message) || '执行警告',
+            : data.code === 'CONTEXT_TRIMMED'
+              ? '上下文已整理'
+              : safeString(data.message) || '执行警告',
         }),
         error: warning,
       });

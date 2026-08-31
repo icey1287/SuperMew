@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from langchain_core.tools import BaseTool, tool
 
@@ -36,17 +37,15 @@ class WebResearchRuntime(Protocol):
     ) -> WebResearchResult: ...
 
 
-WEB_RESEARCH_METADATA_KEYS = frozenset(
-    {"source_count", "output_bytes", "truncated"}
-)
-_WEB_TOOL_VERSION = "2.0.0"
+WEB_RESEARCH_METADATA_KEYS = frozenset({"source_count", "output_bytes", "truncated"})
+_WEB_TOOL_VERSION = "2.2.0"
 _MAX_WEB_TOOL_DURATION_MS = 999_999
-_WEB_SOURCE_BUDGET_EXHAUSTED = "WEB_SOURCE_BUDGET_EXHAUSTED"
+_WEB_FETCH_BUDGET_EXHAUSTED = "WEB_FETCH_BUDGET_EXHAUSTED"
 
 
-def _web_source_budget_failure() -> ToolResultV1:
+def _web_fetch_budget_failure() -> ToolResultV1:
     return new_tool_failure(
-        error_code=_WEB_SOURCE_BUDGET_EXHAUSTED,
+        error_code=_WEB_FETCH_BUDGET_EXHAUSTED,
         retryable=False,
     )
 
@@ -65,13 +64,12 @@ def _tool_data_size(data: dict[str, object]) -> int:
 
 def _tool_result(
     result: WebResearchResult,
-    source_ids: Sequence[str],
     *,
-    data: dict[str, object] | None = None,
+    data: dict[str, object],
 ) -> ToolResultV1:
     if not isinstance(result, WebResearchResult):
         raise TypeError("Web runtime returned an invalid result contract")
-    projection = result.to_tool_dict(source_ids) if data is None else data
+    projection = data
     metadata = result.tool_observability_metadata()
     metadata["output_bytes"] = _tool_data_size(projection)
     projected_truncated = projection.get("truncated")
@@ -90,12 +88,8 @@ def _tool_result(
     )
 
 
-def _registered_tool_result_size(
-    result: ToolResultV1,
-    *,
-    tool_name: str,
-) -> int:
-    """Estimate the complete Registry-wrapped payload seen by the model."""
+def _registered_fetch_tool_result_size(result: ToolResultV1) -> int:
+    """Estimate the complete Registry-wrapped web_fetch payload."""
 
     encoded = json.dumps(
         result.model_dump(mode="json"),
@@ -106,7 +100,7 @@ def _registered_tool_result_size(
     ).encode("utf-8")
     metadata = {
         **result.observability_metadata,
-        "tool_name": tool_name,
+        "tool_name": "web_fetch",
         "tool_version": _WEB_TOOL_VERSION,
         "result_size": len(encoded),
     }
@@ -126,25 +120,54 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
     return encoded[: max(max_bytes, 0)].decode("utf-8", errors="ignore").rstrip()
 
 
-def _fit_web_tool_result(
+def _bounded_search_projection(
     result: WebResearchResult,
-    source_ids: Sequence[str],
-    max_bytes: int,
+    source_ids: tuple[str, ...],
     *,
-    tool_name: str,
-) -> ToolResultV1 | None:
-    """Build the ToolResult first, then trim only model-visible content."""
+    model_visible_results: int,
+    per_source_max_bytes: int,
+    total_snippet_max_bytes: int,
+) -> dict[str, object]:
+    projection = result.to_search_tool_dict(source_ids)
+    sources = projection["sources"]
+    if not isinstance(sources, list):
+        raise TypeError("Web search projection has invalid sources")
 
-    fitted = _tool_result(result, source_ids)
-    if _registered_tool_result_size(fitted, tool_name=tool_name) <= max_bytes:
+    visible_sources = sources[:model_visible_results]
+    truncated = result.truncated or len(visible_sources) < len(sources)
+    remaining = total_snippet_max_bytes
+    for item in visible_sources:
+        if not isinstance(item, dict) or not isinstance(item.get("snippet"), str):
+            raise TypeError("Web search projection has invalid snippets")
+        snippet = item["snippet"]
+        bounded = _truncate_utf8(snippet, min(per_source_max_bytes, remaining))
+        if bounded != snippet:
+            truncated = True
+        item["snippet"] = bounded
+        remaining -= len(bounded.encode("utf-8"))
+
+    projection["sources"] = visible_sources
+    projection["truncated"] = truncated
+    return projection
+
+
+def _fit_fetch_tool_result(
+    result: WebResearchResult,
+    projection: dict[str, object],
+    max_bytes: int,
+) -> ToolResultV1 | None:
+    """Build the ToolResult first, then trim only model-visible fetch content."""
+
+    data = copy.deepcopy(projection)
+    fitted = _tool_result(result, data=data)
+    if _registered_fetch_tool_result_size(fitted) <= max_bytes:
         return fitted
 
-    data = result.to_tool_dict(source_ids)
     sources = data.get("sources")
     if not isinstance(sources, list):
         return None
     data["truncated"] = True
-    fitted = _tool_result(result, source_ids, data=data)
+    fitted = _tool_result(result, data=data)
 
     for item in reversed(sources):
         if not isinstance(item, dict):
@@ -152,7 +175,7 @@ def _fit_web_tool_result(
         content = item.get("content")
         if not isinstance(content, str):
             return None
-        excess = _registered_tool_result_size(fitted, tool_name=tool_name) - max_bytes
+        excess = _registered_fetch_tool_result_size(fitted) - max_bytes
         if excess <= 0:
             break
         content_bytes = len(content.encode("utf-8"))
@@ -160,44 +183,42 @@ def _fit_web_tool_result(
             content,
             max(content_bytes - excess, 0),
         )
-        fitted = _tool_result(result, source_ids, data=data)
+        fitted = _tool_result(result, data=data)
 
-    if _registered_tool_result_size(fitted, tool_name=tool_name) > max_bytes:
+    if _registered_fetch_tool_result_size(fitted) > max_bytes:
         return None
     return fitted
 
 
-def _bounded_web_tool_result(
+def _bounded_fetch_tool_result(
     ctx: RunRequestContext,
     result: WebResearchResult,
-    source_ids: Sequence[str],
+    projection: dict[str, object],
     *,
-    max_total_source_bytes: int,
-    tool_name: str,
+    response_max_bytes: int,
+    run_total_max_bytes: int,
 ) -> ToolResultV1 | None:
-    remaining = ctx.remaining_web_tool_result_budget(max_total_source_bytes)
-    fitted = _fit_web_tool_result(
+    remaining = ctx.remaining_web_fetch_result_budget(run_total_max_bytes)
+    fitted = _fit_fetch_tool_result(
         result,
-        source_ids,
-        remaining,
-        tool_name=tool_name,
+        projection,
+        min(response_max_bytes, remaining),
     )
     if fitted is None:
         return None
-    actual_size = _registered_tool_result_size(fitted, tool_name=tool_name)
-    claimed = ctx.claim_web_tool_result_budget(
+    actual_size = _registered_fetch_tool_result_size(fitted)
+    claimed = ctx.claim_web_fetch_result_budget(
         actual_size,
-        limit_bytes=max_total_source_bytes,
+        limit_bytes=run_total_max_bytes,
     )
     if claimed == actual_size:
         return fitted
     if claimed <= 0:
         return None
-    return _fit_web_tool_result(
+    return _fit_fetch_tool_result(
         result,
-        source_ids,
+        projection,
         claimed,
-        tool_name=tool_name,
     )
 
 
@@ -240,8 +261,10 @@ def make_web_search(
     ctx: RunRequestContext,
     *,
     runtime: WebResearchRuntime | None = None,
-    default_results: int = 5,
-    max_total_source_bytes: int = 3_072,
+    provider_max_results: int = 3,
+    model_visible_results: int = 3,
+    per_source_max_bytes: int = 480,
+    total_snippet_max_bytes: int = 1_440,
 ) -> BaseTool:
     """Build a request-owned search tool that assigns Run-local Source IDs."""
 
@@ -251,7 +274,7 @@ def make_web_search(
     @tool("web_search")
     def web_search(
         query: str,
-        max_results: int = default_results,
+        max_results: int = provider_max_results,
         allowed_domains: tuple[str, ...] = (),
     ) -> ToolResultV1:
         """Search the public web and return compact Run-local sources."""
@@ -269,21 +292,20 @@ def make_web_search(
                 cancellation_probe=cancellation_probe,
             )
             source_ids = ctx.record_web_search_result(result, query=query)
-            bounded_result = _bounded_web_tool_result(
-                ctx,
+            projection = _bounded_search_projection(
                 result,
                 source_ids,
-                max_total_source_bytes=max_total_source_bytes,
-                tool_name="web_search",
+                model_visible_results=model_visible_results,
+                per_source_max_bytes=per_source_max_bytes,
+                total_snippet_max_bytes=total_snippet_max_bytes,
             )
-            if bounded_result is None:
-                return _web_source_budget_failure()
+            tool_result = _tool_result(result, data=projection)
         except Exception as exc:
             failure = _web_failure(exc)
             if failure is None:
                 raise
             return failure
-        return bounded_result
+        return tool_result
 
     return web_search
 
@@ -292,7 +314,8 @@ def make_web_fetch(
     ctx: RunRequestContext,
     *,
     runtime: WebResearchRuntime | None = None,
-    max_total_source_bytes: int = 3_072,
+    response_max_bytes: int = 6_144,
+    run_total_max_bytes: int = 12_288,
 ) -> BaseTool:
     """Build a request-owned Tavily Extract tool over Run-local Source IDs."""
 
@@ -321,15 +344,16 @@ def make_web_fetch(
                 cancellation_probe=cancellation_probe,
             )
             result = _with_fallback_title(result, source.title)
-            bounded_result = _bounded_web_tool_result(
+            projection = result.to_fetch_tool_dict((source.source_id,))
+            bounded_result = _bounded_fetch_tool_result(
                 ctx,
                 result,
-                (source.source_id,),
-                max_total_source_bytes=max_total_source_bytes,
-                tool_name="web_fetch",
+                projection,
+                response_max_bytes=response_max_bytes,
+                run_total_max_bytes=run_total_max_bytes,
             )
             if bounded_result is None:
-                return _web_source_budget_failure()
+                return _web_fetch_budget_failure()
         except Exception as exc:
             failure = _web_failure(exc)
             if failure is None:

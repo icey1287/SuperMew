@@ -82,7 +82,7 @@ def test_evidence_rejects_non_web_provider_urls(url: str) -> None:
     assert captured.value.code is WebResearchContractCode.INVALID_EVIDENCE
 
 
-def test_server_evidence_keeps_url_and_time_out_of_model_projection() -> None:
+def test_server_evidence_has_distinct_search_and_fetch_model_projections() -> None:
     item = evidence()
 
     assert item.to_public_dict() == {
@@ -91,7 +91,13 @@ def test_server_evidence_keeps_url_and_time_out_of_model_projection() -> None:
         "content": item.content,
         "retrieved_at": "2026-08-30T00:00:00Z",
     }
-    assert item.to_tool_dict("S1") == {
+    assert item.to_search_tool_dict("S1") == {
+        "source_id": "S1",
+        "title": item.title,
+        "source": "docs.python.org",
+        "snippet": item.content,
+    }
+    assert item.to_fetch_tool_dict("S1") == {
         "source_id": "S1",
         "title": item.title,
         "content": item.content,
@@ -100,7 +106,7 @@ def test_server_evidence_keeps_url_and_time_out_of_model_projection() -> None:
     assert item.content not in repr(item)
 
 
-def test_tool_projection_contains_only_source_id_title_content_and_truncated() -> None:
+def test_search_projection_contains_only_compact_source_fields() -> None:
     first = evidence()
     second = evidence(
         url="https://peps.python.org/pep-0779/",
@@ -109,15 +115,21 @@ def test_tool_projection_contains_only_source_id_title_content_and_truncated() -
     )
     result = WebResearchResult.create((first, second), truncated=True)
 
-    projection = result.to_tool_dict(("S1", "S2"))
+    projection = result.to_search_tool_dict(("S1", "S2"))
 
     assert projection == {
         "sources": [
-            {"source_id": "S1", "title": first.title, "content": first.content},
+            {
+                "source_id": "S1",
+                "title": first.title,
+                "source": "docs.python.org",
+                "snippet": first.content,
+            },
             {
                 "source_id": "S2",
                 "title": second.title,
-                "content": second.content,
+                "source": "peps.python.org",
+                "snippet": second.content,
             },
         ],
         "truncated": True,
@@ -128,10 +140,10 @@ def test_tool_projection_contains_only_source_id_title_content_and_truncated() -
         "citation_id",
         "citation_token",
         "content_sha256",
+        "content",
         "evidence_id",
         "retrieved_at",
         "schema_version",
-        "snippet",
         "source_domain",
         "url",
     ):
@@ -139,7 +151,7 @@ def test_tool_projection_contains_only_source_id_title_content_and_truncated() -
 
 
 def test_result_does_not_pretruncate_to_an_aggregate_quarter_budget() -> None:
-    limits = WebResearchLimits(max_content_bytes=3_072, max_evidence_items=2)
+    limits = WebResearchLimits(max_evidence_items=2)
     first = evidence(content="a" * 2_000, limits=limits)
     second = evidence(
         url="https://example.org/second",
@@ -159,8 +171,12 @@ def test_result_rejects_duplicate_urls_and_mismatched_source_ids() -> None:
 
     result = WebResearchResult.create((item,))
     with pytest.raises(WebResearchContractError) as captured:
-        result.to_tool_dict(())
+        result.to_search_tool_dict(())
     assert captured.value.code is WebResearchContractCode.INVALID_SOURCE_ID
+
+    with pytest.raises(WebResearchContractError) as fetch_captured:
+        result.to_fetch_tool_dict(())
+    assert fetch_captured.value.code is WebResearchContractCode.INVALID_SOURCE_ID
 
 
 @pytest.mark.parametrize("source_id", ("S1", "S12", "S999"))

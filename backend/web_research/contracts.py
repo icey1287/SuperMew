@@ -17,7 +17,6 @@ _HARD_MAX_QUERY_BYTES: Final = 16 * 1024
 _HARD_MAX_URL_BYTES: Final = 16 * 1024
 _HARD_MAX_TITLE_BYTES: Final = 4 * 1024
 _HARD_MAX_CONTENT_BYTES: Final = 2 * 1024 * 1024
-_HARD_MAX_RESPONSE_BYTES: Final = 8 * 1024 * 1024
 _HARD_MAX_EVIDENCE_ITEMS: Final = 50
 
 
@@ -43,9 +42,7 @@ def _integer(
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{field_name} must be an integer")
     if not minimum <= value <= maximum:
-        raise ValueError(
-            f"{field_name} must be between {minimum} and {maximum}"
-        )
+        raise ValueError(f"{field_name} must be between {minimum} and {maximum}")
     return value
 
 
@@ -106,6 +103,16 @@ def validate_source_id(value: str) -> str:
     return value
 
 
+def _validated_tool_source_id(source_id: str) -> str:
+    try:
+        return validate_source_id(source_id)
+    except ValueError as exc:
+        raise WebResearchContractError(
+            WebResearchContractCode.INVALID_SOURCE_ID,
+            "Web source ID is invalid",
+        ) from exc
+
+
 class WebResearchContractCode(StrEnum):
     INVALID_INPUT = "WEB_INVALID_INPUT"
     INPUT_TOO_LARGE = "WEB_INPUT_TOO_LARGE"
@@ -136,17 +143,13 @@ class WebResearchLimits:
     max_query_bytes: int = 4 * 1024
     max_url_bytes: int = 4 * 1024
     max_title_bytes: int = 1024
-    max_content_bytes: int = 256 * 1024
-    max_response_bytes: int = 2 * 1024 * 1024
-    max_evidence_items: int = 12
+    max_evidence_items: int = 3
 
     def __post_init__(self) -> None:
         ceilings = {
             "max_query_bytes": _HARD_MAX_QUERY_BYTES,
             "max_url_bytes": _HARD_MAX_URL_BYTES,
             "max_title_bytes": _HARD_MAX_TITLE_BYTES,
-            "max_content_bytes": _HARD_MAX_CONTENT_BYTES,
-            "max_response_bytes": _HARD_MAX_RESPONSE_BYTES,
             "max_evidence_items": _HARD_MAX_EVIDENCE_ITEMS,
         }
         for field_name, maximum in ceilings.items():
@@ -164,7 +167,7 @@ DEFAULT_WEB_RESEARCH_LIMITS: Final = WebResearchLimits()
 @dataclass(frozen=True, slots=True)
 class WebResearchQuery:
     query: str = field(repr=False)
-    max_results: int = 5
+    max_results: int = 3
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -190,7 +193,7 @@ class WebResearchQuery:
         cls,
         query: str,
         *,
-        max_results: int = 5,
+        max_results: int = 3,
         limits: WebResearchLimits = DEFAULT_WEB_RESEARCH_LIMITS,
     ) -> WebResearchQuery:
         if not isinstance(limits, WebResearchLimits):
@@ -296,7 +299,7 @@ class WebEvidence:
             safe_content = _bounded_text(
                 content,
                 field_name="WebEvidence content",
-                max_bytes=limits.max_content_bytes,
+                max_bytes=_HARD_MAX_CONTENT_BYTES,
                 allow_empty=False,
             )
         except (TypeError, ValueError) as exc:
@@ -328,16 +331,21 @@ class WebEvidence:
             "retrieved_at": self.retrieved_at.isoformat().replace("+00:00", "Z"),
         }
 
-    def to_tool_dict(self, source_id: str) -> dict[str, str]:
-        try:
-            safe_source_id = validate_source_id(source_id)
-        except ValueError as exc:
-            raise WebResearchContractError(
-                WebResearchContractCode.INVALID_SOURCE_ID,
-                "Web source ID is invalid",
-            ) from exc
+    @property
+    def source_domain(self) -> str:
+        return urlsplit(self.url).hostname or ""
+
+    def to_search_tool_dict(self, source_id: str) -> dict[str, str]:
         return {
-            "source_id": safe_source_id,
+            "source_id": _validated_tool_source_id(source_id),
+            "title": self.title,
+            "source": self.source_domain,
+            "snippet": self.content,
+        }
+
+    def to_fetch_tool_dict(self, source_id: str) -> dict[str, str]:
+        return {
+            "source_id": _validated_tool_source_id(source_id),
             "title": self.title,
             "content": self.content,
         }
@@ -402,16 +410,30 @@ class WebResearchResult:
             "truncated": self.truncated,
         }
 
-    def to_tool_dict(self, source_ids: Sequence[str]) -> dict[str, object]:
+    def _validated_source_ids(self, source_ids: Sequence[str]) -> tuple[str, ...]:
         ids = tuple(source_ids)
         if len(ids) != len(self.evidence):
             raise WebResearchContractError(
                 WebResearchContractCode.INVALID_SOURCE_ID,
                 "Web source IDs do not match the provider result",
             )
+        return ids
+
+    def to_search_tool_dict(self, source_ids: Sequence[str]) -> dict[str, object]:
+        ids = self._validated_source_ids(source_ids)
         return {
             "sources": [
-                item.to_tool_dict(source_id)
+                item.to_search_tool_dict(source_id)
+                for item, source_id in zip(self.evidence, ids, strict=True)
+            ],
+            "truncated": self.truncated,
+        }
+
+    def to_fetch_tool_dict(self, source_ids: Sequence[str]) -> dict[str, object]:
+        ids = self._validated_source_ids(source_ids)
+        return {
+            "sources": [
+                item.to_fetch_tool_dict(source_id)
                 for item, source_id in zip(self.evidence, ids, strict=True)
             ],
             "truncated": self.truncated,

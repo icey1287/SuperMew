@@ -58,7 +58,7 @@
 - Rate Limit 存储异常 typed 503，未知 path 默认受保护。
 - raw token/IP/username 不进入 Redis key、日志或公开 payload。
 - Web Research 只调用固定 Tavily Search/Extract；Source ID 不能跨 Run 解析，Extract 结果保持
-  五个约 500 字符 chunk 的边界。Custom HTTP Tool 的 DNS/SSRF 测试属于独立能力。
+  三个约 500 字符 chunk 的边界。Custom HTTP Tool 的 DNS/SSRF 测试属于独立能力。
 - Guardrail deny/approval 在 Tool handler 前；Sandbox disabled/not-ready fail-closed。
 - SQL Assistant 拒绝 DDL/DML、多语句、越界对象、过高成本和敏感字段泄露。
 

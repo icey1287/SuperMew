@@ -255,6 +255,29 @@ describe('run event reducer', () => {
     });
   });
 
+  it('describes automatic context trimming without reporting a service outage', () => {
+    const state = applyRunEvent(
+      initialRunEventState('run_1', 'thread-1'),
+      event(1, 'warning.created', {
+        code: 'CONTEXT_TRIMMED',
+        stage: 'context.trimmed',
+        retryable: false,
+        removed_count: 2,
+        truncated_count: 0,
+      })
+    );
+
+    expect(state.warnings[0]).toMatchObject({
+      code: 'CONTEXT_TRIMMED',
+      message: '已自动整理较早上下文以继续运行',
+      retryable: false,
+    });
+    expect(state.timeline[0]).toMatchObject({
+      title: '上下文已整理',
+      status: 'warning',
+    });
+  });
+
   it('projects tool lifecycle, public guardrail fields and Artifact identities', () => {
     let state = initialRunEventState('run_1', 'thread-1');
     state = applyRunEvent(

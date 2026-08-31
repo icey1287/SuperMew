@@ -29,7 +29,6 @@ CancellationProbe = Callable[[], bool]
 
 _TAVILY_SEARCH_ENDPOINT = "https://api.tavily.com/search"
 _TAVILY_EXTRACT_ENDPOINT = "https://api.tavily.com/extract"
-_EXTRACT_CHUNKS_PER_SOURCE = 5
 _EXTRACT_CHUNK_CHARACTERS = 500
 
 
@@ -66,16 +65,16 @@ class WebResearchError(RuntimeError):
 class WebSearchHit:
     url: str = field(repr=False)
     title: str = field(default="", repr=False)
-    content: str = field(default="", repr=False)
+    snippet: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.url, str) or not self.url.strip():
             raise ValueError("search hit URL must be a non-empty string")
-        if not isinstance(self.title, str) or not isinstance(self.content, str):
-            raise TypeError("search hit title and content must be strings")
+        if not isinstance(self.title, str) or not isinstance(self.snippet, str):
+            raise TypeError("search hit title and snippet must be strings")
         object.__setattr__(self, "url", self.url.strip())
         object.__setattr__(self, "title", self.title.strip())
-        object.__setattr__(self, "content", self.content.strip())
+        object.__setattr__(self, "snippet", self.snippet.strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,10 +126,9 @@ class WebResearchSettingsLike(Protocol):
     max_query_bytes: int
     max_url_bytes: int
     max_title_bytes: int
-    max_content_bytes: int
-    max_response_bytes: int
-    default_search_results: int
-    max_search_results: int
+    provider_response_max_bytes: int
+    search_provider_max_results: int
+    fetch_chunks_per_source: int
     max_concurrency: int
     user_agent: str
 
@@ -143,7 +141,8 @@ class AppWebResearchSettingsLike(Protocol):
 class WebResearchRuntimeConfig:
     enabled: bool = True
     request_timeout_seconds: float = 10.0
-    default_search_results: int = 5
+    provider_response_max_bytes: int = 2 * 1024 * 1024
+    fetch_chunks_per_source: int = 3
     max_concurrency: int = 4
     user_agent: str = "SuperMew-WebResearch/2.0"
     limits: WebResearchLimits = DEFAULT_WEB_RESEARCH_LIMITS
@@ -159,11 +158,19 @@ class WebResearchRuntimeConfig:
         ):
             raise ValueError("request_timeout_seconds must be positive and finite")
         if (
-            isinstance(self.default_search_results, bool)
-            or not isinstance(self.default_search_results, int)
-            or self.default_search_results <= 0
+            isinstance(self.provider_response_max_bytes, bool)
+            or not isinstance(self.provider_response_max_bytes, int)
+            or not 1_024 <= self.provider_response_max_bytes <= 8 * 1024 * 1024
         ):
-            raise ValueError("default_search_results must be a positive integer")
+            raise ValueError(
+                "provider_response_max_bytes must be between 1024 and 8388608"
+            )
+        if (
+            isinstance(self.fetch_chunks_per_source, bool)
+            or not isinstance(self.fetch_chunks_per_source, int)
+            or not 1 <= self.fetch_chunks_per_source <= 5
+        ):
+            raise ValueError("fetch_chunks_per_source must be between 1 and 5")
         if (
             isinstance(self.max_concurrency, bool)
             or not isinstance(self.max_concurrency, int)
@@ -173,13 +180,13 @@ class WebResearchRuntimeConfig:
         if not isinstance(self.user_agent, str):
             raise TypeError("user_agent must be a string")
         user_agent = self.user_agent.strip()
-        if not user_agent or any(marker in user_agent for marker in ("\r", "\n", "\x00")):
+        if not user_agent or any(
+            marker in user_agent for marker in ("\r", "\n", "\x00")
+        ):
             raise ValueError("user_agent must be a safe non-empty value")
         object.__setattr__(self, "user_agent", user_agent)
         if not isinstance(self.limits, WebResearchLimits):
             raise TypeError("limits must be WebResearchLimits")
-        if self.default_search_results > self.limits.max_evidence_items:
-            raise ValueError("default_search_results exceeds the result limit")
 
 
 class TavilyKeylessProvider:
@@ -189,12 +196,12 @@ class TavilyKeylessProvider:
         self,
         *,
         user_agent: str,
-        max_response_bytes: int,
+        provider_response_max_bytes: int,
         client: httpx.Client | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._user_agent = user_agent
-        self._max_response_bytes = max_response_bytes
+        self._provider_response_max_bytes = provider_response_max_bytes
         self._client = client or httpx.Client(
             follow_redirects=False,
             trust_env=False,
@@ -249,11 +256,9 @@ class TavilyKeylessProvider:
             if not isinstance(url, str) or not url.strip():
                 continue
             title = raw.get("title") if isinstance(raw.get("title"), str) else ""
-            content = (
-                raw.get("content") if isinstance(raw.get("content"), str) else ""
-            )
+            snippet = raw.get("content") if isinstance(raw.get("content"), str) else ""
             try:
-                results.append(WebSearchHit(url=url, title=title, content=content))
+                results.append(WebSearchHit(url=url, title=title, snippet=snippet))
             except (TypeError, ValueError):
                 continue
         return tuple(results)
@@ -361,7 +366,7 @@ class TavilyKeylessProvider:
                 unavailable_code,
                 retryable=response.status_code == 429 or response.status_code >= 500,
             )
-        if len(response.content) > self._max_response_bytes:
+        if len(response.content) > self._provider_response_max_bytes:
             raise WebResearchError(invalid_code, retryable=False)
         try:
             return response.json()
@@ -389,7 +394,7 @@ class WebResearchRuntime:
         self.config = config or WebResearchRuntimeConfig()
         self.provider = provider or TavilyKeylessProvider(
             user_agent=self.config.user_agent,
-            max_response_bytes=self.config.limits.max_response_bytes,
+            provider_response_max_bytes=self.config.provider_response_max_bytes,
             monotonic=monotonic,
         )
         self._owns_provider = provider is None
@@ -511,10 +516,7 @@ class WebResearchRuntime:
                 _normalize_inline(hit.title),
                 self.config.limits.max_title_bytes,
             )
-            content = _truncate_utf8(
-                _normalize_inline(hit.content) or title,
-                self.config.limits.max_content_bytes,
-            )
+            content = _normalize_inline(hit.snippet) or title
             if not content:
                 truncated = True
                 continue
@@ -577,7 +579,7 @@ class WebResearchRuntime:
             extracted = self.provider.extract(
                 normalized_url,
                 query=normalized_query,
-                chunks_per_source=_EXTRACT_CHUNKS_PER_SOURCE,
+                chunks_per_source=self.config.fetch_chunks_per_source,
                 timeout_seconds=self.config.request_timeout_seconds,
                 deadline_at=deadline_at,
                 cancellation_probe=cancellation_probe,
@@ -596,13 +598,13 @@ class WebResearchRuntime:
                 WebResearchErrorCode.INVALID_EXTRACT_RESPONSE,
                 retryable=True,
             )
-        chunks = _bounded_extract_chunks(extracted.chunks)
+        chunks = _bounded_extract_chunks(
+            extracted.chunks,
+            chunks_per_source=self.config.fetch_chunks_per_source,
+        )
         if not chunks:
             raise WebResearchError(WebResearchErrorCode.INVALID_CONTENT)
-        content = _truncate_utf8(
-            "\n\n".join(chunks),
-            self.config.limits.max_content_bytes,
-        )
+        content = "\n\n".join(chunks)
         if not content:
             raise WebResearchError(WebResearchErrorCode.INVALID_CONTENT)
         title = _truncate_utf8(
@@ -666,7 +668,7 @@ class WebResearchRuntime:
     def _result_limit(self, value: int | None) -> int:
         maximum = self.config.limits.max_evidence_items
         if value is None:
-            return min(self.config.default_search_results, maximum)
+            return maximum
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError("limit must be a positive integer")
         return min(value, maximum)
@@ -702,14 +704,13 @@ def build_web_research_runtime(
         max_query_bytes=getattr(source, "max_query_bytes"),
         max_url_bytes=getattr(source, "max_url_bytes"),
         max_title_bytes=getattr(source, "max_title_bytes"),
-        max_content_bytes=getattr(source, "max_content_bytes"),
-        max_response_bytes=getattr(source, "max_response_bytes"),
-        max_evidence_items=getattr(source, "max_search_results"),
+        max_evidence_items=getattr(source, "search_provider_max_results"),
     )
     config = WebResearchRuntimeConfig(
         enabled=getattr(source, "enabled"),
         request_timeout_seconds=getattr(source, "request_timeout_seconds"),
-        default_search_results=getattr(source, "default_search_results"),
+        provider_response_max_bytes=getattr(source, "provider_response_max_bytes"),
+        fetch_chunks_per_source=getattr(source, "fetch_chunks_per_source"),
         max_concurrency=getattr(source, "max_concurrency"),
         user_agent=getattr(source, "user_agent"),
         limits=limits,
@@ -756,11 +757,15 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
     return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
 
 
-def _bounded_extract_chunks(chunks: Sequence[str]) -> tuple[str, ...]:
+def _bounded_extract_chunks(
+    chunks: Sequence[str],
+    *,
+    chunks_per_source: int,
+) -> tuple[str, ...]:
     bounded: list[str] = []
     seen: set[str] = set()
     for raw in chunks:
-        if len(bounded) >= _EXTRACT_CHUNKS_PER_SOURCE:
+        if len(bounded) >= chunks_per_source:
             break
         normalized = _normalize_inline(raw)
         if not normalized:

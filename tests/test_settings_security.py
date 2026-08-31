@@ -443,8 +443,14 @@ class SettingsSecurityTests(unittest.TestCase):
 
         self.assertFalse(web.enabled)
         self.assertFalse(web.search_configured)
-        self.assertEqual(3_072, web.max_content_bytes)
-        self.assertEqual(3_072, web.max_total_source_bytes)
+        self.assertEqual(2_097_152, web.provider_response_max_bytes)
+        self.assertEqual(3, web.search_provider_max_results)
+        self.assertEqual(3, web.search_model_visible_results)
+        self.assertEqual(480, web.search_per_source_max_bytes)
+        self.assertEqual(1_440, web.search_total_snippet_max_bytes)
+        self.assertEqual(3, web.fetch_chunks_per_source)
+        self.assertEqual(6_144, web.fetch_response_max_bytes)
+        self.assertEqual(12_288, web.fetch_run_total_max_bytes)
         self.assertEqual("SuperMew-WebResearch/2.0", web.user_agent)
 
     def test_enabled_web_research_is_keyless_in_every_environment(self):
@@ -454,26 +460,16 @@ class SettingsSecurityTests(unittest.TestCase):
 
     def test_web_research_budget_relationships_are_validated(self):
         settings = make_settings(secret="x" * 40)
-        settings.web_research.default_search_results = 13
-        settings.web_research.max_search_results = 12
-        with self.assertRaisesRegex(ValueError, "DEFAULT_SEARCH_RESULTS"):
+        settings.web_research.search_model_visible_results = 4
+        settings.web_research.search_provider_max_results = 3
+        with self.assertRaisesRegex(ValueError, "MODEL_VISIBLE_RESULTS"):
             settings.validate_startup()
 
         settings = make_settings(secret="x" * 40)
-        settings.web_research.max_content_bytes = 600_000
-        settings.web_research.max_total_source_bytes = 500_000
-        with self.assertRaisesRegex(ValueError, "MAX_CONTENT_BYTES"):
+        settings.web_research.fetch_response_max_bytes = 7_000
+        settings.web_research.fetch_run_total_max_bytes = 6_000
+        with self.assertRaisesRegex(ValueError, "FETCH_RESPONSE_MAX_BYTES"):
             settings.validate_startup()
-
-        settings = make_settings(secret="x" * 40)
-        settings.web_research.enabled = True
-        settings.web_research.max_content_bytes = 10_000
-        settings.web_research.max_total_source_bytes = 20_000
-        with self.assertRaisesRegex(ValueError, "Agent 输入 token 预算"):
-            settings.validate_startup()
-
-        settings.agent.max_context_tokens = 50_000
-        settings.validate_startup()
 
     def test_custom_http_dns_cap_and_web_user_agent_are_validated(self):
         with self.assertRaises(ValidationError):

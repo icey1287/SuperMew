@@ -157,7 +157,7 @@ def _web_result(*, content_bytes: int = 20 * 1024) -> WebResearchResult:
 def _web_tool_result(*, content_bytes: int = 20 * 1024) -> str:
     result = _web_result(content_bytes=content_bytes)
     return new_tool_success(
-        data=result.to_tool_dict(("S1",)),
+        data=result.to_search_tool_dict(("S1",)),
         observability_metadata=result.tool_observability_metadata(),
     ).model_dump_json()
 
@@ -593,7 +593,7 @@ class RuntimeMiddlewareTests(unittest.TestCase):
     ):
         evidence_result = _web_tool_result(content_bytes=900)
         empty_result = new_tool_success(
-            data=WebResearchResult.create([], truncated=True).to_tool_dict(()),
+            data=WebResearchResult.create([], truncated=True).to_search_tool_dict(()),
             observability_metadata={
                 "source_count": 0,
                 "output_bytes": 66,
@@ -1044,11 +1044,7 @@ class RuntimeMiddlewareTests(unittest.TestCase):
         request_context.record_web_search_result(result, query="architecture")
         try:
             update = TerminalResponseMiddleware().after_agent(
-                {
-                    "messages": [
-                        AIMessage(content="Verified claim [S1].")
-                    ]
-                },
+                {"messages": [AIMessage(content="Verified claim [S1].")]},
                 SimpleNamespace(context=context),
             )
         finally:

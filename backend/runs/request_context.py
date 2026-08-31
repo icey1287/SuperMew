@@ -20,6 +20,7 @@ from backend.web_research.contracts import WebResearchResult
 
 logger = logging.getLogger(__name__)
 
+
 def _optional_tenant_id(value: str | None) -> str | None:
     if value is None:
         return None
@@ -54,8 +55,8 @@ class RunRequestContext:
         default_factory=WebSourceLedger,
         repr=False,
     )
-    _web_tool_result_budget_limit: int | None = field(default=None, repr=False)
-    _web_tool_result_bytes_claimed: int = field(default=0, repr=False)
+    _web_fetch_result_budget_limit: int | None = field(default=None, repr=False)
+    _web_fetch_result_bytes_claimed: int = field(default=0, repr=False)
     _started_at: float = field(default_factory=time.monotonic)
     _last_step_at: Optional[float] = None
 
@@ -281,8 +282,8 @@ class RunRequestContext:
             if self._active:
                 self._web_source_ledger.mark_attempted()
 
-    def remaining_web_tool_result_budget(self, limit_bytes: int) -> int:
-        """Return the unclaimed Run-local Web ToolResult budget."""
+    def remaining_web_fetch_result_budget(self, limit_bytes: int) -> int:
+        """Return the unclaimed Run-local web_fetch ToolResult budget."""
 
         if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int):
             raise TypeError("limit_bytes must be an integer")
@@ -291,19 +292,19 @@ class RunRequestContext:
         with self._lock:
             if not self._active:
                 return 0
-            if self._web_tool_result_budget_limit is None:
-                self._web_tool_result_budget_limit = limit_bytes
-            elif self._web_tool_result_budget_limit != limit_bytes:
-                raise ValueError("web ToolResult budget cannot be rebound")
-            return max(limit_bytes - self._web_tool_result_bytes_claimed, 0)
+            if self._web_fetch_result_budget_limit is None:
+                self._web_fetch_result_budget_limit = limit_bytes
+            elif self._web_fetch_result_budget_limit != limit_bytes:
+                raise ValueError("web_fetch ToolResult budget cannot be rebound")
+            return max(limit_bytes - self._web_fetch_result_bytes_claimed, 0)
 
-    def claim_web_tool_result_budget(
+    def claim_web_fetch_result_budget(
         self,
         requested_bytes: int,
         *,
         limit_bytes: int,
     ) -> int:
-        """Atomically claim at most the remaining Run-local Web ToolResult bytes."""
+        """Atomically claim remaining Run-local web_fetch ToolResult bytes."""
 
         if isinstance(requested_bytes, bool) or not isinstance(requested_bytes, int):
             raise TypeError("requested_bytes must be an integer")
@@ -316,13 +317,13 @@ class RunRequestContext:
         with self._lock:
             if not self._active:
                 return 0
-            if self._web_tool_result_budget_limit is None:
-                self._web_tool_result_budget_limit = limit_bytes
-            elif self._web_tool_result_budget_limit != limit_bytes:
-                raise ValueError("web ToolResult budget cannot be rebound")
-            remaining = max(limit_bytes - self._web_tool_result_bytes_claimed, 0)
+            if self._web_fetch_result_budget_limit is None:
+                self._web_fetch_result_budget_limit = limit_bytes
+            elif self._web_fetch_result_budget_limit != limit_bytes:
+                raise ValueError("web_fetch ToolResult budget cannot be rebound")
+            remaining = max(limit_bytes - self._web_fetch_result_bytes_claimed, 0)
             claimed = min(requested_bytes, remaining)
-            self._web_tool_result_bytes_claimed += claimed
+            self._web_fetch_result_bytes_claimed += claimed
             return claimed
 
     def record_web_search_result(
@@ -381,6 +382,6 @@ class RunRequestContext:
             self.output_queue = None
             self.loop = None
             self._web_source_ledger.clear()
-            self._web_tool_result_budget_limit = None
-            self._web_tool_result_bytes_claimed = 0
+            self._web_fetch_result_budget_limit = None
+            self._web_fetch_result_bytes_claimed = 0
             self._rag_retrieval_snapshot = None

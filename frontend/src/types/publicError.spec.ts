@@ -41,4 +41,18 @@ describe('web context budget public error', () => {
       '模型调用次数达到本次运行上限，请缩小问题范围后重试'
     );
   });
+
+  it('describes automatic context trimming without reporting a service outage', () => {
+    expect(
+      normalizePublicErrorInfo({
+        code: 'CONTEXT_TRIMMED',
+        message: '服务暂时不可用，请稍后重试',
+        retryable: false,
+      })
+    ).toMatchObject({
+      code: 'CONTEXT_TRIMMED',
+      message: '已自动整理较早上下文以继续运行',
+      retryable: false,
+    });
+  });
 });

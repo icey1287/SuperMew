@@ -93,7 +93,6 @@ def _runtime(
     runtime = WebResearchRuntime(
         config=WebResearchRuntimeConfig(
             limits=limits or WebResearchLimits(),
-            default_search_results=2,
         ),
         provider=provider,
         clock=lambda: NOW,
@@ -104,7 +103,6 @@ def _runtime(
 
 def test_search_returns_provider_summaries_without_quarter_budget_pretruncate() -> None:
     limits = WebResearchLimits(
-        max_content_bytes=3_072,
         max_evidence_items=2,
     )
     provider = FakeProvider(
@@ -146,7 +144,9 @@ def test_search_skips_duplicate_or_empty_hits_and_marks_result_truncated() -> No
     assert result.truncated is True
 
 
-def test_fetch_uses_query_ranked_extract_and_bounds_five_500_character_chunks() -> None:
+def test_fetch_uses_query_ranked_extract_and_bounds_three_500_character_chunks() -> (
+    None
+):
     provider = FakeProvider(
         extracted=WebExtractResult(
             url="https://example.org/source",
@@ -154,10 +154,7 @@ def test_fetch_uses_query_ranked_extract_and_bounds_five_500_character_chunks() 
             chunks=tuple(f"{index}:" + "x" * 700 for index in range(6)),
         )
     )
-    runtime = _runtime(
-        provider,
-        limits=WebResearchLimits(max_content_bytes=3_072),
-    )
+    runtime = _runtime(provider)
     try:
         result = runtime.fetch(
             "https://example.org/source",
@@ -169,9 +166,9 @@ def test_fetch_uses_query_ranked_extract_and_bounds_five_500_character_chunks() 
     call = provider.extract_calls[0]
     assert call["url"] == "https://example.org/source"
     assert call["query"] == "free-threading performance limitations"
-    assert call["chunks_per_source"] == 5
+    assert call["chunks_per_source"] == 3
     chunks = result.evidence[0].content.split("\n\n")
-    assert len(chunks) == 5
+    assert len(chunks) == 3
     assert all(len(chunk) <= 500 for chunk in chunks)
 
 
@@ -230,14 +227,14 @@ def test_tavily_extract_request_uses_fixed_endpoint_and_required_parameters() ->
     client = httpx.Client(transport=httpx.MockTransport(handler))
     provider = TavilyKeylessProvider(
         user_agent="SuperMew-Test/1.0",
-        max_response_bytes=64_000,
+        provider_response_max_bytes=64_000,
         client=client,
     )
     try:
         result = provider.extract(
             "https://example.org/source",
             query="specific question",
-            chunks_per_source=5,
+            chunks_per_source=3,
             timeout_seconds=2.0,
             deadline_at=None,
             cancellation_probe=None,
@@ -251,7 +248,7 @@ def test_tavily_extract_request_uses_fixed_endpoint_and_required_parameters() ->
         "payload": {
             "urls": "https://example.org/source",
             "query": "specific question",
-            "chunks_per_source": 5,
+            "chunks_per_source": 3,
             "extract_depth": "basic",
         },
         "access_mode": "keyless",
@@ -280,7 +277,7 @@ def test_tavily_search_uses_only_fixed_search_endpoint() -> None:
     client = httpx.Client(transport=httpx.MockTransport(handler))
     provider = TavilyKeylessProvider(
         user_agent="SuperMew-Test/1.0",
-        max_response_bytes=64_000,
+        provider_response_max_bytes=64_000,
         client=client,
     )
     try:
@@ -296,25 +293,22 @@ def test_tavily_search_uses_only_fixed_search_endpoint() -> None:
         client.close()
 
     assert observed == ["https://api.tavily.com/search"]
-    assert hits == (
-        WebSearchHit("https://example.org/result", "Result", "Summary"),
-    )
+    assert hits == (WebSearchHit("https://example.org/result", "Result", "Summary"),)
 
 
 def test_build_runtime_maps_only_current_web_research_settings() -> None:
     settings = WebResearchSettings(
         _env_file=None,
         WEB_RESEARCH_ENABLED=True,
-        WEB_RESEARCH_DEFAULT_SEARCH_RESULTS=3,
-        WEB_RESEARCH_MAX_SEARCH_RESULTS=4,
-        WEB_RESEARCH_MAX_CONTENT_BYTES=4_096,
-        WEB_RESEARCH_MAX_TOTAL_SOURCE_BYTES=4_096,
+        WEB_RESEARCH_PROVIDER_RESPONSE_MAX_BYTES=131_072,
+        WEB_RESEARCH_SEARCH_PROVIDER_MAX_RESULTS=3,
+        WEB_RESEARCH_FETCH_CHUNKS_PER_SOURCE=2,
     )
 
     runtime = build_web_research_runtime(settings)
     try:
-        assert runtime.config.default_search_results == 3
-        assert runtime.config.limits.max_evidence_items == 4
-        assert runtime.config.limits.max_content_bytes == 4_096
+        assert runtime.config.provider_response_max_bytes == 131_072
+        assert runtime.config.fetch_chunks_per_source == 2
+        assert runtime.config.limits.max_evidence_items == 3
     finally:
         runtime.close()
