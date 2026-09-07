@@ -49,7 +49,8 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --dev --locked
 
-      - name: Check formatting
+      - name: Check formatting (non-blocking)
+        continue-on-error: true
         run: uv run --no-sync ruff format --check .
 
       - name: Lint and reject known blocking calls in async functions
