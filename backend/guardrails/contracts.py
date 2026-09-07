@@ -1,8 +1,8 @@
 """Pure contracts for the Tool Guardrail Module.
 
-The Interface deliberately accepts only structural argument summaries and an
-opaque destination capability. Raw tool arguments, request bodies, secrets,
-network destinations, and approval tokens never cross this Seam.
+The Interface accepts only structural argument summaries. Raw tool arguments,
+request bodies, secrets, network destinations, and approval tokens never cross
+this Seam.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Any, Final
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_CAPABILITY_ID_RE = re.compile(r"destcap_[0-9a-f]{64}")
 _STABLE_ID_RE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}")
 _POLICY_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}")
 _SECRET_KEY_PARTS: Final = frozenset(
@@ -60,7 +59,6 @@ _SAFE_METADATA_KEYS: Final = frozenset(
         "channel",
         "context_complete",
         "descriptor_requires_approval",
-        "destination_capability_present",
         "network_policy",
         "resource_scope",
         "role_count",
@@ -84,7 +82,6 @@ _SAFE_METADATA_BOOLEAN_KEYS: Final = frozenset(
         "active_skill_scope_allows",
         "approval_granted",
         "context_complete",
-        "destination_capability_present",
     }
 )
 
@@ -137,26 +134,6 @@ def _stable_context_identifier(value: object) -> bool:
     return isinstance(value, str) and _STABLE_ID_RE.fullmatch(value) is not None
 
 
-def destination_context_binding(
-    *,
-    user_id: str,
-    tenant_id: str,
-    thread_id: str,
-    run_id: str,
-) -> str:
-    """Return the opaque binding a URL policy signs into a capability."""
-
-    fields = {
-        "user_id": user_id,
-        "tenant_id": tenant_id,
-        "thread_id": thread_id,
-        "run_id": run_id,
-    }
-    if any(not _context_text_is_complete(value) for value in fields.values()):
-        raise ValueError("destination context fields must be complete")
-    return _canonical_fingerprint({"schema_version": 1, **fields})
-
-
 class GuardrailDecision(StrEnum):
     ALLOW = "ALLOW"
     DENY = "DENY"
@@ -184,11 +161,6 @@ class GuardrailReasonCode(StrEnum):
     SQL_ADMIN_REQUIRED = "SQL_ADMIN_REQUIRED"
     SQL_READ_ONLY_TOOL_REQUIRED = "SQL_READ_ONLY_TOOL_REQUIRED"
     SQL_RESOURCE_SCOPE_DENIED = "SQL_RESOURCE_SCOPE_DENIED"
-    WEB_CONTEXT_REQUIRED = "WEB_CONTEXT_REQUIRED"
-    DESTINATION_CAPABILITY_REQUIRED = "DESTINATION_CAPABILITY_REQUIRED"
-    DESTINATION_CAPABILITY_INVALID = "DESTINATION_CAPABILITY_INVALID"
-    DESTINATION_CAPABILITY_UNVERIFIED = "DESTINATION_CAPABILITY_UNVERIFIED"
-    DESTINATION_CAPABILITY_PROVIDER_FAILED = "DESTINATION_CAPABILITY_PROVIDER_FAILED"
     POLICY_PROVIDER_DENIED = "POLICY_PROVIDER_DENIED"
     POLICY_PROVIDER_APPROVAL_REQUIRED = "POLICY_PROVIDER_APPROVAL_REQUIRED"
     POLICY_PROVIDER_FAILED = "POLICY_PROVIDER_FAILED"
@@ -364,55 +336,6 @@ class ToolArgsSummary:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
-class DestinationCapability:
-    """Signed, destination-redacted claims issued by the URL policy Adapter."""
-
-    capability_id: str
-    issuer: str
-    policy_hash: str = field(repr=False)
-    context_binding: str = field(repr=False)
-    destination_hash: str = field(repr=False)
-    tool_name: str
-    network_policy: str
-    resource_scope: str
-    signature: str = field(repr=False)
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.capability_id, str)
-            or _CAPABILITY_ID_RE.fullmatch(self.capability_id) is None
-        ):
-            raise ValueError("capability_id must be a destination capability ID")
-        _stable_identifier(self.issuer, field_name="issuer")
-        _sha256(self.policy_hash, field_name="policy_hash")
-        _sha256(self.context_binding, field_name="context_binding")
-        _sha256(self.destination_hash, field_name="destination_hash")
-        _stable_identifier(self.tool_name, field_name="tool_name")
-        _stable_identifier(self.network_policy, field_name="network_policy")
-        _stable_identifier(self.resource_scope, field_name="resource_scope")
-        if (
-            not isinstance(self.signature, str)
-            or not self.signature
-            or len(self.signature) > 8_192
-            or not self.signature.isascii()
-            or any(
-                ord(character) < 0x21 or ord(character) > 0x7E
-                for character in self.signature
-            )
-        ):
-            raise ValueError("signature must be a bounded opaque token")
-
-    def __repr__(self) -> str:
-        return (
-            "DestinationCapability("
-            f"issuer={self.issuer!r}, "
-            f"tool_name={self.tool_name!r}, "
-            f"network_policy={self.network_policy!r}, "
-            f"resource_scope={self.resource_scope!r}, signed=True)"
-        )
-
-
-@dataclass(frozen=True, slots=True, repr=False)
 class ToolGuardrailRequest:
     """Complete Run-local context required before a tool side effect."""
 
@@ -429,10 +352,6 @@ class ToolGuardrailRequest:
     active_skill_scope_allows: bool | None
     channel: str | None
     network_policy: str | None
-    destination_capability: DestinationCapability | None = field(
-        default=None,
-        repr=False,
-    )
     resource_scope: str | None = None
     descriptor_requires_approval: bool | None = None
     approval_granted: bool | None = None
@@ -458,13 +377,6 @@ class ToolGuardrailRequest:
             value = getattr(self, field_name)
             if value is not None and not isinstance(value, bool):
                 raise TypeError(f"{field_name} must be a bool or None")
-        if self.destination_capability is not None and not isinstance(
-            self.destination_capability,
-            DestinationCapability,
-        ):
-            raise TypeError(
-                "destination_capability must be DestinationCapability or None"
-            )
         if self.descriptor_requires_approval is not None and not isinstance(
             self.descriptor_requires_approval,
             bool,
@@ -539,9 +451,7 @@ class ToolGuardrailRequest:
             "ToolGuardrailRequest("
             f"context_complete={self.context_complete!r}, "
             f"role_count={len(self.roles or ())!r}, "
-            f"has_active_skill={self.active_skill is not None!r}, "
-            "has_destination_capability="
-            f"{self.destination_capability is not None!r})"
+            f"has_active_skill={self.active_skill is not None!r})"
         )
 
 
@@ -639,7 +549,6 @@ class ToolGuardrailResult:
 
 
 __all__ = [
-    "DestinationCapability",
     "GuardrailDecision",
     "GuardrailDirective",
     "GuardrailReasonCode",
@@ -647,5 +556,4 @@ __all__ = [
     "ToolArgsSummary",
     "ToolGuardrailRequest",
     "ToolGuardrailResult",
-    "destination_context_binding",
 ]

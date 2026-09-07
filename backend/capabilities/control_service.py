@@ -450,9 +450,9 @@ class CapabilityControlService:
                 else None
             )
             custom_http_runtime = CustomHttpToolRuntime(
-                dns_timeout_seconds=web_settings.dns_timeout_seconds,
-                dns_max_concurrency=web_settings.dns_max_concurrency,
-                max_dns_addresses=web_settings.max_dns_addresses,
+                dns_timeout_seconds=self.settings.custom_http.dns_timeout_seconds,
+                dns_max_concurrency=self.settings.custom_http.dns_max_concurrency,
+                max_dns_addresses=self.settings.custom_http.max_dns_addresses,
             )
             registry = build_default_tool_registry(
                 sql_assistant_settings=sql_settings,

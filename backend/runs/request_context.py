@@ -2,33 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
 
 from backend.model_control import ModelCatalogSnapshot
-from backend.guardrails import (
-    DestinationCapability,
-    DestinationCapabilityBinding,
-    RunDestinationCapabilityAuthority,
-)
-
 from backend.schemas.rag import HitlResumeState, normalize_rag_trace
 from backend.web_research.citations import (
-    WebCitationLedger,
-    WebCitationLedgerCode,
-    WebCitationLedgerError,
-    WebEvidenceKind,
+    WebSourceLedger,
+    WebSourceLedgerCode,
+    WebSourceLedgerError,
+    WebSourceReference,
 )
 from backend.web_research.contracts import WebResearchResult
 
 logger = logging.getLogger(__name__)
-
-_WEB_EVIDENCE_ID = re.compile(r"web_ev_[0-9a-f]{64}")
-_MAX_WEB_EVIDENCE_ITEMS = 64
 
 
 def _optional_tenant_id(value: str | None) -> str | None:
@@ -40,13 +30,6 @@ def _optional_tenant_id(value: str | None) -> str | None:
     if not tenant_id:
         raise ValueError("tenant_id must not be empty")
     return tenant_id
-
-
-@dataclass(frozen=True, slots=True)
-class _WebFetchAuthorization:
-    canonical_url: str
-    allowed_domains: tuple[str, ...] = ()
-    capability: DestinationCapability | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -68,20 +51,12 @@ class RunRequestContext:
     _provider_cancellation_probe: Optional[Callable[[], bool]] = None
     _model_snapshot: ModelCatalogSnapshot | None = field(default=None, repr=False)
     _rag_retrieval_snapshot: object | None = field(default=None, repr=False)
-    _web_fetch_authorizations: dict[str, _WebFetchAuthorization] = field(
-        default_factory=dict,
+    _web_source_ledger: WebSourceLedger = field(
+        default_factory=WebSourceLedger,
         repr=False,
     )
-    _destination_authority: RunDestinationCapabilityAuthority | None = field(
-        default=None,
-        repr=False,
-    )
-    _web_citation_ledger: WebCitationLedger = field(
-        default_factory=WebCitationLedger,
-        repr=False,
-    )
-    _web_tool_result_budget_limit: int | None = field(default=None, repr=False)
-    _web_tool_result_bytes_claimed: int = field(default=0, repr=False)
+    _web_fetch_result_budget_limit: int | None = field(default=None, repr=False)
+    _web_fetch_result_bytes_claimed: int = field(default=0, repr=False)
     _started_at: float = field(default_factory=time.monotonic)
     _last_step_at: Optional[float] = None
 
@@ -300,60 +275,15 @@ class RunRequestContext:
         with self._lock:
             return self._provider_deadline_at, self._provider_cancellation_probe
 
-    def configure_guardrail_context(self, *, tenant_id: str, run_id: str) -> None:
-        """Install one request-owned destination authority before tools are bound."""
-
-        binding = DestinationCapabilityBinding(
-            user_id=self.user_id,
-            tenant_id=tenant_id,
-            thread_id=self.thread_id,
-            run_id=run_id,
-        )
-        with self._lock:
-            if not self._active:
-                raise RuntimeError("request context is closed")
-            current = self._destination_authority
-            if current is not None:
-                if current.binding != binding:
-                    raise ValueError("guardrail context cannot be rebound")
-                return
-            self._destination_authority = RunDestinationCapabilityAuthority(binding)
-
-    def destination_capability_verifier(
-        self,
-    ) -> RunDestinationCapabilityAuthority | None:
-        with self._lock:
-            return self._destination_authority if self._active else None
-
-    def destination_capability_for_tool(
-        self,
-        tool_name: str,
-        arguments: object,
-    ) -> DestinationCapability | None:
-        """Resolve internal claims from public tool arguments without trusting them."""
-
-        if tool_name != "web_fetch" or not isinstance(arguments, Mapping):
-            return None
-        evidence_id = arguments.get("evidence_id")
-        if not isinstance(evidence_id, str) or not _WEB_EVIDENCE_ID.fullmatch(
-            evidence_id
-        ):
-            return None
-        with self._lock:
-            if not self._active:
-                return None
-            authorization = self._web_fetch_authorizations.get(evidence_id)
-            return None if authorization is None else authorization.capability
-
     def mark_web_research_attempted(self) -> None:
-        """Record a Web Tool attempt without retaining its query or arguments."""
+        """Record that this Run used a Web Research tool."""
 
         with self._lock:
             if self._active:
-                self._web_citation_ledger.mark_attempted()
+                self._web_source_ledger.mark_attempted()
 
-    def remaining_web_tool_result_budget(self, limit_bytes: int) -> int:
-        """Return the unclaimed Run-local Web ToolResult budget."""
+    def remaining_web_fetch_result_budget(self, limit_bytes: int) -> int:
+        """Return the unclaimed Run-local web_fetch ToolResult budget."""
 
         if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int):
             raise TypeError("limit_bytes must be an integer")
@@ -362,19 +292,19 @@ class RunRequestContext:
         with self._lock:
             if not self._active:
                 return 0
-            if self._web_tool_result_budget_limit is None:
-                self._web_tool_result_budget_limit = limit_bytes
-            elif self._web_tool_result_budget_limit != limit_bytes:
-                raise ValueError("web ToolResult budget cannot be rebound")
-            return max(limit_bytes - self._web_tool_result_bytes_claimed, 0)
+            if self._web_fetch_result_budget_limit is None:
+                self._web_fetch_result_budget_limit = limit_bytes
+            elif self._web_fetch_result_budget_limit != limit_bytes:
+                raise ValueError("web_fetch ToolResult budget cannot be rebound")
+            return max(limit_bytes - self._web_fetch_result_bytes_claimed, 0)
 
-    def claim_web_tool_result_budget(
+    def claim_web_fetch_result_budget(
         self,
         requested_bytes: int,
         *,
         limit_bytes: int,
     ) -> int:
-        """Atomically claim at most the remaining Run-local Web ToolResult bytes."""
+        """Atomically claim remaining Run-local web_fetch ToolResult bytes."""
 
         if isinstance(requested_bytes, bool) or not isinstance(requested_bytes, int):
             raise TypeError("requested_bytes must be an integer")
@@ -387,151 +317,71 @@ class RunRequestContext:
         with self._lock:
             if not self._active:
                 return 0
-            if self._web_tool_result_budget_limit is None:
-                self._web_tool_result_budget_limit = limit_bytes
-            elif self._web_tool_result_budget_limit != limit_bytes:
-                raise ValueError("web ToolResult budget cannot be rebound")
-            remaining = max(limit_bytes - self._web_tool_result_bytes_claimed, 0)
+            if self._web_fetch_result_budget_limit is None:
+                self._web_fetch_result_budget_limit = limit_bytes
+            elif self._web_fetch_result_budget_limit != limit_bytes:
+                raise ValueError("web_fetch ToolResult budget cannot be rebound")
+            remaining = max(limit_bytes - self._web_fetch_result_bytes_claimed, 0)
             claimed = min(requested_bytes, remaining)
-            self._web_tool_result_bytes_claimed += claimed
+            self._web_fetch_result_bytes_claimed += claimed
             return claimed
 
     def record_web_search_result(
         self,
         result: WebResearchResult,
         *,
-        allowed_domains: tuple[str, ...] = (),
-    ) -> None:
-        """Register search evidence and mint only its Run-local fetch capabilities."""
+        query: str,
+    ) -> tuple[str, ...]:
+        """Assign stable Run-local Source IDs to a successful search result."""
 
         if not isinstance(result, WebResearchResult):
             raise TypeError("result must be WebResearchResult")
-        normalized_domains = tuple(
-            sorted({domain.casefold() for domain in allowed_domains})
-        )
-        capabilities = {
-            item.evidence_id: item.canonical_url for item in result.evidence
-        }
         with self._lock:
             if not self._active:
-                return
-            if len(set(self._web_fetch_authorizations).union(capabilities)) > (
-                _MAX_WEB_EVIDENCE_ITEMS
-            ):
-                raise WebCitationLedgerError(WebCitationLedgerCode.EVIDENCE_LIMIT)
-            for evidence_id, canonical_url in capabilities.items():
-                existing = self._web_fetch_authorizations.get(evidence_id)
-                if existing is not None and existing.canonical_url != canonical_url:
-                    raise ValueError("web evidence authorization cannot be rebound")
-            authority = self._destination_authority
-            staged_authorizations: dict[str, _WebFetchAuthorization] = {}
-            for evidence_id, canonical_url in capabilities.items():
-                existing = self._web_fetch_authorizations.get(evidence_id)
-                if existing is None:
-                    staged_authorizations[evidence_id] = _WebFetchAuthorization(
-                        canonical_url=canonical_url,
-                        allowed_domains=normalized_domains,
-                        capability=(
-                            authority.issue(canonical_url)
-                            if authority is not None
-                            else None
-                        ),
-                    )
-                elif existing.allowed_domains != normalized_domains:
-                    merged_domains = (
-                        ()
-                        if not existing.allowed_domains or not normalized_domains
-                        else tuple(
-                            sorted(
-                                set(existing.allowed_domains).union(normalized_domains)
-                            )
-                        )
-                    )
-                    staged_authorizations[evidence_id] = _WebFetchAuthorization(
-                        canonical_url=canonical_url,
-                        allowed_domains=merged_domains,
-                        capability=existing.capability,
-                    )
-            self._web_citation_ledger.register_result(
+                return ()
+            return self._web_source_ledger.register_search_result(
                 result,
-                kind=WebEvidenceKind.SEARCH_SNIPPET,
+                query=query,
             )
-            self._web_fetch_authorizations.update(staged_authorizations)
 
-    def record_web_fetch_result(self, result: WebResearchResult) -> None:
-        """Register fetched evidence without minting a new network capability."""
-
-        if not isinstance(result, WebResearchResult):
-            raise TypeError("result must be WebResearchResult")
-        with self._lock:
-            if self._active:
-                self._web_citation_ledger.register_result(
-                    result,
-                    kind=WebEvidenceKind.FETCHED_PAGE,
-                )
-
-    def web_research_requires_terminal_validation(self) -> bool:
-        """Return whether terminal output must cross the citation policy Seam."""
+    def resolve_web_source(self, source_id: str) -> WebSourceReference | None:
+        """Resolve one Source ID from this Run's search results."""
 
         with self._lock:
-            return bool(self._active and self._web_citation_ledger.status().attempted)
+            if not self._active:
+                return None
+            return self._web_source_ledger.resolve(source_id)
 
-    def web_evidence_count(self) -> int:
-        """Return an aggregate-only count; evidence identities remain private."""
+    def web_research_requires_source_rendering(self) -> bool:
+        """Return whether terminal output may contain Run-local Source IDs."""
 
+        with self._lock:
+            return bool(self._active and self._web_source_ledger.status().attempted)
+
+    def web_source_count(self) -> int:
         with self._lock:
             if not self._active:
                 return 0
-            return self._web_citation_ledger.status().evidence_count
+            return self._web_source_ledger.status().source_count
 
-    def finalize_web_citations(self, content: str) -> str:
-        """Validate Run-local citation tokens and render authorized Markdown URLs."""
+    def render_web_source_citations(self, content: str) -> str:
+        """Render known [S1] tokens as links to their registered source URL."""
 
         with self._lock:
             if not self._active:
-                raise WebCitationLedgerError(WebCitationLedgerCode.CONTEXT_CLOSED)
-            return self._web_citation_ledger.finalize(content).content
-
-    def resolve_web_evidence(self, evidence_id: str) -> str | None:
-        """Resolve a fetch capability issued by web_search in this request."""
-
-        authorization = self.resolve_web_fetch_authorization(evidence_id)
-        return None if authorization is None else authorization[0]
-
-    def resolve_web_fetch_authorization(
-        self,
-        evidence_id: str,
-    ) -> tuple[str, tuple[str, ...]] | None:
-        """Resolve a Run-local fetch URL together with its search domain scope."""
-
-        if not isinstance(evidence_id, str) or not _WEB_EVIDENCE_ID.fullmatch(
-            evidence_id
-        ):
-            return None
-        with self._lock:
-            if not self._active:
-                return None
-            authorization = self._web_fetch_authorizations.get(evidence_id)
-            if authorization is None:
-                return None
-            return authorization.canonical_url, authorization.allowed_domains
+                raise WebSourceLedgerError(WebSourceLedgerCode.CONTEXT_CLOSED)
+            return self._web_source_ledger.finalize(content).content
 
     def elapsed_ms(self) -> int:
         with self._lock:
             return max(int((time.monotonic() - self._started_at) * 1000), 0)
 
     def close(self) -> None:
-        authority = None
         with self._lock:
             self._active = False
             self.output_queue = None
             self.loop = None
-            self._web_fetch_authorizations.clear()
-            self._web_citation_ledger.clear()
-            self._web_tool_result_budget_limit = None
-            self._web_tool_result_bytes_claimed = 0
+            self._web_source_ledger.clear()
+            self._web_fetch_result_budget_limit = None
+            self._web_fetch_result_bytes_claimed = 0
             self._rag_retrieval_snapshot = None
-            authority = self._destination_authority
-            self._destination_authority = None
-        if authority is not None:
-            authority.close()

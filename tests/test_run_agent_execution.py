@@ -1187,8 +1187,10 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             with self.Session.begin() as db:
                 db.query(User).filter(User.username == "alice").one().role = "admin"
             await self.executor.close()
-            await self.executor.start()
+            # This test targets checkpoint recovery; keep the unrelated pending-Run
+            # sweep off the single SQLite connection used by the resume transaction.
             with (
+                patch.object(self.repository, "list_pending", return_value=[]),
                 patch.object(
                     self.repository,
                     "get_internal",
@@ -1200,6 +1202,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                     wraps=self.repository.load_execution_snapshot,
                 ) as load_execution_snapshot,
             ):
+                await self.executor.start()
                 resume_task = await self.executor.resume_once(
                     username="alice",
                     run_id=reservation.run.id,

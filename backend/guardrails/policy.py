@@ -1,8 +1,8 @@
 """Deterministic, fail-closed Tool Guardrail policy implementation.
 
 One small ``ToolGuardrail.evaluate`` Interface hides context validation, Skill
-context, high-risk defaults, SQL and network rules, capability verification,
-provider failures, policy identity, and audit-safe metadata. Tool visibility and
+context, high-risk defaults, SQL and network rules, provider failures, policy
+identity, and audit-safe metadata. Tool visibility and
 Skill scope remain owned by ``ToolSession`` so this module does not repeat that
 authorization decision.
 """
@@ -10,21 +10,18 @@ authorization decision.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import re
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from backend.guardrails.contracts import (
-    DestinationCapability,
     GuardrailDecision,
     GuardrailDirective,
     GuardrailReasonCode,
     SafeMetadataValue,
     ToolGuardrailRequest,
     ToolGuardrailResult,
-    destination_context_binding,
 )
 
 
@@ -103,7 +100,7 @@ _DEFAULT_APPROVAL_GROUPS = frozenset({"file-write", "sandbox-execution"})
 class GuardrailPolicy:
     """Immutable deterministic policy snapshot with canonical identity."""
 
-    version: str = "1.1.0"
+    version: str = "1.2.0"
     known_channels: frozenset[str] = frozenset({"api", "run", "web", "worker"})
     known_network_policies: frozenset[str] = frozenset(
         {"none", "restricted", "private-data"}
@@ -166,7 +163,6 @@ class GuardrailPolicy:
     hard_deny_groups: frozenset[str] = _DEFAULT_HIGH_RISK_DENY_GROUPS
     approval_groups: frozenset[str] = _DEFAULT_APPROVAL_GROUPS
     restricted_web_tools: frozenset[str] = frozenset({"web_fetch", "web_search"})
-    destination_capability_tools: frozenset[str] = frozenset({"web_fetch"})
     restricted_network_policy: str = "restricted"
     private_network_policy: str = "private-data"
     public_web_scope: str = "public-web"
@@ -177,7 +173,6 @@ class GuardrailPolicy:
     sql_admin_role: str = "admin"
     sql_read_scope: str = "private-data-read"
     sql_read_only_tools: frozenset[str] = frozenset({"sql_query", "sql_schema"})
-    destination_capability_issuer: str = "web-url-policy"
 
     def __post_init__(self) -> None:
         if (
@@ -196,7 +191,6 @@ class GuardrailPolicy:
             "hard_deny_groups",
             "approval_groups",
             "restricted_web_tools",
-            "destination_capability_tools",
             "sql_read_only_tools",
         )
         for field_name in set_fields:
@@ -215,7 +209,6 @@ class GuardrailPolicy:
             "sql_skill",
             "sql_admin_role",
             "sql_read_scope",
-            "destination_capability_issuer",
         )
         for field_name in identifier_fields:
             _stable_identifier(getattr(self, field_name), field_name=field_name)
@@ -247,10 +240,6 @@ class GuardrailPolicy:
             raise ValueError("public_web_scope must be known")
         if self.sql_read_scope not in self.known_resource_scopes:
             raise ValueError("sql_read_scope must be known")
-        if not self.destination_capability_tools.issubset(self.restricted_web_tools):
-            raise ValueError(
-                "destination_capability_tools must be restricted web tools"
-            )
         web_scope = self.scope_for(self.web_skill)
         if web_scope is None or not self.restricted_web_tools.issubset(
             web_scope.allowed_tools
@@ -292,9 +281,6 @@ class GuardrailPolicy:
                 "hard_deny_groups": sorted(self.hard_deny_groups),
                 "approval_groups": sorted(self.approval_groups),
                 "restricted_web_tools": sorted(self.restricted_web_tools),
-                "destination_capability_tools": sorted(
-                    self.destination_capability_tools
-                ),
                 "restricted_network_policy": self.restricted_network_policy,
                 "private_network_policy": self.private_network_policy,
                 "public_web_scope": self.public_web_scope,
@@ -305,24 +291,11 @@ class GuardrailPolicy:
                 "sql_admin_role": self.sql_admin_role,
                 "sql_read_scope": self.sql_read_scope,
                 "sql_read_only_tools": sorted(self.sql_read_only_tools),
-                "destination_capability_issuer": (self.destination_capability_issuer),
             }
         )
 
 
 DEFAULT_GUARDRAIL_POLICY = GuardrailPolicy()
-
-
-@runtime_checkable
-class DestinationCapabilityVerifier(Protocol):
-    """Adapter Seam for verifying URL-policy capability signatures."""
-
-    def verify(
-        self,
-        capability: DestinationCapability,
-        *,
-        request: ToolGuardrailRequest,
-    ) -> bool: ...
 
 
 @runtime_checkable
@@ -338,20 +311,10 @@ class DeterministicToolGuardrailProvider:
     def __init__(
         self,
         policy: GuardrailPolicy = DEFAULT_GUARDRAIL_POLICY,
-        *,
-        destination_verifier: DestinationCapabilityVerifier | None = None,
     ) -> None:
         if not isinstance(policy, GuardrailPolicy):
             raise TypeError("policy must be a GuardrailPolicy")
-        if destination_verifier is not None and not isinstance(
-            destination_verifier,
-            DestinationCapabilityVerifier,
-        ):
-            raise TypeError(
-                "destination_verifier must satisfy DestinationCapabilityVerifier"
-            )
         self.policy = policy
-        self.destination_verifier = destination_verifier
 
     @staticmethod
     def _directive(
@@ -410,10 +373,6 @@ class DeterministicToolGuardrailProvider:
         sql_rule = self._check_sql(request)
         if sql_rule is not None:
             return sql_rule
-
-        destination_rule = self._check_destination(request)
-        if destination_rule is not None:
-            return destination_rule
 
         if request.descriptor_requires_approval and not request.approval_granted:
             return self._directive(
@@ -481,84 +440,6 @@ class DeterministicToolGuardrailProvider:
             )
         return None
 
-    def _check_destination(
-        self,
-        request: ToolGuardrailRequest,
-    ) -> GuardrailDirective | None:
-        assert request.tool_name is not None
-        assert request.tool_group is not None
-        assert request.network_policy is not None
-        assert request.resource_scope is not None
-        assert request.user_id is not None
-        assert request.tenant_id is not None
-        assert request.thread_id is not None
-        assert request.run_id is not None
-
-        is_web_group = request.tool_group == self.policy.web_group
-        is_web_tool = request.tool_name in self.policy.restricted_web_tools
-        if not is_web_group and not is_web_tool:
-            return None
-        if not is_web_group or not is_web_tool:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.WEB_CONTEXT_REQUIRED,
-            )
-        if (
-            request.network_policy != self.policy.restricted_network_policy
-            or request.resource_scope != self.policy.public_web_scope
-        ):
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.DESTINATION_CAPABILITY_INVALID,
-            )
-        if request.tool_name not in self.policy.destination_capability_tools:
-            return None
-        capability = request.destination_capability
-        if capability is None:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.DESTINATION_CAPABILITY_REQUIRED,
-            )
-        expected_binding = destination_context_binding(
-            user_id=request.user_id,
-            tenant_id=request.tenant_id,
-            thread_id=request.thread_id,
-            run_id=request.run_id,
-        )
-        if not (
-            capability.issuer == self.policy.destination_capability_issuer
-            and capability.tool_name == request.tool_name
-            and capability.network_policy == request.network_policy
-            and capability.resource_scope == request.resource_scope
-            and hmac.compare_digest(capability.context_binding, expected_binding)
-        ):
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.DESTINATION_CAPABILITY_INVALID,
-            )
-        if self.destination_verifier is None:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.DESTINATION_CAPABILITY_UNVERIFIED,
-            )
-        try:
-            verified = self.destination_verifier.verify(
-                capability,
-                request=request,
-            )
-        except Exception:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.DESTINATION_CAPABILITY_PROVIDER_FAILED,
-            )
-        if verified is not True:
-            return self._directive(
-                GuardrailDecision.DENY,
-                GuardrailReasonCode.DESTINATION_CAPABILITY_INVALID,
-            )
-        return None
-
-
 def _safe_identifier(value: object) -> str:
     if isinstance(value, str) and _STABLE_ID_RE.fullmatch(value) is not None:
         return value
@@ -575,7 +456,6 @@ def _safe_metadata(request: object) -> dict[str, SafeMetadataValue]:
             "channel": "unknown",
             "context_complete": False,
             "descriptor_requires_approval": None,
-            "destination_capability_present": False,
             "network_policy": "unknown",
             "resource_scope": "unknown",
             "role_count": 0,
@@ -594,7 +474,6 @@ def _safe_metadata(request: object) -> dict[str, SafeMetadataValue]:
         "channel": _safe_identifier(request.channel),
         "context_complete": request.context_complete,
         "descriptor_requires_approval": request.descriptor_requires_approval,
-        "destination_capability_present": (request.destination_capability is not None),
         "network_policy": _safe_identifier(request.network_policy),
         "resource_scope": _safe_identifier(request.resource_scope),
         "role_count": min(len(request.roles or ()), 1_024),
@@ -616,17 +495,13 @@ class ToolGuardrail:
         policy: GuardrailPolicy = DEFAULT_GUARDRAIL_POLICY,
         *,
         provider: ToolGuardrailProvider | None = None,
-        destination_verifier: DestinationCapabilityVerifier | None = None,
     ) -> None:
         if not isinstance(policy, GuardrailPolicy):
             raise TypeError("policy must be a GuardrailPolicy")
         if provider is not None and not isinstance(provider, ToolGuardrailProvider):
             raise TypeError("provider must satisfy ToolGuardrailProvider")
         self.policy = policy
-        self.base_provider = DeterministicToolGuardrailProvider(
-            policy,
-            destination_verifier=destination_verifier,
-        )
+        self.base_provider = DeterministicToolGuardrailProvider(policy)
         self.provider = provider
 
     def evaluate(self, request: ToolGuardrailRequest | object) -> ToolGuardrailResult:
@@ -672,7 +547,6 @@ class ToolGuardrail:
 
 __all__ = [
     "DEFAULT_GUARDRAIL_POLICY",
-    "DestinationCapabilityVerifier",
     "DeterministicToolGuardrailProvider",
     "GuardrailPolicy",
     "SkillToolScope",

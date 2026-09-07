@@ -2,25 +2,44 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.runs.request_context import RunRequestContext
 from backend.core.settings import WebResearchSettings
+from backend.runs.request_context import RunRequestContext
 from backend.tools.catalog import (
     build_default_tool_registry,
     configured_secret_names,
 )
 from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA, ToolResultV1
 from backend.tools.registry import ToolAccess, ToolExposure
-from backend.web_research.contracts import WebEvidence, WebResearchResult
+from backend.web_research.contracts import (
+    WebEvidence,
+    WebResearchLimits,
+    WebResearchResult,
+)
 from backend.web_research.runtime import WebResearchError, WebResearchErrorCode
+
+
+NOW = datetime(2026, 8, 30, tzinfo=timezone.utc)
 
 
 def _settings(
     *,
     enabled: bool = True,
+    search_provider_max_results: int = 3,
+    search_model_visible_results: int = 3,
+    search_per_source_max_bytes: int = 480,
+    search_total_snippet_max_bytes: int = 1_440,
+    fetch_response_max_bytes: int = 6_144,
+    fetch_run_total_max_bytes: int = 12_288,
 ) -> WebResearchSettings:
     return WebResearchSettings(
         _env_file=None,
         WEB_RESEARCH_ENABLED=enabled,
+        WEB_RESEARCH_SEARCH_PROVIDER_MAX_RESULTS=search_provider_max_results,
+        WEB_RESEARCH_SEARCH_MODEL_VISIBLE_RESULTS=search_model_visible_results,
+        WEB_RESEARCH_SEARCH_PER_SOURCE_MAX_BYTES=search_per_source_max_bytes,
+        WEB_RESEARCH_SEARCH_TOTAL_SNIPPET_MAX_BYTES=(search_total_snippet_max_bytes),
+        WEB_RESEARCH_FETCH_RESPONSE_MAX_BYTES=fetch_response_max_bytes,
+        WEB_RESEARCH_FETCH_RUN_TOTAL_MAX_BYTES=fetch_run_total_max_bytes,
     )
 
 
@@ -41,56 +60,49 @@ def _access(
 def _result(
     *,
     url: str = "https://www.example.edu/research",
+    title: str = "Research source",
     content: str = "Verified public evidence.",
 ) -> WebResearchResult:
-    evidence = WebEvidence.create(
-        canonical_url=url,
-        title="Research source",
-        snippet="Verified evidence",
-        content=content,
-        retrieved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+    return WebResearchResult.create(
+        (
+            WebEvidence.create(
+                url=url,
+                title=title,
+                content=content,
+                retrieved_at=NOW,
+            ),
+        )
     )
-    return WebResearchResult.create([evidence])
 
 
-def test_catalog_registers_web_tools_as_runtime_gated_deferred_adapters():
-    settings = _settings()
-    registry = build_default_tool_registry(web_research_settings=settings)
+def test_catalog_exposes_source_id_and_optional_query_schema() -> None:
+    registry = build_default_tool_registry(web_research_settings=_settings())
 
     for role in ("user", "admin"):
         for name in ("web_search", "web_fetch"):
             descriptor = registry.describe(name, _access(role=role))
             assert descriptor is not None
-            assert descriptor.version == "1.1.0"
+            assert descriptor.version == "2.2.0"
             assert descriptor.output_schema == TOOL_RESULT_V1_SCHEMA
-            assert descriptor.required_roles == frozenset()
             assert descriptor.required_secrets == frozenset({"WEB_RESEARCH_RUNTIME"})
             assert descriptor.network_policy == "restricted"
             assert descriptor.observability_metadata_keys == frozenset(
-                {
-                    "citation_count",
-                    "evidence_count",
-                    "output_bytes",
-                    "truncated",
-                }
+                {"source_count", "output_bytes", "truncated"}
             )
             assert registry.exposure(name) is ToolExposure.DEFERRED
 
     fetch_schema = registry.descriptor("web_fetch").input_schema
-    assert set(fetch_schema["properties"]) == {"evidence_id"}
-    assert "url" not in str(fetch_schema).casefold()
     search_schema = registry.descriptor("web_search").input_schema
-    assert set(search_schema["properties"]) == {
-        "allowed_domains",
-        "max_results",
-        "query",
-    }
-    assert search_schema["properties"]["allowed_domains"]["maxItems"] == 8
-    assert "official-domain filtering" in registry.descriptor("web_search").description
-    assert "previously authorized" in registry.descriptor("web_fetch").description
+    assert search_schema["properties"]["max_results"]["default"] == 3
+    assert search_schema["properties"]["max_results"]["maximum"] == 3
+    assert set(fetch_schema["properties"]) == {"source_id", "query"}
+    assert fetch_schema["properties"]["source_id"]["pattern"].startswith("^S")
+    assert "evidence_id" not in str(fetch_schema)
+    assert "url" not in str(fetch_schema).casefold()
+    assert "Tavily Extract" in registry.descriptor("web_fetch").description
 
 
-def test_feature_flag_and_runtime_capability_intersection_fail_closed():
+def test_feature_flag_and_runtime_capability_intersection_fail_closed() -> None:
     disabled = _settings(enabled=False)
     registry = build_default_tool_registry(web_research_settings=disabled)
 
@@ -107,43 +119,9 @@ def test_feature_flag_and_runtime_capability_intersection_fail_closed():
     )
 
 
-def test_tool_envelope_budget_does_not_reuse_http_response_budget():
-    settings = WebResearchSettings(
-        _env_file=None,
-        WEB_RESEARCH_ENABLED=True,
-        WEB_RESEARCH_MAX_CONTENT_BYTES=75_000,
-        WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES=80_000,
-        WEB_RESEARCH_MAX_RESPONSE_BYTES=1_024,
-        WEB_RESEARCH_MAX_COMPRESSED_BYTES=2_048,
-    )
-    result = _result(content="x" * 74_000)
-
-    class Runtime:
-        def search(self, query, *, limit, deadline_at, cancellation_probe):
-            return result
-
-    registry = build_default_tool_registry(
-        web_research_settings=settings,
-        web_runtime=Runtime(),
-    )
-    assert registry.descriptor("web_search").result_size_limit == 145_536
-
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-envelope")
-    session = registry.bind(ctx, _access())
-    session.apply_skill({"web_search"})
-
-    payload = session.resolve("web_search").invoke({"query": "public research"})
-    tool_result = ToolResultV1.model_validate_json(payload)
-
-    assert tool_result.success is True
-    assert len(payload.encode("utf-8")) > settings.max_response_bytes
-    assert len(payload.encode("utf-8")) < (settings.max_total_evidence_bytes + 65_536)
-    ctx.close()
-
-
-def test_web_search_passes_run_controls_and_mints_fetch_capability():
-    calls: list[dict] = []
-    result = _result()
+def test_web_search_registers_source_id_and_hides_server_only_fields() -> None:
+    calls: list[dict[str, object]] = []
+    server_result = _result()
 
     class Runtime:
         def search(
@@ -164,13 +142,13 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability():
                     "cancellation_probe": cancellation_probe,
                 }
             )
-            return result
+            return server_result
 
     def cancelled() -> bool:
         return False
 
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-search")
-    ctx.configure_provider_runtime(
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-search")
+    context.configure_provider_runtime(
         deadline_at=1234.5,
         cancellation_probe=cancelled,
     )
@@ -178,52 +156,65 @@ def test_web_search_passes_run_controls_and_mints_fetch_capability():
         web_research_settings=_settings(),
         web_runtime=Runtime(),
     )
-    session = registry.bind(ctx, _access())
+    session = registry.bind(context, _access())
     session.apply_skill({"web_search", "web_fetch"})
+    try:
+        payload = session.resolve("web_search").invoke(
+            {
+                "query": "current public research",
+                "max_results": 3,
+                "allowed_domains": ["Python.org", "docs.python.org"],
+            }
+        )
+        tool_result = ToolResultV1.model_validate_json(payload)
 
-    payload = session.resolve("web_search").invoke(
-        {
-            "query": "current public research",
-            "max_results": 3,
-            "allowed_domains": ["Python.org", "docs.python.org", "python.org"],
+        assert tool_result.success is True
+        assert tool_result.data == {
+            "sources": [
+                {
+                    "source_id": "S1",
+                    "title": server_result.evidence[0].title,
+                    "source": "www.example.edu",
+                    "snippet": server_result.evidence[0].content,
+                }
+            ],
+            "truncated": False,
         }
-    )
-    tool_result = ToolResultV1.model_validate_json(payload)
-    evidence = result.evidence[0]
-
-    assert tool_result.success is True
-    public_evidence = tool_result.data["evidence"][0]
-    assert public_evidence["citation_token"] == evidence.citation_token
-    assert public_evidence["source_domain"] == "www.example.edu"
-    assert public_evidence["content"] == evidence.content
-    assert "canonical_url" not in public_evidence
-    assert result.to_public_dict()["evidence"][0]["canonical_url"] == (
-        evidence.canonical_url
-    )
-    assert result.tool_observability_metadata().items() <= (
-        tool_result.observability_metadata.items()
-    )
-    assert ctx.resolve_web_evidence(evidence.evidence_id) == evidence.canonical_url
-    assert ctx.resolve_web_fetch_authorization(evidence.evidence_id) == (
-        evidence.canonical_url,
-        ("docs.python.org", "python.org"),
-    )
-    assert calls == [
-        {
-            "query": "current public research",
-            "limit": 3,
-            "allowed_domains": ("docs.python.org", "python.org"),
-            "deadline_at": 1234.5,
-            "cancellation_probe": cancelled,
-        }
-    ]
-    assert "current public research" not in str(tool_result.observability_metadata)
-    assert evidence.canonical_url not in str(tool_result.observability_metadata)
-    ctx.close()
+        source = context.resolve_web_source("S1")
+        assert source is not None
+        assert source.url == server_result.evidence[0].url
+        assert source.default_query == "current public research"
+        assert server_result.evidence[0].url not in payload
+        assert "retrieved_at" not in payload
+        assert calls == [
+            {
+                "query": "current public research",
+                "limit": 3,
+                "allowed_domains": ("docs.python.org", "python.org"),
+                "deadline_at": 1234.5,
+                "cancellation_probe": cancelled,
+            }
+        ]
+    finally:
+        context.close()
 
 
-def test_repeated_search_evidence_merges_compatible_domain_scopes():
-    result = _result(url="https://docs.example.edu/research")
+def test_web_search_applies_visible_count_and_snippet_only_budgets() -> None:
+    settings = _settings(
+        search_provider_max_results=4,
+        search_model_visible_results=3,
+        search_total_snippet_max_bytes=1_000,
+    )
+    server_result = WebResearchResult.create(
+        tuple(
+            _result(
+                url=f"https://www.example.edu/research/{index}",
+                content=character * 2_000,
+            ).evidence[0]
+            for index, character in enumerate("abcd", start=1)
+        ),
+        limits=WebResearchLimits(max_evidence_items=4),
+    )
 
     class Runtime:
         def search(
@@ -235,123 +226,52 @@ def test_repeated_search_evidence_merges_compatible_domain_scopes():
             deadline_at,
             cancellation_probe,
         ):
-            return result
+            return server_result
 
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-scope-merge")
-    registry = build_default_tool_registry(
-        web_research_settings=_settings(),
-        web_runtime=Runtime(),
-    )
-    session = registry.bind(ctx, _access())
-    session.apply_skill({"web_search"})
-
-    first = ToolResultV1.model_validate_json(
-        session.resolve("web_search").invoke(
-            {
-                "query": "official release",
-                "allowed_domains": ["example.edu"],
-            }
-        )
-    )
-    second = ToolResultV1.model_validate_json(
-        session.resolve("web_search").invoke(
-            {
-                "query": "official documentation",
-                "allowed_domains": ["docs.example.edu"],
-            }
-        )
-    )
-
-    assert first.success is True
-    assert second.success is True
-    assert ctx.resolve_web_fetch_authorization(result.evidence[0].evidence_id) == (
-        result.evidence[0].canonical_url,
-        ("docs.example.edu", "example.edu"),
-    )
-    ctx.close()
-
-
-def test_repeated_web_search_stops_when_run_evidence_budget_is_exhausted():
-    settings = WebResearchSettings(
-        _env_file=None,
-        WEB_RESEARCH_ENABLED=True,
-        WEB_RESEARCH_MAX_CONTENT_BYTES=3_072,
-        WEB_RESEARCH_MAX_TOTAL_EVIDENCE_BYTES=3_072,
-    )
-    calls = 0
-
-    class Runtime:
-        def search(self, query, *, limit, deadline_at, cancellation_probe):
-            nonlocal calls
-            calls += 1
-            return _result(
-                url=f"https://www.example.edu/research/{calls}",
-                content=(f"evidence-{calls}-" + ("x" * 2_600)),
-            )
-
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-cumulative")
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-budget")
     registry = build_default_tool_registry(
         web_research_settings=settings,
         web_runtime=Runtime(),
     )
-    session = registry.bind(ctx, _access())
+    session = registry.bind(context, _access())
     session.apply_skill({"web_search"})
+    try:
+        payload = session.resolve("web_search").invoke(
+            {"query": "public evidence", "max_results": 4}
+        )
+        result = ToolResultV1.model_validate_json(payload)
 
-    first_payload = session.resolve("web_search").invoke(
-        {"query": "first public source"}
-    )
-    second_payload = session.resolve("web_search").invoke(
-        {"query": "second public source"}
-    )
-    first = ToolResultV1.model_validate_json(first_payload)
-    second = ToolResultV1.model_validate_json(second_payload)
-    assert first.success is True
-    assert second.success is False
-    assert second.error_code == "WEB_EVIDENCE_BUDGET_EXHAUSTED"
-    assert second.retryable is False
-    assert (
-        len(first_payload.encode("utf-8")) + len(second_payload.encode("utf-8"))
-        <= settings.max_total_evidence_bytes
-    )
-    assert calls == 1
-    ctx.close()
-
-
-def test_web_search_skips_provider_when_remaining_budget_cannot_fit_evidence():
-    calls = 0
-
-    class Runtime:
-        def search(self, query, *, limit, deadline_at, cancellation_probe):
-            nonlocal calls
-            calls += 1
-            return _result(content="x" * 1_024)
-
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-fitted-empty")
-    ctx.claim_web_tool_result_budget(2_500, limit_bytes=3_072)
-    registry = build_default_tool_registry(
-        web_research_settings=_settings(),
-        web_runtime=Runtime(),
-    )
-    session = registry.bind(ctx, _access())
-    session.apply_skill({"web_search"})
-
-    payload = session.resolve("web_search").invoke({"query": "public source"})
-    result = ToolResultV1.model_validate_json(payload)
-
-    assert result.success is False
-    assert result.error_code == "WEB_EVIDENCE_BUDGET_EXHAUSTED"
-    assert result.retryable is False
-    assert calls == 0
-    ctx.close()
+        assert result.success is True
+        assert result.data["truncated"] is True
+        assert [item["source_id"] for item in result.data["sources"]] == [
+            "S1",
+            "S2",
+            "S3",
+        ]
+        assert all(
+            set(item) == {"source_id", "title", "source", "snippet"}
+            for item in result.data["sources"]
+        )
+        assert all(
+            item["source"] == "www.example.edu" for item in result.data["sources"]
+        )
+        snippet_sizes = [
+            len(item["snippet"].encode("utf-8")) for item in result.data["sources"]
+        ]
+        assert snippet_sizes == [480, 480, 40]
+        assert sum(snippet_sizes) == 1_000
+        assert [item.content for item in server_result.evidence] == [
+            character * 2_000 for character in "abcd"
+        ]
+        assert context.resolve_web_source("S4") is not None
+    finally:
+        context.close()
 
 
-def test_web_fetch_accepts_only_run_local_search_evidence():
-    calls: list[dict] = []
+def test_web_fetch_resolves_source_and_uses_original_query_when_omitted() -> None:
     search_result = _result()
-    fetched_result = _result(
-        url="https://www.example.edu/research",
-        content="Full verified public page.",
-    )
+    fetched_result = _result(title="", content="Relevant extracted chunk.")
+    fetch_calls: list[dict[str, object]] = []
 
     class Runtime:
         def search(
@@ -369,81 +289,234 @@ def test_web_fetch_accepts_only_run_local_search_evidence():
             self,
             url,
             *,
-            allowed_domains,
+            query,
             deadline_at,
             cancellation_probe,
         ):
-            calls.append(
+            fetch_calls.append(
                 {
                     "url": url,
-                    "allowed_domains": allowed_domains,
+                    "query": query,
                     "deadline_at": deadline_at,
                     "cancellation_probe": cancellation_probe,
                 }
             )
             return fetched_result
 
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-fetch")
-    ctx.configure_provider_runtime(deadline_at=55.0, cancellation_probe=lambda: False)
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-fetch")
+    context.configure_provider_runtime(
+        deadline_at=55.0, cancellation_probe=lambda: False
+    )
     registry = build_default_tool_registry(
         web_research_settings=_settings(),
         web_runtime=Runtime(),
     )
-    session = registry.bind(ctx, _access())
+    session = registry.bind(context, _access())
     session.apply_skill({"web_search", "web_fetch"})
+    try:
+        unknown = ToolResultV1.model_validate_json(
+            session.resolve("web_fetch").invoke({"source_id": "S1"})
+        )
+        assert unknown.success is False
+        assert unknown.error_code == "WEB_SOURCE_NOT_FOUND"
+        assert fetch_calls == []
 
-    unknown_payload = session.resolve("web_fetch").invoke(
-        {"evidence_id": f"web_ev_{'0' * 64}"}
-    )
-    unknown = ToolResultV1.model_validate_json(unknown_payload)
-    assert unknown.success is False
-    assert unknown.error_code == "WEB_EVIDENCE_NOT_AUTHORIZED"
-    assert calls == []
+        session.resolve("web_search").invoke({"query": "original user question"})
+        fetched = ToolResultV1.model_validate_json(
+            session.resolve("web_fetch").invoke({"source_id": "S1"})
+        )
 
-    session.resolve("web_search").invoke(
-        {
-            "query": "public source",
-            "allowed_domains": ["example.edu"],
-        }
-    )
-    evidence = search_result.evidence[0]
-    fetched_payload = session.resolve("web_fetch").invoke(
-        {"evidence_id": evidence.evidence_id}
-    )
-    fetched = ToolResultV1.model_validate_json(fetched_payload)
-
-    assert fetched.success is True
-    assert calls[0]["url"] == evidence.canonical_url
-    assert calls[0]["allowed_domains"] == ("example.edu",)
-    assert calls[0]["deadline_at"] == 55.0
-    ctx.close()
+        assert fetched.success is True
+        assert fetched.data["sources"] == [
+            {
+                "source_id": "S1",
+                "title": search_result.evidence[0].title,
+                "content": "Relevant extracted chunk.",
+            }
+        ]
+        assert fetch_calls[0]["url"] == search_result.evidence[0].url
+        assert fetch_calls[0]["query"] == "original user question"
+        assert fetch_calls[0]["deadline_at"] == 55.0
+    finally:
+        context.close()
 
 
-def test_web_runtime_stable_error_is_preserved_without_sensitive_details():
+def test_web_fetch_prefers_explicit_query() -> None:
+    search_result = _result()
+    observed_queries: list[str] = []
+
     class Runtime:
-        def search(self, query, *, limit, deadline_at, cancellation_probe):
+        def search(
+            self,
+            query,
+            *,
+            limit,
+            allowed_domains,
+            deadline_at,
+            cancellation_probe,
+        ):
+            return search_result
+
+        def fetch(
+            self,
+            url,
+            *,
+            query,
+            deadline_at,
+            cancellation_probe,
+        ):
+            observed_queries.append(query)
+            return _result(content="specific chunk")
+
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-query")
+    registry = build_default_tool_registry(
+        web_research_settings=_settings(),
+        web_runtime=Runtime(),
+    )
+    session = registry.bind(context, _access())
+    session.apply_skill({"web_search", "web_fetch"})
+    try:
+        session.resolve("web_search").invoke({"query": "broad question"})
+        result = ToolResultV1.model_validate_json(
+            session.resolve("web_fetch").invoke(
+                {"source_id": "S1", "query": "specific performance limitations"}
+            )
+        )
+        assert result.success is True
+        assert observed_queries == ["specific performance limitations"]
+    finally:
+        context.close()
+
+
+def test_web_search_does_not_consume_the_run_local_web_fetch_budget() -> None:
+    search_result = _result(content="s" * 2_000)
+    fetched_result = _result(content="f" * 5_000)
+
+    class Runtime:
+        def search(
+            self,
+            query,
+            *,
+            limit,
+            allowed_domains,
+            deadline_at,
+            cancellation_probe,
+        ):
+            return search_result
+
+        def fetch(
+            self,
+            url,
+            *,
+            query,
+            deadline_at,
+            cancellation_probe,
+        ):
+            return fetched_result
+
+    settings = _settings(
+        fetch_response_max_bytes=1_400,
+        fetch_run_total_max_bytes=2_800,
+    )
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-fetch-budget")
+    registry = build_default_tool_registry(
+        web_research_settings=settings,
+        web_runtime=Runtime(),
+    )
+    session = registry.bind(context, _access())
+    session.apply_skill({"web_search", "web_fetch"})
+    try:
+        search = ToolResultV1.model_validate_json(
+            session.resolve("web_search").invoke({"query": "broad question"})
+        )
+        first_payload = session.resolve("web_fetch").invoke({"source_id": "S1"})
+        second_payload = session.resolve("web_fetch").invoke({"source_id": "S1"})
+        exhausted = ToolResultV1.model_validate_json(
+            session.resolve("web_fetch").invoke({"source_id": "S1"})
+        )
+
+        assert search.success is True
+        assert len(search.data["sources"][0]["snippet"].encode("utf-8")) == 480
+        for payload in (first_payload, second_payload):
+            fetched = ToolResultV1.model_validate_json(payload)
+            assert fetched.success is True
+            assert fetched.data["truncated"] is True
+            assert len(payload.encode("utf-8")) <= settings.fetch_response_max_bytes
+        assert exhausted.success is False
+        assert exhausted.error_code == "WEB_FETCH_BUDGET_EXHAUSTED"
+    finally:
+        context.close()
+
+
+def test_repeated_search_reuses_source_id_for_same_url() -> None:
+    server_result = _result()
+
+    class Runtime:
+        def search(
+            self,
+            query,
+            *,
+            limit,
+            allowed_domains,
+            deadline_at,
+            cancellation_probe,
+        ):
+            return server_result
+
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-reuse")
+    registry = build_default_tool_registry(
+        web_research_settings=_settings(),
+        web_runtime=Runtime(),
+    )
+    session = registry.bind(context, _access())
+    session.apply_skill({"web_search"})
+    try:
+        first = ToolResultV1.model_validate_json(
+            session.resolve("web_search").invoke({"query": "first query"})
+        )
+        second = ToolResultV1.model_validate_json(
+            session.resolve("web_search").invoke({"query": "second query"})
+        )
+        assert first.data["sources"][0]["source_id"] == "S1"
+        assert second.data["sources"][0]["source_id"] == "S1"
+    finally:
+        context.close()
+
+
+def test_web_runtime_stable_error_is_preserved_without_sensitive_details() -> None:
+    class Runtime:
+        def search(
+            self,
+            query,
+            *,
+            limit,
+            allowed_domains,
+            deadline_at,
+            cancellation_probe,
+        ):
             raise WebResearchError(
                 WebResearchErrorCode.SEARCH_UNAVAILABLE,
                 retryable=True,
                 safe_details={"source_count": 0},
             )
 
-    ctx = RunRequestContext.for_sync(user_id="alice", thread_id="web-failure")
+    context = RunRequestContext.for_sync(user_id="alice", thread_id="web-failure")
     registry = build_default_tool_registry(
         web_research_settings=_settings(),
         web_runtime=Runtime(),
     )
-    session = registry.bind(ctx, _access())
+    session = registry.bind(context, _access())
     session.apply_skill({"web_search"})
+    try:
+        payload = session.resolve("web_search").invoke(
+            {"query": "secret-shaped query must not enter the failure"}
+        )
+        result = ToolResultV1.model_validate_json(payload)
 
-    payload = session.resolve("web_search").invoke(
-        {"query": "secret-shaped query must not enter the failure"}
-    )
-    result = ToolResultV1.model_validate_json(payload)
-
-    assert result.success is False
-    assert result.error_code == "WEB_SEARCH_UNAVAILABLE"
-    assert result.retryable is True
-    assert "secret-shaped" not in payload
-    assert "source_count" not in payload
-    ctx.close()
+        assert result.success is False
+        assert result.error_code == "WEB_SEARCH_UNAVAILABLE"
+        assert result.retryable is True
+        assert "secret-shaped" not in payload
+        assert "source_count" not in payload
+    finally:
+        context.close()

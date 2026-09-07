@@ -151,7 +151,7 @@ class AgentRuntime:
         )
         return bool(
             (active is not None and active.name == "web-research")
-            or self.context.request_context.web_research_requires_terminal_validation()
+            or self.context.request_context.web_research_requires_source_rendering()
         )
 
     def _prepare(self, request: AgentRuntimeInput) -> AgentRuntimeInput:
@@ -305,11 +305,11 @@ class AgentRuntime:
         )
         if terminal_buffering and final_state is None:
             self.context.record_trace(
-                "web.citation_rejected",
-                error_code="WEB_CITATION_FINAL_STATE_MISSING",
-                evidence_count=self.context.request_context.web_evidence_count(),
+                "web.source_citation_rejected",
+                error_code="WEB_SOURCE_FINAL_STATE_MISSING",
+                source_count=self.context.request_context.web_source_count(),
             )
-            authoritative_content = "网页引用校验未完成，本次回答未发布。请稍后重试。"
+            authoritative_content = "网页来源渲染未完成，本次回答未发布。请稍后重试。"
         result = self._finish(authoritative_content)
         if terminal_buffering and authoritative_content:
             yield AgentRuntimeEvent(type="content", content=authoritative_content)

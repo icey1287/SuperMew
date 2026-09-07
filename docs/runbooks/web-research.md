@@ -1,124 +1,160 @@
-# Web Research 运维手册
+# Web Research Runbook
 
-## 启用前准备
+Web Research 使用 Tavily Keyless 的固定 `/search` 与 `/extract` 端点。模型先从 `web_search`
+获得当前 Run 的 `S1`、`S2` 等 Source ID；需要更具体内容时再调用
+`web_fetch(source_id, query?)`。应用不直接抓取目标网页，也不返回整页正文。
 
-Web Research 默认关闭。搜索使用 Tavily Keyless，不需要 API Key。搜索 endpoint 固定为
-Tavily 官方 HTTPS origin，不提供自定义 endpoint 配置；请求仍经过 DNS pinning、SSRF policy、
-absolute deadline/cancellation 与独立响应大小限制。
+架构依据见 [ADR-0026](../adr/0026-run-local-source-id-and-tavily-extract.md)。
 
-管理员可在前端侧栏 **Skill / Tool** 切换 Web Research。`WEB_RESEARCH_ENABLED` 只在数据库
-控制面首次创建时作为默认种子；之后以前端保存的配置为准。切换并保存后立即应用，不需要
-重启 API 或 worker。
+## 配置
 
-最小配置：
+`.env` 的最小启用配置：
 
 ```dotenv
 WEB_RESEARCH_ENABLED=true
+WEB_RESEARCH_REQUEST_TIMEOUT_SECONDS=10
+WEB_RESEARCH_MAX_QUERY_BYTES=4096
+WEB_RESEARCH_MAX_URL_BYTES=4096
+WEB_RESEARCH_MAX_TITLE_BYTES=512
+WEB_RESEARCH_PROVIDER_RESPONSE_MAX_BYTES=2097152
+WEB_RESEARCH_SEARCH_PROVIDER_MAX_RESULTS=3
+WEB_RESEARCH_SEARCH_MODEL_VISIBLE_RESULTS=3
+WEB_RESEARCH_SEARCH_PER_SOURCE_MAX_BYTES=480
+WEB_RESEARCH_SEARCH_TOTAL_SNIPPET_MAX_BYTES=1440
+WEB_RESEARCH_FETCH_CHUNKS_PER_SOURCE=3
+WEB_RESEARCH_FETCH_RESPONSE_MAX_BYTES=6144
+WEB_RESEARCH_FETCH_RUN_TOTAL_MAX_BYTES=12288
+WEB_RESEARCH_MAX_CONCURRENCY=4
+WEB_RESEARCH_USER_AGENT=SuperMew-WebResearch/2.0
 ```
 
-完整预算见 `.env.example`。上线前重点确认：
+`WEB_RESEARCH_ENABLED` 只作为数据库控制面的首次默认值；之后由管理员在 **Skill / Tool**
+控制面切换。Tavily Keyless 不需要 API Key，Registry 仍用内部 `WEB_RESEARCH_RUNTIME` capability
+表示当前进程已安装可用 Runtime。
 
-- DNS timeout 小于等于 request timeout；DNS 并发和每次地址数量保持最小；
-- default search results 不大于 max results，max results 不大于 max citations；
-- title/snippet 不大于单页 content，content 不大于 total evidence；
-- 单 Run Web ToolResult 累计不大于 Agent 输入 token 预算的一半；默认为 3 KiB，不要直接恢复
-  早期 512 KiB 高值；
-- compressed body、解压 response、单页 content 与 total evidence 使用各自独立上限；
-- redirect 上限、正文上限和总结果上限不因“抓取失败”被临时放大。
+Search 与 Fetch 不共享模型可见预算。Search 最多请求三条并展示三条，每条 `snippet` 最多
+480 B、全部 `snippet` 合计最多 1440 B。Fetch 在完整封装 `ToolResultV1` 后只裁剪 `content`：
+单次最多 6144 B，同一 Run 累计最多 12288 B。`WEB_RESEARCH_PROVIDER_RESPONSE_MAX_BYTES` 只限制
+Tavily 原始 JSON payload，不是模型可见预算。Runtime 不再按四分之一预算预截断摘要。
 
-`WEB_RESEARCH_MAX_CONCURRENCY` 同时用于每个 Tool descriptor 和共享 Web Runtime semaphore，
-因此 search/fetch 的总在途调用不会越过该值；每个 Run 还受 Agent tool-call、loop 和 deadline
-budget 约束。request timeout 是整次 search/fetch stage（包括 DNS 与所有 redirect）的总边界，
-不按 hop 倍增。
+## 正式接口
 
-HTTP transport 还使用 request-owned watchdog 强制 absolute deadline/cancellation。验收不能只测
-完全静默的 socket timeout；必须包含每次在 timeout 前发送一个字节的慢响应头、慢正文和慢 TLS
-样例，并确认旁路 socket shutdown 会在总 deadline 附近终止，且请求结束后不会迟到关闭新连接。
+`web_search`：
 
-Web ToolResult 跨越 ContextBudget Seam 时是原子 JSON 消息。历史旧轮次可以整轮裁掉；
-当前轮次若在裁掉可选上下文后仍放不下完整结果，Run 应在模型调用前返回
-`POLICY_DENIED` / `web_research` / `context_budget`，trace error code 为
-`WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED`。不得把 `…[truncated by context budget]` 写入
-ToolResult JSON。
+```json
+{
+  "query": "Python 3.15 free-threading changes",
+  "max_results": 3,
+  "allowed_domains": ["python.org"]
+}
+```
 
-feature 关闭时，Registry 不会声明内部的 `WEB_RESEARCH_RUNTIME` capability；这个符号只表示
-Keyless Runtime 已启用，不是 Secret，也不会作为请求凭据发送。
+模型可见成功结果只包含：
 
-## 验证
+```json
+{
+  "sources": [
+    {
+      "source_id": "S1",
+      "title": "What’s New In Python 3.15",
+      "source": "docs.python.org",
+      "snippet": "Python 3.15 improves ..."
+    }
+  ],
+  "truncated": false
+}
+```
+
+`web_fetch`：
+
+```json
+{
+  "source_id": "S1",
+  "query": "Python 3.15 free-threading performance limitations"
+}
+```
+
+`query` 可省略；服务端会使用产生 `S1` 的原始 search query。Runtime 向 Tavily Extract 固定发送
+`chunks_per_source=3` 与 `extract_depth=basic`。最多消费三个 chunk，每个 chunk 在进入模型
+上下文前限制为约 500 字符。
+
+模型引用格式为 `[S1]`。终态会把当前 Run 已知 Source ID 渲染为 `[S1](<url>)`。Source ID
+不能跨 Run 使用，Run 关闭后映射被清理。
+
+## 离线验证
+
+从仓库根目录运行：
 
 ```bash
-uv run --frozen python -m backend.tools.registry_cli validate
-uv run --frozen python -m backend.tools.registry_cli list-skills --role user
-uv run --frozen python -m backend.tools.registry_cli list-tools --role user
-uv run --frozen pytest -q tests/test_web_research_contracts.py \
-  tests/test_web_url_policy.py tests/test_web_research_http.py \
-  tests/test_web_research_runtime.py tests/test_web_tools.py \
-  tests/test_agent_runtime.py tests/test_settings_security.py
+uv run --no-sync pytest -q \
+  tests/test_web_research_contracts.py \
+  tests/test_web_research_runtime.py \
+  tests/test_web_citations.py \
+  tests/test_web_tools.py \
+  tests/test_agent_runtime.py
+
+uv run --no-sync python -m backend.tools.registry_cli validate
 ```
 
-API 启动后还必须执行真实模型与 Tavily Keyless 的端到端冒烟测试；只有 `web_search` 产生
-`tool.completed` 且 Run 成功才通过：
+重点断言：
 
-```bash
-uv run python scripts/smoke_web_research_e2e.py
-```
+- `web_fetch` schema 只有 `source_id` 与可选 `query`，没有 URL 或旧 Evidence identity；
+- 搜索投影每项只有 `source_id`、`title`、`source`、`snippet`，不含完整 URL、服务端 `content`、
+  hash、time、citations 或 Web Research schema version；
+- `web_fetch` 只发送 Tavily `/extract` POST，请求参数固定；
+- 三个以上或超过 500 字符的 chunks 被有界处理，不会退回整页；
+- 两个 Run 都可拥有自己的 `S1`，彼此不能解析；
+- Search 每条与总 `snippet` 上限互相独立于 Fetch；
+- Fetch 的单次与 Run 累计预算在 `ToolResultV1` 封装后计算，并且只裁剪 Extract `content`。
 
-feature 未启用时，`web-research` Skill 与两个 deferred Tool 必须隐藏。启用并保存后，目录可看到
-Skill；激活 `/web-research` 后，`tool_search` 才能披露 `web_search` / `web_fetch` schema。
-readiness 只应输出 enabled/ready/search-ready 与聚合预算，不得输出 key、query、URL 或正文。
+## 在线冒烟测试
 
-执行烟雾测试：
+在线检查需要显式启用 Web Research，并允许访问 Tavily。普通 pytest 不联网。
 
-1. 搜索一个公开、无敏感信息的主题，确认结果包含稳定 evidence/citation identity 和 UTC 时间；
-2. 用返回的 `evidence_id` fetch，确认模型不能提交任意 URL；
-3. 未知或跨 Run evidence ID 返回 `WEB_EVIDENCE_NOT_AUTHORIZED`；
-4. 模型输出 `[标题](webcite:evidence_id)`，服务端只把当前 Run identity 渲染为 Markdown
-   link；raw URL、未知/跨 Run identity 和成功取证后无引用均被终态拒绝；
-5. ToolAudit 只有 evidence/citation count、output bytes、truncated 和 outcome。
+1. 在控制面启用 Web Research，确认 readiness 为 ready。
+2. 激活 `/web-research`，搜索一个公开主题，确认结果含 `S1`、`title`、`source`、`snippet`，不含
+   完整 URL、服务端 `content` 和旧 identity 字段。
+3. 调用 `web_fetch(source_id="S1")`，确认返回的是少量相关 chunks，而不是整页正文。
+4. 再用更具体的 query 调用另一个 Source ID，确认 Extract 内容随 query 聚焦。
+5. 最终回答使用 `[S1]`，确认发布内容渲染为对应链接。
+6. 新建另一个 Run 直接 fetch `S1`，应返回 `WEB_SOURCE_NOT_FOUND`。
 
-Web Research 为保证终态引用校验，不逐 token 发布模型草稿；Event/SSE 只会在校验通过后收到
-一次完整的安全回答。若看到 `WEB_CITATION_*` trace/error，先检查模型是否按 Skill 输出
-`webcite:` token，不要关闭终态校验或允许 raw URL。
+在线 smoke 只能证明当前 Tavily 协议与网络可用，不能替代离线契约、预算和 Run 隔离测试。
 
-前端必须保留 DOMPurify allowlist 与 raw HTML renderer 禁用。任何修改 `marked`、`v-html`、
-允许 tag/attr 或 URI scheme 的变更，都要重跑 `frontend/src/utils/markdown.spec.ts` 中的 script、
-event handler、javascript/data/scheme-relative link 与恶意来源标题攻击用例。
+## 稳定错误
 
-## SSRF 与内容边界验证
+常见错误：
 
-在隔离测试环境覆盖下列拒绝样例，不要在生产手工探测内网：loopback、RFC1918、link-local、
-特殊用途域名、带 userinfo URL、非 HTTP(S)、非标准或 scheme 混淆端口、DNS 结果混有私网地址、
-redirect 转向私网、peer IP 不在 DNS pin、过多 redirect、未知 content type、压缩/解压超限。
+- `WEB_SOURCE_NOT_FOUND`：Source ID 不属于当前 Run，或 Run 已关闭；
+- `WEB_FETCH_BUDGET_EXHAUSTED`：当前 Run 剩余 Fetch ToolResult 字节不足；
+- `WEB_SEARCH_UNAVAILABLE`：Tavily Search 临时不可用；
+- `WEB_FETCH_UNAVAILABLE`：Tavily Extract 临时不可用；
+- `WEB_INVALID_SEARCH_RESPONSE` / `WEB_INVALID_EXTRACT_RESPONSE`：Provider 返回结构不符合协议；
+- `WEB_DEADLINE_EXCEEDED`：Run deadline 已到。
 
-确认 transport 不使用环境 proxy，TLS hostname 验证仍针对 canonical host，且每个 redirect 都
-重新解析与 pin。DNS timeout、HTTP timeout、Run deadline 或 cancellation 发生时应返回稳定
-错误码；不得改用普通 hostname client 重试。
+Provider failure 不应被解释为无搜索结果，也不要在模型侧重复调用同一 Tool 规避失败。
 
-## 常见故障
+前端对 Search、Extract、Source ID、输入契约与 Fetch 额度错误使用专用文案，保持服务端
+`retryable` 值；不可重试的搜索失败不再显示“服务暂时不可用，请稍后重试”。
+`WEB_SEARCH_UNAVAILABLE` 本身不能区分具体 HTTP 状态，不据此推断限流或认证失败。
 
-### Skill 或 Tool 不可见
+## 预算内收尾
 
-依次检查 feature flag、Runtime capability、调用方是否声明同名 capability、Run 是否
-允许 `restricted` network policy、Skill 是否已经激活。
-不要把任何伪造 capability 放入 prompt 来“证明已配置”。
+`AGENT_MAX_MODEL_CALLS` 包含最后一轮回答。到达最后一个可用模型调用，或工具调用额度已经
+用完时，模型不再获得工具 schema，且模型 API 请求显式携带 `tool_choice="none"`，
+要求基于已有结果回答并披露证据缺口。例如上限为 5 时，
+最多前 4 轮模型决策可发起工具，第 5 轮用于回答；上限为 1 时，不调用工具，直接回答或说明
+证据不足。最后一轮若仍请求工具，服务端会拒绝，不能突破硬上限。
 
-### 搜索可用但 fetch 被拒绝
+这不会把工具失败改写为成功，也不会重写历史失败 Run。检验新行为应创建新 Run；正常收尾
+仍等待持久 `message.completed` 与 `run.completed`。Provider、deadline 或上下文硬预算失败
+仍可能使 Run 失败，不保证每次都能完成回答。
 
-`web_fetch` 只接受当前 Run 中 `web_search` 铸造的 `evidence_id`。重新搜索目标页面，不要把 URL
-改写成 identity，也不要扩大为任意 URL fetch。若搜索 provider 没有返回该页面，回答中披露
-覆盖缺口。
+## 禁用与恢复
 
-### DNS、redirect 或内容 policy 拒绝
+紧急禁用时在 **Skill / Tool** 控制面关闭 Web Research。新 Run 将不再获得
+`WEB_RESEARCH_RUNTIME`，`web_search` 与 `web_fetch` 不会披露；已创建 Run 的冻结能力语义按现有
+Run 生命周期处理。
 
-这通常意味着目标不是安全公网页面、DNS 集合含非 global 地址、redirect 改变了安全边界，或
-响应超出类型/字节预算。记录稳定错误码和聚合 outcome；不要记录原 URL/响应，也不要放宽
-private/loopback policy。若目标确属内部资源，应设计独立的私网 Tool 和权限，而不是复用本
-Skill。
-
-## 禁用、轮换与事件响应
-
-紧急禁用时在前端关闭 Web Research 并保存；控制面尚未初始化时可用
-`WEB_RESEARCH_ENABLED=false` 作为首次种子。
-
-审计、Event、checkpoint 或日志中一旦出现 query、URL query string 或正文，应按数据泄露事件
-处理并停止发布；不要仅靠日志脱敏规则掩盖错误的数据流。
+恢复前先运行离线验证，再完成一次真实 Tavily `/search` + `/extract` smoke。不要恢复旧
+`evidence_id`、Destination Capability、direct page fetch 或双接口兼容路径。

@@ -48,6 +48,15 @@ Run、Event、Checkpoint 是持久化事实来源，需要一个深 Module 隐�
 - 上下文按 token 预算裁剪，并保持 AI tool call 与对应 `ToolMessage` 成组。
 - 工具权限先过滤暴露给模型的 schema，执行前再次 fail-closed 检查。
 - deadline、模型调用、工具调用和循环预算都必须能稳定终止执行。
+- 模型预算的最后一轮只用于回答；工具调用额度耗尽时，下一轮也只用于回答。
+  DynamicContext 在输入预算计算前移除工具 schema、通过 `model_settings` 向 Provider 显式传递
+  `tool_choice="none"`，并加入基于现有结果
+  总结及披露证据缺口的指令；ToolPolicy 再次限制工具暴露。两者只读取现有 middleware 的
+  Run-local 调用计数，不新增计数器或修改固定顺序。
+- 无工具 schema 时，LangChain 的普通模型绑定不转发 `ModelRequest.tool_choice`；因此必须
+  在最终 HTTP 请求验证 `tool_choice="none"`，不能只用假模型或工具可见性断言证明收尾生效。
+- 最后一轮模型若仍返回工具调用，ToolPolicy 在执行前以模型预算错误拒绝；不执行该工具，
+  不追加额外模型调用。既有模型硬上限、deadline、取消和权威终态事务保持不变。
 - 流式调用以最终 graph state 为权威结果；delta 只是可重放的中间投影。
 - `message.completed` 与 Run terminal Event 只能由持久化事务产生，不能由 SSE producer 单独发布。
 - `RunAgentExecutor` 必须使用数据库 owner、lease 和 fencing token；delta、progress 和 trace 也必须携带 owner/fence，terminal 后拒绝旧 writer。

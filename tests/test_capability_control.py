@@ -185,11 +185,19 @@ def test_published_tool_runtime_stays_pinned_until_the_run_releases_it(
         def close(self):
             self.closed = True
 
-        def search(self, query, *, limit, deadline_at, cancellation_probe):
+        def search(
+            self,
+            query,
+            *,
+            limit,
+            allowed_domains,
+            deadline_at,
+            cancellation_probe,
+        ):
             self.searches += 1
-            return WebResearchResult(evidence=(), citations=(), truncated=False)
+            return WebResearchResult(evidence=(), truncated=False)
 
-        def fetch(self, url, *, deadline_at, cancellation_probe):
+        def fetch(self, url, *, query, deadline_at, cancellation_probe):
             raise AssertionError(f"unexpected fetch from {self.label}: {url}")
 
     old_web = WebRuntime("old")

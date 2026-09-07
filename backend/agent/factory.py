@@ -319,11 +319,6 @@ class AgentRuntimeFactory:
         approved_tools = (
             approval_grant.tool_names if approval_grant is not None else frozenset()
         )
-        request_context.configure_guardrail_context(
-            tenant_id=effective_tenant_id,
-            run_id=effective_run_id,
-        )
-        destination_verifier = request_context.destination_capability_verifier()
         context = AgentRuntimeContext(
             request_context=request_context,
             user_id=request_context.user_id,
@@ -337,10 +332,7 @@ class AgentRuntimeFactory:
             persistent_note=persistent_note,
             allowed_tools=frozenset(),
             approval_grant=approval_grant,
-            guardrail=self.guardrail_factory(
-                self.guardrail_policy,
-                destination_verifier=destination_verifier,
-            ),
+            guardrail=self.guardrail_factory(self.guardrail_policy),
             budget=budget,
             deadline_at=time.monotonic() + remaining,
             trace_queue=trace_queue,

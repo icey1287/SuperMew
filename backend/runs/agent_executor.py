@@ -67,7 +67,7 @@ _WARNING_TRACE_STAGES = {
     "model.failed",
     "terminal.fallback",
     "tool.loop_blocked",
-    "web.citation_rejected",
+    "web.source_citation_rejected",
     "web.context_rejected",
 }
 

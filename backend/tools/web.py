@@ -1,9 +1,9 @@
-"""Request-owned Tool Adapters for the process-wide Web Research runtime."""
+"""Request-owned Tool adapters for Web Search and Tavily Extract."""
 
 from __future__ import annotations
 
+import copy
 import json
-from datetime import datetime, timezone
 from typing import Protocol
 
 from langchain_core.tools import BaseTool, tool
@@ -11,16 +11,12 @@ from langchain_core.tools import BaseTool, tool
 from backend.runs.request_context import RunRequestContext
 from backend.tools.contracts import ToolResultV1, new_tool_failure, new_tool_success
 from backend.web_research.contracts import (
-    WebCitation,
     WebEvidence,
-    WebResearchLimits,
     WebResearchResult,
 )
 
 
 class WebResearchRuntime(Protocol):
-    """Small Interface consumed by Tool Adapters at the runtime Seam."""
-
     def search(
         self,
         query: str,
@@ -35,33 +31,55 @@ class WebResearchRuntime(Protocol):
         self,
         url: str,
         *,
-        allowed_domains: tuple[str, ...] = (),
+        query: str,
         deadline_at: float | None,
         cancellation_probe,
     ) -> WebResearchResult: ...
 
 
-WEB_RESEARCH_METADATA_KEYS = frozenset(
-    {"citation_count", "evidence_count", "output_bytes", "truncated"}
-)
-_WEB_TOOL_VERSION = "1.1.0"
+WEB_RESEARCH_METADATA_KEYS = frozenset({"source_count", "output_bytes", "truncated"})
+_WEB_TOOL_VERSION = "2.2.0"
 _MAX_WEB_TOOL_DURATION_MS = 999_999
-_WEB_EVIDENCE_BUDGET_EXHAUSTED = "WEB_EVIDENCE_BUDGET_EXHAUSTED"
+_WEB_FETCH_BUDGET_EXHAUSTED = "WEB_FETCH_BUDGET_EXHAUSTED"
 
 
-def _web_evidence_budget_failure() -> ToolResultV1:
+def _web_fetch_budget_failure() -> ToolResultV1:
     return new_tool_failure(
-        error_code=_WEB_EVIDENCE_BUDGET_EXHAUSTED,
+        error_code=_WEB_FETCH_BUDGET_EXHAUSTED,
         retryable=False,
     )
 
 
-def _tool_result(result: WebResearchResult) -> ToolResultV1:
+def _tool_data_size(data: dict[str, object]) -> int:
+    return len(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+
+def _tool_result(
+    result: WebResearchResult,
+    *,
+    data: dict[str, object],
+) -> ToolResultV1:
     if not isinstance(result, WebResearchResult):
         raise TypeError("Web runtime returned an invalid result contract")
+    projection = data
     metadata = result.tool_observability_metadata()
+    metadata["output_bytes"] = _tool_data_size(projection)
+    projected_truncated = projection.get("truncated")
+    if isinstance(projected_truncated, bool):
+        metadata["truncated"] = projected_truncated
+    sources = projection.get("sources")
+    if isinstance(sources, list):
+        metadata["source_count"] = len(sources)
     return new_tool_success(
-        data=result.to_tool_dict(),
+        data=projection,
         observability_metadata={
             key: value
             for key, value in metadata.items()
@@ -70,24 +88,23 @@ def _tool_result(result: WebResearchResult) -> ToolResultV1:
     )
 
 
-def _registered_tool_result_size(result: WebResearchResult, *, tool_name: str) -> int:
-    """Estimate the complete Registry-wrapped payload seen by the model."""
+def _registered_fetch_tool_result_size(result: ToolResultV1) -> int:
+    """Estimate the complete Registry-wrapped web_fetch payload."""
 
-    base = _tool_result(result)
     encoded = json.dumps(
-        base.model_dump(mode="json"),
+        result.model_dump(mode="json"),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
     metadata = {
-        **base.observability_metadata,
-        "tool_name": tool_name,
+        **result.observability_metadata,
+        "tool_name": "web_fetch",
         "tool_version": _WEB_TOOL_VERSION,
         "result_size": len(encoded),
     }
-    wrapped = base.model_copy(
+    wrapped = result.model_copy(
         update={
             "duration_ms": _MAX_WEB_TOOL_DURATION_MS,
             "observability_metadata": metadata,
@@ -103,161 +120,116 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
     return encoded[: max(max_bytes, 0)].decode("utf-8", errors="ignore").rstrip()
 
 
-def _rebuild_evidence(
-    source: WebEvidence,
-    *,
-    title: str,
-    snippet: str,
-    content: str,
-) -> WebEvidence:
-    title_bytes = len(title.encode("utf-8"))
-    snippet_bytes = len(snippet.encode("utf-8"))
-    content_bytes = len(content.encode("utf-8"))
-    limits = WebResearchLimits(
-        max_title_bytes=max(title_bytes, 1),
-        max_snippet_bytes=max(snippet_bytes, 1),
-        max_content_bytes=max(content_bytes, 1),
-        max_total_evidence_bytes=max(content_bytes, 1),
-    )
-    return WebEvidence.create(
-        canonical_url=source.canonical_url,
-        title=title,
-        snippet=snippet,
-        content=content,
-        retrieved_at=source.retrieved_at,
-        limits=limits,
-    )
-
-
-def _research_result(
-    evidence: list[WebEvidence],
-    *,
-    truncated: bool,
-) -> WebResearchResult:
-    return WebResearchResult(
-        evidence=tuple(evidence),
-        citations=tuple(WebCitation.from_evidence(item) for item in evidence),
-        truncated=truncated,
-    )
-
-
-_MINIMUM_WEB_RESEARCH_RESULT = _research_result(
-    [
-        WebEvidence.create(
-            canonical_url="https://example.com/",
-            title="",
-            snippet="",
-            content="x",
-            retrieved_at=datetime(1970, 1, 1, tzinfo=timezone.utc),
-        )
-    ],
-    truncated=True,
-)
-
-
-def _fit_web_result(
+def _bounded_search_projection(
     result: WebResearchResult,
-    max_bytes: int,
+    source_ids: tuple[str, ...],
     *,
-    tool_name: str,
-) -> WebResearchResult:
-    """Keep a valid structured result while fitting the remaining Run budget."""
+    model_visible_results: int,
+    per_source_max_bytes: int,
+    total_snippet_max_bytes: int,
+) -> dict[str, object]:
+    projection = result.to_search_tool_dict(source_ids)
+    sources = projection["sources"]
+    if not isinstance(sources, list):
+        raise TypeError("Web search projection has invalid sources")
 
-    if _registered_tool_result_size(result, tool_name=tool_name) <= max_bytes:
-        return result
-    empty = _research_result([], truncated=True)
-    if _registered_tool_result_size(empty, tool_name=tool_name) > max_bytes:
-        return empty
+    visible_sources = sources[:model_visible_results]
+    truncated = result.truncated or len(visible_sources) < len(sources)
+    remaining = total_snippet_max_bytes
+    for item in visible_sources:
+        if not isinstance(item, dict) or not isinstance(item.get("snippet"), str):
+            raise TypeError("Web search projection has invalid snippets")
+        snippet = item["snippet"]
+        bounded = _truncate_utf8(snippet, min(per_source_max_bytes, remaining))
+        if bounded != snippet:
+            truncated = True
+        item["snippet"] = bounded
+        remaining -= len(bounded.encode("utf-8"))
 
-    fitted: list[WebEvidence] = []
-    for source in result.evidence:
-        title = source.title
-        snippet = source.snippet
-        content = source.content
-        while content:
-            item = _rebuild_evidence(
-                source,
-                title=title,
-                snippet=snippet,
-                content=content,
-            )
-            candidate = _research_result([*fitted, item], truncated=True)
-            excess = (
-                _registered_tool_result_size(candidate, tool_name=tool_name) - max_bytes
-            )
-            if excess <= 0:
-                fitted.append(item)
-                break
-            if snippet:
-                snippet = _truncate_utf8(
-                    snippet,
-                    max(len(snippet.encode("utf-8")) - excess, 0),
-                )
-                continue
-            if title:
-                title = _truncate_utf8(
-                    title,
-                    max(len(title.encode("utf-8")) - excess, 0),
-                )
-                continue
-            content_bytes = len(content.encode("utf-8"))
-            minimum_content_bytes = len(content[0].encode("utf-8"))
-            reduced = _truncate_utf8(
-                content,
-                max(content_bytes - excess, minimum_content_bytes),
-            )
-            if not reduced or reduced == content:
-                content = ""
-                break
-            content = reduced
-        if not content:
+    projection["sources"] = visible_sources
+    projection["truncated"] = truncated
+    return projection
+
+
+def _fit_fetch_tool_result(
+    result: WebResearchResult,
+    projection: dict[str, object],
+    max_bytes: int,
+) -> ToolResultV1 | None:
+    """Build the ToolResult first, then trim only model-visible fetch content."""
+
+    data = copy.deepcopy(projection)
+    fitted = _tool_result(result, data=data)
+    if _registered_fetch_tool_result_size(fitted) <= max_bytes:
+        return fitted
+
+    sources = data.get("sources")
+    if not isinstance(sources, list):
+        return None
+    data["truncated"] = True
+    fitted = _tool_result(result, data=data)
+
+    for item in reversed(sources):
+        if not isinstance(item, dict):
+            return None
+        content = item.get("content")
+        if not isinstance(content, str):
+            return None
+        excess = _registered_fetch_tool_result_size(fitted) - max_bytes
+        if excess <= 0:
             break
-    return _research_result(fitted, truncated=True)
+        content_bytes = len(content.encode("utf-8"))
+        item["content"] = _truncate_utf8(
+            content,
+            max(content_bytes - excess, 0),
+        )
+        fitted = _tool_result(result, data=data)
+
+    if _registered_fetch_tool_result_size(fitted) > max_bytes:
+        return None
+    return fitted
 
 
-def _bounded_web_result(
+def _bounded_fetch_tool_result(
     ctx: RunRequestContext,
     result: WebResearchResult,
+    projection: dict[str, object],
     *,
-    max_total_evidence_bytes: int,
-    tool_name: str,
-) -> WebResearchResult:
-    remaining = ctx.remaining_web_tool_result_budget(max_total_evidence_bytes)
-    empty_size = _registered_tool_result_size(
-        _research_result([], truncated=True),
-        tool_name=tool_name,
+    response_max_bytes: int,
+    run_total_max_bytes: int,
+) -> ToolResultV1 | None:
+    remaining = ctx.remaining_web_fetch_result_budget(run_total_max_bytes)
+    fitted = _fit_fetch_tool_result(
+        result,
+        projection,
+        min(response_max_bytes, remaining),
     )
-    claimable = (
-        max(remaining - empty_size, 1)
-        if remaining == max_total_evidence_bytes
-        else remaining
+    if fitted is None:
+        return None
+    actual_size = _registered_fetch_tool_result_size(fitted)
+    claimed = ctx.claim_web_fetch_result_budget(
+        actual_size,
+        limit_bytes=run_total_max_bytes,
     )
-    claimed = ctx.claim_web_tool_result_budget(
-        min(
-            _registered_tool_result_size(result, tool_name=tool_name),
-            claimable,
-        ),
-        limit_bytes=max_total_evidence_bytes,
+    if claimed == actual_size:
+        return fitted
+    if claimed <= 0:
+        return None
+    return _fit_fetch_tool_result(
+        result,
+        projection,
+        claimed,
     )
-    return _fit_web_result(result, claimed, tool_name=tool_name)
 
 
 def _web_failure(error: Exception) -> ToolResultV1 | None:
-    from backend.web_research.citations import WebCitationLedgerError
+    from backend.web_research.citations import WebSourceLedgerError
     from backend.web_research.contracts import WebResearchContractError
-    from backend.web_research.http import WebHttpError
     from backend.web_research.runtime import WebResearchError
-    from backend.web_research.url_policy import WebUrlPolicyError
 
     if not isinstance(
         error,
-        (
-            WebResearchContractError,
-            WebCitationLedgerError,
-            WebHttpError,
-            WebResearchError,
-            WebUrlPolicyError,
-        ),
+        (WebResearchContractError, WebSourceLedgerError, WebResearchError),
     ):
         return None
     raw_code = error.code
@@ -268,14 +240,33 @@ def _web_failure(error: Exception) -> ToolResultV1 | None:
     )
 
 
+def _with_fallback_title(result: WebResearchResult, title: str) -> WebResearchResult:
+    if len(result.evidence) != 1 or result.evidence[0].title or not title:
+        return result
+    item = result.evidence[0]
+    return WebResearchResult(
+        evidence=(
+            WebEvidence(
+                url=item.url,
+                title=title,
+                content=item.content,
+                retrieved_at=item.retrieved_at,
+            ),
+        ),
+        truncated=result.truncated,
+    )
+
+
 def make_web_search(
     ctx: RunRequestContext,
     *,
     runtime: WebResearchRuntime | None = None,
-    default_results: int = 5,
-    max_total_evidence_bytes: int = 3_072,
+    provider_max_results: int = 3,
+    model_visible_results: int = 3,
+    per_source_max_bytes: int = 480,
+    total_snippet_max_bytes: int = 1_440,
 ) -> BaseTool:
-    """Build a request-owned search Adapter and mint Run-local fetch capabilities."""
+    """Build a request-owned search tool that assigns Run-local Source IDs."""
 
     if runtime is None:
         raise RuntimeError("Web Research runtime is not configured")
@@ -283,59 +274,38 @@ def make_web_search(
     @tool("web_search")
     def web_search(
         query: str,
-        max_results: int = default_results,
+        max_results: int = provider_max_results,
         allowed_domains: tuple[str, ...] = (),
     ) -> ToolResultV1:
-        """Search the public web for bounded, citable evidence."""
+        """Search the public web and return compact Run-local sources."""
 
         deadline_at, cancellation_probe = ctx.provider_runtime()
         ctx.mark_web_research_attempted()
-        if ctx.remaining_web_tool_result_budget(
-            max_total_evidence_bytes
-        ) < _registered_tool_result_size(
-            _MINIMUM_WEB_RESEARCH_RESULT,
-            tool_name="web_search",
-        ):
-            return _web_evidence_budget_failure()
         try:
-            normalized_domains = tuple(
-                sorted({domain.casefold() for domain in allowed_domains})
+            result = runtime.search(
+                query,
+                limit=max_results,
+                allowed_domains=tuple(
+                    sorted({domain.casefold() for domain in allowed_domains})
+                ),
+                deadline_at=deadline_at,
+                cancellation_probe=cancellation_probe,
             )
-            if normalized_domains:
-                result = runtime.search(
-                    query,
-                    limit=max_results,
-                    allowed_domains=normalized_domains,
-                    deadline_at=deadline_at,
-                    cancellation_probe=cancellation_probe,
-                )
-            else:
-                result = runtime.search(
-                    query,
-                    limit=max_results,
-                    deadline_at=deadline_at,
-                    cancellation_probe=cancellation_probe,
-                )
-            bounded_result = _bounded_web_result(
-                ctx,
+            source_ids = ctx.record_web_search_result(result, query=query)
+            projection = _bounded_search_projection(
                 result,
-                max_total_evidence_bytes=max_total_evidence_bytes,
-                tool_name="web_search",
+                source_ids,
+                model_visible_results=model_visible_results,
+                per_source_max_bytes=per_source_max_bytes,
+                total_snippet_max_bytes=total_snippet_max_bytes,
             )
-            if result.evidence and not bounded_result.evidence:
-                return _web_evidence_budget_failure()
-            result = bounded_result
-            ctx.record_web_search_result(
-                result,
-                allowed_domains=normalized_domains,
-            )
+            tool_result = _tool_result(result, data=projection)
         except Exception as exc:
             failure = _web_failure(exc)
             if failure is None:
                 raise
             return failure
-
-        return _tool_result(result)
+        return tool_result
 
     return web_search
 
@@ -344,63 +314,52 @@ def make_web_fetch(
     ctx: RunRequestContext,
     *,
     runtime: WebResearchRuntime | None = None,
-    max_total_evidence_bytes: int = 3_072,
+    response_max_bytes: int = 6_144,
+    run_total_max_bytes: int = 12_288,
 ) -> BaseTool:
-    """Build a request-owned fetch Adapter over search-minted capabilities."""
+    """Build a request-owned Tavily Extract tool over Run-local Source IDs."""
 
     if runtime is None:
         raise RuntimeError("Web Research runtime is not configured")
 
     @tool("web_fetch")
-    def web_fetch(evidence_id: str) -> ToolResultV1:
-        """Fetch one page previously authorized by web_search in this Run."""
+    def web_fetch(source_id: str, query: str | None = None) -> ToolResultV1:
+        """Extract query-ranked chunks from one source returned by web_search."""
 
         ctx.mark_web_research_attempted()
-        if ctx.remaining_web_tool_result_budget(
-            max_total_evidence_bytes
-        ) < _registered_tool_result_size(
-            _MINIMUM_WEB_RESEARCH_RESULT,
-            tool_name="web_fetch",
-        ):
-            return _web_evidence_budget_failure()
-        authorization = ctx.resolve_web_fetch_authorization(evidence_id)
-        if authorization is None:
+        source = ctx.resolve_web_source(source_id)
+        if source is None:
             return new_tool_failure(
-                error_code="WEB_EVIDENCE_NOT_AUTHORIZED",
+                error_code="WEB_SOURCE_NOT_FOUND",
                 retryable=False,
             )
-        url, allowed_domains = authorization
+        effective_query = query.strip() if isinstance(query, str) else ""
+        effective_query = effective_query or source.default_query
         deadline_at, cancellation_probe = ctx.provider_runtime()
         try:
-            if allowed_domains:
-                result = runtime.fetch(
-                    url,
-                    allowed_domains=allowed_domains,
-                    deadline_at=deadline_at,
-                    cancellation_probe=cancellation_probe,
-                )
-            else:
-                result = runtime.fetch(
-                    url,
-                    deadline_at=deadline_at,
-                    cancellation_probe=cancellation_probe,
-                )
-            bounded_result = _bounded_web_result(
+            result = runtime.fetch(
+                source.url,
+                query=effective_query,
+                deadline_at=deadline_at,
+                cancellation_probe=cancellation_probe,
+            )
+            result = _with_fallback_title(result, source.title)
+            projection = result.to_fetch_tool_dict((source.source_id,))
+            bounded_result = _bounded_fetch_tool_result(
                 ctx,
                 result,
-                max_total_evidence_bytes=max_total_evidence_bytes,
-                tool_name="web_fetch",
+                projection,
+                response_max_bytes=response_max_bytes,
+                run_total_max_bytes=run_total_max_bytes,
             )
-            if result.evidence and not bounded_result.evidence:
-                return _web_evidence_budget_failure()
-            result = bounded_result
-            ctx.record_web_fetch_result(result)
+            if bounded_result is None:
+                return _web_fetch_budget_failure()
         except Exception as exc:
             failure = _web_failure(exc)
             if failure is None:
                 raise
             return failure
-        return _tool_result(result)
+        return bounded_result
 
     return web_fetch
 

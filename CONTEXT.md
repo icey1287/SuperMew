@@ -54,6 +54,11 @@ _Avoid_: Run、BackgroundTask
 带 Document Version、chunk、来源和内容哈希身份的可引用检索材料。
 _Avoid_: Context text、raw chunk
 
+**Web Source ID**:
+`web_search` 在单个 Run 内按结果顺序分配的短引用，如 `S1`。它只映射该 Run 中的来源 URL、标题
+和原始搜索 query，不是持久 Evidence identity，也不能跨 Run 使用。
+_Avoid_: evidence_id、fetch capability、durable citation ID
+
 **RAG Trace**:
 Run 对检索路线、候选、评分、降级、Evidence 与耗时的可审计投影；它不包含模型私有推理。
 _Avoid_: Chain of thought、debug dump
@@ -121,10 +126,6 @@ _Avoid_: Permission boolean、model judgement
 控制面在 Run 创建前签发的 names-only 预授权快照，绑定用户、Tenant、Thread 与 Run。
 _Avoid_: Approval token、runtime override
 
-**Destination Capability**:
-由当前 Run 的已验证 Web search Evidence 派生、绑定具体公网目标的 request-owned HMAC 权限。
-_Avoid_: Raw URL allowlist、fetch token
-
 **Sandbox Execution**:
 已通过 Guardrail 的隔离代码执行；它使用固定 digest image、无网络、无宿主挂载和有界资源。
 _Avoid_: Shell Tool、host command
@@ -143,7 +144,8 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 - 一个 **RAG Evaluation Job** 只消费一个 **RAG Evaluation Dataset** fingerprint，并冻结自己的 baseline、GatePolicy 与 Model Snapshot；每个 Case 有独立持久状态。
 - 一个 **Skill** 允许零到多个 **Tool**；每次 Tool 调用都必须先产生 **Guardrail Decision**。
 - **Sandbox Execution** 是 Tool 的一种隔离实现，不替代 Guardrail Decision。
-- **Evidence** 来自已发布 Document Version 或受控 Web Research，并由 RAG Trace 记录其公开身份。
+- **Evidence** 来自已发布 Document Version，并由 RAG Trace 记录其公开身份；Web Research 使用
+  非持久、Run-local 的 **Web Source ID**。
 - 浏览器用内存 **Access Token** 调用受保护 Interface；页面刷新通过 Cookie 中的
   **Refresh Token** 恢复身份，每次成功刷新都会轮换该 credential；支持 Web Locks 时跨标签页
   串行 refresh，并在等待锁后重检 generation/tombstone 与主体。
@@ -176,7 +178,8 @@ _Avoid_: Workspace、organization（除非产品未来明确引入独立概念�
 >
 > 开发：模型想抓取搜索结果里的 URL，直接把 URL 交给 Web Tool 吗？
 >
-> 领域专家：不可以。Tool 只接受 Evidence identity；Run 用 Destination Capability 绑定已验证目标，再由 Guardrail Decision 决定是否执行。
+> 领域专家：不直接提交 URL。模型把当前 Run 的 `S1` 和可选 query 交给 `web_fetch`；服务端解析
+> Source ID 后只调用 Tavily Extract，由 Tavily 返回与 query 最相关的有界 chunks。
 >
 > 开发：页面刷新后从 localStorage 恢复 Bearer 可以吗？
 >

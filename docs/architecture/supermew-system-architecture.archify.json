@@ -1,0 +1,289 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "SuperMew 总体架构",
+    "locale": "zh-CN",
+    "output": "supermew-system-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/icey1287/SuperMew",
+      "revision": "c91ffa8292bb4164ae6a0a58c25a3c8ae5a0db81"
+    },
+    "viewBox": [1390, 780],
+    "views": [
+      {
+        "id": "run-path",
+        "label": "持久 Run 主路径",
+        "focus": ["user", "frontend", "api", "run_engine", "providers", "postgres"],
+        "note": "从用户命令进入持久 Run，并以 Event、Checkpoint 与 Message 作为可恢复事实。"
+      },
+      {
+        "id": "knowledge-path",
+        "label": "知识库路径",
+        "focus": ["index_worker", "rag", "milvus", "postgres", "run_engine"],
+        "note": "不可变 Document Version 经索引发布后，为运行时检索提供证据。"
+      },
+      {
+        "id": "governed-tools",
+        "label": "受控工具执行",
+        "focus": ["run_engine", "tool_runtime", "providers"],
+        "note": "Tool 可见性、Guardrail 授权与 Sandbox 隔离保持为连续边界。"
+      },
+      {
+        "id": "evaluation-path",
+        "label": "RAG 评测闭环",
+        "focus": ["eval_worker", "rag", "postgres", "providers"],
+        "note": "Evaluation Job 冻结模型快照，并产出版本化 Observation、Gate 与 baseline 证据。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "用户",
+      "pos": [30, 340],
+      "size": [120, 66],
+      "sources": [{ "path": "AGENTS.md", "label": "仓库总导航" }]
+    },
+    {
+      "id": "frontend",
+      "type": "frontend",
+      "label": "Vue 3 前端",
+      "sublabel": "Pinia · Axios · Event 投影",
+      "pos": [190, 336],
+      "size": [170, 74],
+      "sources": [
+        { "path": "frontend/src/events/runEventStream.ts", "label": "SSE 恢复" },
+        { "path": "frontend/src/events/runEventReducer.ts", "label": "Event 投影" }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI API",
+      "sublabel": "/v1/threads · auth · 控制面",
+      "pos": [410, 332],
+      "size": [180, 82],
+      "sources": [{ "path": "backend/app.py", "label": "FastAPI 入口" }]
+    },
+    {
+      "id": "run_engine",
+      "type": "backend",
+      "label": "持久 Run 引擎",
+      "sublabel": "Run · Event · Checkpoint · Message",
+      "tag": "LangGraph",
+      "pos": [640, 328],
+      "size": [205, 90],
+      "sources": [
+        { "path": "backend/runs/agent_executor.py", "label": "Run executor" },
+        { "path": "contracts/run_event_v1.json", "label": "Event Contract" }
+      ]
+    },
+    {
+      "id": "providers",
+      "type": "external",
+      "label": "外部 Provider",
+      "sublabel": "LLM · Embedding · Rerank · Tavily",
+      "pos": [640, 90],
+      "size": [205, 78],
+      "sources": [
+        { "path": "backend/providers/core.py", "label": "ProviderExecutor" },
+        { "path": "backend/providers/runtime.py", "label": "Provider runtime" }
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "领域事实 · Job ledger · 控制面",
+      "pos": [930, 332],
+      "size": [205, 82],
+      "sources": [
+        { "path": "backend/db/models.py", "label": "SQLAlchemy models" },
+        { "path": "migrations/versions/0005_event_journal.py", "label": "Event Journal migration" }
+      ]
+    },
+    {
+      "id": "index_worker",
+      "type": "backend",
+      "label": "Indexing Worker",
+      "sublabel": "版本构建 · 原子发布",
+      "pos": [1220, 334],
+      "size": [170, 78],
+      "sources": [
+        { "path": "backend/workers/indexing.py", "label": "Worker 入口" },
+        { "path": "backend/documents/publication.py", "label": "两阶段发布" }
+      ]
+    },
+    {
+      "id": "rag",
+      "type": "backend",
+      "label": "正式 RAG 图",
+      "sublabel": "召回 · Hybrid · Rerank · Evidence",
+      "pos": [930, 90],
+      "size": [205, 88],
+      "sources": [{ "path": "backend/rag/pipeline.py", "label": "正式 RAG 图" }]
+    },
+    {
+      "id": "milvus",
+      "type": "database",
+      "label": "Milvus",
+      "sublabel": "版本化向量索引",
+      "pos": [1220, 96],
+      "size": [170, 76],
+      "sources": [{ "path": "backend/indexing/milvus_client.py", "label": "Milvus adapter" }]
+    },
+    {
+      "id": "eval_worker",
+      "type": "backend",
+      "label": "Evaluation Worker",
+      "sublabel": "正式 RAG · Answer · Evaluator",
+      "pos": [930, 575],
+      "size": [205, 78],
+      "sources": [
+        { "path": "backend/workers/evaluation.py", "label": "Worker 入口" },
+        { "path": "backend/evaluation/runtime.py", "label": "Case runtime" }
+      ]
+    },
+    {
+      "id": "tool_runtime",
+      "type": "security",
+      "label": "Tool 执行边界",
+      "sublabel": "Registry → Guardrail → Sandbox",
+      "pos": [640, 570],
+      "size": [205, 88],
+      "sources": [
+        { "path": "backend/tools/registry.py", "label": "Registry" },
+        { "path": "backend/guardrails/policy.py", "label": "Guardrail" },
+        { "path": "backend/sandbox/runtime.py", "label": "Sandbox" }
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "messagebus",
+      "label": "Redis",
+      "sublabel": "Event 通知 · Cache · Rate Limit",
+      "pos": [410, 576],
+      "size": [180, 76],
+      "sources": [
+        { "path": "backend/events/redis_transport.py", "label": "Event transport" },
+        { "path": "backend/infra/cache.py", "label": "Parent cache" },
+        { "path": "backend/rate_limits/adapters.py", "label": "Rate Limit" }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "user_frontend",
+      "from": "user",
+      "to": "frontend",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "frontend_api",
+      "from": "frontend",
+      "to": "api",
+      "label": "REST + Event v1 SSE",
+      "labelAt": [385, 428],
+      "variant": "emphasis"
+    },
+    {
+      "id": "api_run",
+      "from": "api",
+      "to": "run_engine",
+      "label": "创建 / 恢复同一 Run",
+      "labelAt": [615, 432],
+      "variant": "emphasis"
+    },
+    {
+      "id": "run_provider",
+      "from": "run_engine",
+      "to": "providers",
+      "label": "Model Snapshot + 单层重试"
+    },
+    {
+      "id": "run_postgres",
+      "from": "run_engine",
+      "to": "postgres",
+      "label": "Run / Event / Checkpoint 事务",
+      "labelAt": [888, 432]
+    },
+    {
+      "id": "run_rag",
+      "from": "run_engine",
+      "to": "rag",
+      "label": "检索 Evidence"
+    },
+    {
+      "id": "rag_milvus",
+      "from": "rag",
+      "to": "milvus",
+      "label": "Dense / Hybrid 检索",
+      "labelAt": [1178, 192]
+    },
+    {
+      "id": "index_milvus",
+      "from": "index_worker",
+      "to": "milvus",
+      "label": "candidate 写入 + 版本过滤"
+    },
+    {
+      "id": "postgres_index",
+      "from": "postgres",
+      "to": "index_worker",
+      "label": "领取 durable Index Job",
+      "labelAt": [1178, 428]
+    },
+    {
+      "id": "run_tool",
+      "from": "run_engine",
+      "to": "tool_runtime",
+      "label": "Registry → Guardrail → Sandbox",
+      "labelAt": [743, 432],
+      "variant": "security"
+    },
+    {
+      "id": "run_redis",
+      "from": "api",
+      "to": "redis",
+      "label": "通知 / 缓存 / Rate Limit",
+      "labelAt": [500, 428]
+    },
+    {
+      "id": "postgres_eval",
+      "from": "postgres",
+      "to": "eval_worker",
+      "label": "Evaluation Job / Case / Report",
+      "labelAt": [1033, 428]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "单一正式 Interface",
+      "items": [
+        "Thread 生命周期只由 backend.threads 与 /v1/threads 拥有",
+        "SSE 是 Event Journal 的可恢复投影，不是事实来源"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "持久运行与隔离",
+      "items": [
+        "HITL 恢复同一 Run、Checkpoint 与 assistant Message",
+        "Queue、trace、budget、Evidence 与 capability 均由 Run-owned context 持有"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "失败与信任边界",
+      "items": [
+        "Provider 故障传播 typed error，不能伪装为 NO_KNOWLEDGE",
+        "Registry、Guardrail 与 Sandbox 分别承担可见性、授权和隔离"
+      ]
+    }
+  ]
+}
