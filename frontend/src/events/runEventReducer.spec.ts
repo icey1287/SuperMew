@@ -21,6 +21,42 @@ function event(
 }
 
 describe('run event reducer', () => {
+  it('keeps a Web failure visible while waiting for the authoritative final answer', () => {
+    let state = applyRunEvent(initialRunEventState('run_1', 'thread-1'), event(1, 'run.started'));
+    state = applyRunEvent(
+      state,
+      event(2, 'tool.failed', {
+        tool_name: 'web_search',
+        tool_call_id: 'search-failed',
+        error_code: 'WEB_SEARCH_UNAVAILABLE',
+        retryable: false,
+        duration_ms: 241,
+      })
+    );
+    expect(state.status).toBe('running');
+    expect(state.timeline.at(-1)).toMatchObject({
+      error: {
+        code: 'WEB_SEARCH_UNAVAILABLE',
+        message: '网络搜索请求失败，未能获取本次搜索结果',
+        retryable: false,
+      },
+    });
+    state = applyRunEvent(
+      state,
+      event(3, 'message.completed', {
+        content: '基于已有来源回答，并说明搜索失败。',
+        status: 'completed',
+      })
+    );
+    expect(state.status).toBe('running');
+    state = applyRunEvent(state, event(4, 'run.completed', { status: 'succeeded' }));
+    expect(state.status).toBe('completed');
+    expect(state.messageText).toBe('基于已有来源回答，并说明搜索失败。');
+    expect(
+      state.timeline.find((item) => item.toolCallId === 'search-failed')?.error?.retryable
+    ).toBe(false);
+  });
+
   it('deduplicates sequence and lets message.completed replace deltas and hydrate trace', () => {
     let state = initialRunEventState('run_1', 'thread-1');
     state = applyRunEvent(

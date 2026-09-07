@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ToolCallRequest
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
@@ -19,6 +20,7 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from pydantic import Field
 
 from backend.agent.context import AgentRuntimeContext, RuntimeBudget
@@ -53,7 +55,7 @@ from backend.providers import (
     ProviderExecutor,
     ProviderPolicy,
 )
-from backend.tools.contracts import new_tool_success
+from backend.tools.contracts import new_tool_failure, new_tool_success
 from backend.web_research.contracts import WebEvidence, WebResearchResult
 
 
@@ -98,8 +100,16 @@ def _graph_budget(**overrides):
     return _budget(**values)
 
 
-def _context(*, note="", allowed_tools=None, budget=None):
-    request_context = RunRequestContext.for_sync(user_id="alice", thread_id="thread-1")
+def _context(
+    *,
+    note="",
+    allowed_tools=None,
+    budget=None,
+    user_id="alice",
+    thread_id="thread-1",
+    run_id="run-1",
+):
+    request_context = RunRequestContext.for_sync(user_id=user_id, thread_id=thread_id)
     resolved_allowed = frozenset(allowed_tools or ())
 
     class RuntimeTestToolSession:
@@ -130,10 +140,10 @@ def _context(*, note="", allowed_tools=None, budget=None):
     )
     context = AgentRuntimeContext(
         request_context=request_context,
-        user_id="alice",
-        thread_id="thread-1",
+        user_id=user_id,
+        thread_id=thread_id,
         tenant_id="default",
-        run_id="run-1",
+        run_id=run_id,
         budget=budget or _budget(),
         persistent_note=note,
         allowed_tools=resolved_allowed,
@@ -258,6 +268,54 @@ class ModelRegistryTests(unittest.TestCase):
 
 
 class RuntimeMiddlewareTests(unittest.TestCase):
+    def test_final_model_request_removes_tools_and_budgets_summary_instruction(self):
+        request_context, context = _context(
+            allowed_tools=frozenset({"echo"}),
+            budget=_graph_budget(max_model_calls=5),
+        )
+        request = ModelRequest(
+            model=Mock(),
+            messages=[HumanMessage(content="latest question")],
+            tools=[{"type": "function", "function": {"name": "echo"}}],
+            tool_choice="required",
+            model_settings={"temperature": 0.1},
+            state={"run_model_call_count": 4},
+            runtime=SimpleNamespace(context=context),
+        )
+        try:
+            modified = DynamicContextMiddleware().wrap_model_call(
+                request,
+                lambda dynamic: ContextBudgetMiddleware().wrap_model_call(
+                    dynamic,
+                    lambda bounded: ToolPolicyMiddleware().wrap_model_call(
+                        bounded, lambda final: final
+                    ),
+                ),
+            )
+            self.assertEqual([], modified.tools)
+            self.assertIsNone(modified.tool_choice)
+            self.assertEqual(
+                {"temperature": 0.1, "tool_choice": "none"}, modified.model_settings
+            )
+            self.assertIn("Do not call any more tools", modified.messages[0].content)
+            self.assertIn("insufficient", modified.messages[0].content)
+            self.assertLessEqual(
+                estimate_request_tokens(modified.messages, tools=modified.tools),
+                context.budget.input_token_budget,
+            )
+            self.assertEqual(1, len(request.tools))
+            self.assertEqual("required", request.tool_choice)
+            self.assertEqual({"temperature": 0.1}, request.model_settings)
+            self.assertEqual({"run_model_call_count": 4}, request.state)
+            policy_request = ToolPolicyMiddleware().wrap_model_call(
+                request, lambda modified: modified
+            )
+            self.assertEqual([], policy_request.tools)
+            self.assertIsNone(policy_request.tool_choice)
+            self.assertEqual("none", policy_request.model_settings["tool_choice"])
+        finally:
+            request_context.close()
+
     def test_default_order_is_locked(self):
         middleware = build_default_middleware(_budget())
         self.assertEqual(
@@ -1230,6 +1288,7 @@ class ScriptedChatModel(BaseChatModel):
     responses: list[AIMessage]
     response_index: int = 0
     bound_tool_names: list[list[str]] = Field(default_factory=list)
+    received_system_messages: list[list[str]] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -1249,12 +1308,367 @@ class ScriptedChatModel(BaseChatModel):
         return self
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.received_system_messages.append(
+            [
+                str(message.content)
+                for message in messages
+                if isinstance(message, SystemMessage)
+            ]
+        )
         index = min(self.response_index, len(self.responses) - 1)
         self.response_index += 1
         return ChatResult(generations=[ChatGeneration(message=self.responses[index])])
 
 
 class CompiledAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_final_answer_http_request_explicitly_disables_tools(self):
+        for mode in ("sync", "async", "stream"):
+            for limit in (1, 5):
+                with self.subTest(mode=mode, limit=limit):
+                    requests = []
+                    tool_calls = []
+
+                    def respond(request: httpx.Request) -> httpx.Response:
+                        body = json.loads(request.content)
+                        requests.append(body)
+                        finishing = body.get("tool_choice") == "none"
+                        message = {"role": "assistant", "content": None}
+                        if finishing:
+                            message["content"] = "Summary from existing evidence"
+                        else:
+                            message["tool_calls"] = [
+                                {
+                                    "id": f"http-call-{len(requests)}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "echo",
+                                        "arguments": json.dumps(
+                                            {"step": len(requests)}
+                                        ),
+                                    },
+                                }
+                            ]
+                        finish_reason = "stop" if finishing else "tool_calls"
+                        envelope = {
+                            "id": f"chatcmpl-offline-{len(requests)}",
+                            "model": "offline-budget-model",
+                            "created": 0,
+                        }
+                        if not body.get("stream"):
+                            return httpx.Response(
+                                200,
+                                json={
+                                    **envelope,
+                                    "object": "chat.completion",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "message": message,
+                                            "finish_reason": finish_reason,
+                                        }
+                                    ],
+                                },
+                            )
+                        delta = dict(message)
+                        if "tool_calls" in delta:
+                            delta["tool_calls"] = [
+                                {"index": 0, **delta["tool_calls"][0]}
+                            ]
+                        chunks = [
+                            {
+                                **envelope,
+                                "object": "chat.completion.chunk",
+                                "choices": [
+                                    {"index": 0, "delta": delta, "finish_reason": None},
+                                ],
+                            },
+                            {
+                                **envelope,
+                                "object": "chat.completion.chunk",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": finish_reason,
+                                    },
+                                ],
+                            },
+                        ]
+                        stream = "".join(
+                            f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
+                        )
+                        return httpx.Response(
+                            200,
+                            headers={"Content-Type": "text/event-stream"},
+                            content=stream + "data: [DONE]\n\n",
+                        )
+
+                    @tool("echo")
+                    def echo(step: int) -> str:
+                        """Return offline evidence for the final answer."""
+                        tool_calls.append(step)
+                        return new_tool_success(data={"step": step}).model_dump_json()
+
+                    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+                        async with httpx.AsyncClient(
+                            transport=httpx.MockTransport(respond)
+                        ) as async_client:
+                            model = ChatOpenAI(
+                                model="offline-budget-model",
+                                api_key="offline-test-key",
+                                base_url="https://model.invalid/v1",
+                                max_retries=0,
+                                stream_usage=False,
+                                http_client=client,
+                                http_async_client=async_client,
+                            )
+                            request_context, _, runtime = self._runtime(
+                                model,
+                                [echo],
+                                budget=_graph_budget(max_model_calls=limit),
+                            )
+                            request = AgentRuntimeInput(
+                                history=[], user_text="Summarize available evidence"
+                            )
+                            try:
+                                if mode == "sync":
+                                    result = runtime.invoke(request)
+                                elif mode == "async":
+                                    result = await runtime.ainvoke(request)
+                                else:
+                                    events = [
+                                        event
+                                        async for event in runtime.astream(request)
+                                    ]
+                                    result = events[-1].result
+                            finally:
+                                request_context.close()
+                    self.assertEqual("Summary from existing evidence", result.content)
+                    self.assertEqual(limit, len(requests))
+                    self.assertEqual(list(range(1, limit)), tool_calls)
+                    self.assertEqual("none", requests[-1].get("tool_choice"))
+                    self.assertFalse(requests[-1].get("tools"))
+                    self.assertTrue(
+                        all(request.get("tools") for request in requests[:-1])
+                    )
+                    self.assertTrue(
+                        all(
+                            request.get("tool_choice") != "none"
+                            for request in requests[:-1]
+                        )
+                    )
+
+    async def test_final_response_projection_is_isolated_between_concurrent_runs(self):
+        contexts = [
+            _context(
+                user_id=f"user-{index}",
+                thread_id=f"thread-{index}",
+                run_id=f"run-{index}",
+                allowed_tools=frozenset({"echo"}),
+                budget=_graph_budget(max_model_calls=5),
+            )
+            for index in range(2)
+        ]
+        requests = [
+            ModelRequest(
+                model=Mock(),
+                messages=[HumanMessage(content="question")],
+                tools=[{"type": "function", "function": {"name": "echo"}}],
+                state={"run_model_call_count": count, "thread_model_call_count": 100},
+                runtime=SimpleNamespace(context=context),
+            )
+            for (_, context), count in zip(contexts, (4, 0))
+        ]
+        arrived = set()
+        both_arrived = asyncio.Event()
+        middleware = DynamicContextMiddleware()
+
+        async def capture(request):
+            arrived.add(request.runtime.context.run_id)
+            if len(arrived) == 2:
+                both_arrived.set()
+            await both_arrived.wait()
+            return request
+
+        try:
+            final_request, active_request = await asyncio.wait_for(
+                asyncio.gather(
+                    *(
+                        middleware.awrap_model_call(request, capture)
+                        for request in requests
+                    )
+                ),
+                timeout=2,
+            )
+            self.assertEqual([], final_request.tools)
+            self.assertEqual("none", final_request.model_settings["tool_choice"])
+            self.assertIn(
+                "Do not call any more tools", final_request.messages[0].content
+            )
+            self.assertEqual(1, len(active_request.tools))
+            self.assertNotIn("tool_choice", active_request.model_settings)
+            self.assertNotIn(
+                "Do not call any more tools", active_request.messages[0].content
+            )
+            self.assertEqual(1, len(requests[0].tools))
+            self.assertEqual(0, requests[1].state["run_model_call_count"])
+        finally:
+            for request_context, _ in contexts:
+                request_context.close()
+
+    def test_sync_runtime_reserves_final_model_call_for_summary(self):
+        calls = []
+
+        @tool("echo")
+        def echo() -> str:
+            """Return evidence for a summary."""
+            calls.append("echo")
+            return "evidence"
+
+        model = ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "echo",
+                            "args": {},
+                            "id": "sync-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Summary"),
+            ]
+        )
+        request_context, _, runtime = self._runtime(
+            model, [echo], budget=_graph_budget(max_model_calls=2)
+        )
+        try:
+            result = runtime.invoke(AgentRuntimeInput(history=[], user_text="research"))
+        finally:
+            request_context.close()
+        self.assertEqual("Summary", result.content)
+        self.assertEqual(["echo"], calls)
+        self.assertEqual(1, len(model.bound_tool_names))
+        self.assertIn(
+            "Do not call any more tools", "\n".join(model.received_system_messages[-1])
+        )
+
+    async def test_last_model_call_summarizes_existing_results_without_tools(self):
+        for fail_last_tool in (False, True):
+            with self.subTest(fail_last_tool=fail_last_tool):
+                calls = []
+
+                @tool("echo")
+                def echo(step: int) -> str:
+                    """Return deterministic results for a bounded tool round."""
+                    calls.append(step)
+                    if step == 4 and fail_last_tool:
+                        return new_tool_failure(
+                            error_code="WEB_SEARCH_UNAVAILABLE", retryable=False
+                        ).model_dump_json()
+                    return new_tool_success(data={"step": step}).model_dump_json()
+
+                responses = [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "echo",
+                                "args": {"step": step},
+                                "id": f"call-{step}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                    for step in range(1, 5)
+                ]
+                responses.append(AIMessage(content="Summary with evidence limitations"))
+                model = ScriptedChatModel(responses=responses)
+                request_context, _, runtime = self._runtime(
+                    model, [echo], budget=_graph_budget(max_model_calls=5)
+                )
+                try:
+                    events = [
+                        event
+                        async for event in runtime.astream(
+                            AgentRuntimeInput(history=[], user_text="research")
+                        )
+                    ]
+                finally:
+                    request_context.close()
+                self.assertEqual([1, 2, 3, 4], calls)
+                self.assertEqual(5, model.response_index)
+                self.assertEqual(4, len(model.bound_tool_names))
+                self.assertIn(
+                    "Do not call any more tools",
+                    "\n".join(model.received_system_messages[-1]),
+                )
+                self.assertEqual(
+                    "Summary with evidence limitations", events[-1].result.content
+                )
+
+    async def test_tool_budget_exhaustion_switches_next_model_call_to_summary(self):
+        @tool("echo")
+        def echo() -> str:
+            """Return a completed tool result."""
+            return "evidence"
+
+        model = ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "echo",
+                            "args": {},
+                            "id": "call-one",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Summary"),
+            ]
+        )
+        request_context, _, runtime = self._runtime(
+            model, [echo], budget=_graph_budget(max_model_calls=5, max_tool_calls=1)
+        )
+        try:
+            result = await runtime.ainvoke(
+                AgentRuntimeInput(history=[], user_text="research")
+            )
+        finally:
+            request_context.close()
+        self.assertEqual("Summary", result.content)
+        self.assertEqual(2, model.response_index)
+        self.assertEqual(1, len(model.bound_tool_names))
+        self.assertIn(
+            "Do not call any more tools", "\n".join(model.received_system_messages[-1])
+        )
+
+    async def test_single_model_call_budget_answers_without_exposing_tools(self):
+        @tool("echo")
+        def echo() -> str:
+            """Return a tool result."""
+            self.fail("No tool may execute with only the final model call available")
+
+        model = ScriptedChatModel(
+            responses=[AIMessage(content="Insufficient evidence")]
+        )
+        request_context, _, runtime = self._runtime(
+            model, [echo], budget=_graph_budget(max_model_calls=1)
+        )
+        try:
+            result = await runtime.ainvoke(
+                AgentRuntimeInput(history=[], user_text="research")
+            )
+        finally:
+            request_context.close()
+        self.assertEqual("Insufficient evidence", result.content)
+        self.assertEqual([], model.bound_tool_names)
+        self.assertEqual(1, model.response_index)
+
     @staticmethod
     def _runtime(model, tools, *, allowed_tools=None, budget=None):
         resolved_allowed_tools = allowed_tools
@@ -1357,9 +1771,12 @@ class CompiledAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool.denied", [item["stage"] for item in context.trace_events])
 
     async def test_stream_fails_when_model_limit_is_exceeded(self):
+        calls = []
+
         @tool("echo")
         def echo(value: str) -> str:
             """Echo a value."""
+            calls.append(value)
             return value
 
         budget = _graph_budget(max_model_calls=1, max_tool_calls=1)
@@ -1396,6 +1813,7 @@ class CompiledAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], events)
         self.assertEqual(1, exceeded.exception.run_count)
         self.assertEqual(1, exceeded.exception.run_limit)
+        self.assertEqual([], calls)
 
     async def test_stream_reads_terminal_fallback_from_final_state(self):
         model = ScriptedChatModel(responses=[AIMessage(content="")])

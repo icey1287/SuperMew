@@ -69,6 +69,9 @@ def make_settings(
 
 
 class SettingsSecurityTests(unittest.TestCase):
+    def test_agent_model_call_budget_defaults_to_five_calls(self):
+        self.assertEqual(5, AgentSettings(_env_file=None).max_model_calls)
+
     def test_embedding_query_microbatch_is_disabled_by_default(self):
         self.assertEqual(
             0.0,

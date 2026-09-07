@@ -134,6 +134,22 @@ uv run --no-sync python -m backend.tools.registry_cli validate
 
 Provider failure 不应被解释为无搜索结果，也不要在模型侧重复调用同一 Tool 规避失败。
 
+前端对 Search、Extract、Source ID、输入契约与 Fetch 额度错误使用专用文案，保持服务端
+`retryable` 值；不可重试的搜索失败不再显示“服务暂时不可用，请稍后重试”。
+`WEB_SEARCH_UNAVAILABLE` 本身不能区分具体 HTTP 状态，不据此推断限流或认证失败。
+
+## 预算内收尾
+
+`AGENT_MAX_MODEL_CALLS` 包含最后一轮回答。到达最后一个可用模型调用，或工具调用额度已经
+用完时，模型不再获得工具 schema，且模型 API 请求显式携带 `tool_choice="none"`，
+要求基于已有结果回答并披露证据缺口。例如上限为 5 时，
+最多前 4 轮模型决策可发起工具，第 5 轮用于回答；上限为 1 时，不调用工具，直接回答或说明
+证据不足。最后一轮若仍请求工具，服务端会拒绝，不能突破硬上限。
+
+这不会把工具失败改写为成功，也不会重写历史失败 Run。检验新行为应创建新 Run；正常收尾
+仍等待持久 `message.completed` 与 `run.completed`。Provider、deadline 或上下文硬预算失败
+仍可能使 Run 失败，不保证每次都能完成回答。
+
 ## 禁用与恢复
 
 紧急禁用时在 **Skill / Tool** 控制面关闭 Web Research。新 Run 将不再获得

@@ -395,6 +395,11 @@ Thread Run、知识检索、HITL resume、上传与 general API 使用独立 pol
 
 ## 目录与架构
 
+![SuperMew 系统架构图](docs/architecture/assets/supermew-system-architecture.png)
+
+[查看交互式架构图](docs/architecture/supermew-system-architecture.html) ·
+[查看 Archify 可编辑真源](docs/architecture/supermew-system-architecture.archify.json)
+
 ### 后端
 
 后端代码位于 `backend/`，统一使用 `from backend.xxx import ...`：
@@ -765,6 +770,10 @@ Case，并由独立 worker 执行。CLI 更适合仓库 Gate、分支比较与�
   worker 必须一致。
 
 ### Worker、Run 与 Agent
+
+Agent 会在模型调用预算内预留最后一轮回答；工具调用额度用完后也不再继续调用工具，而是
+基于已有结果回答并说明证据不足或工具失败。`AGENT_MAX_MODEL_CALLS` 包含这轮回答，设置为 1
+时不会调用工具。模型若忽略收尾约束仍请求工具，服务端会拒绝，不突破原有硬上限。
 
 - `INDEX_WORKER_*`：索引 worker identity、poll、lease、heartbeat、retry 和 readiness TTL。
 - `EVALUATION_WORKER_*`、`EVALUATION_CASE_TIMEOUT_SECONDS`：RAG Evaluation worker 的领取、心跳、

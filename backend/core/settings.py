@@ -313,7 +313,7 @@ class AgentSettings(_EnvSettings):
         validation_alias="AGENT_RECURSION_LIMIT",
     )
     max_model_calls: int = Field(
-        default=4,
+        default=5,
         ge=1,
         le=100,
         validation_alias="AGENT_MAX_MODEL_CALLS",

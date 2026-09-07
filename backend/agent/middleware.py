@@ -14,6 +14,7 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ToolCallRequest,
 )
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -60,6 +61,12 @@ _DYNAMIC_CONTEXT_MARKER = "supermew_dynamic_context"
 _ACTIVE_SKILL_MARKER = "supermew_active_skill"
 _WEB_TOOL_NAMES = frozenset({"web_fetch", "web_search"})
 _WEB_CONTEXT_BUDGET_ERROR = "WEB_TOOL_RESULT_CONTEXT_BUDGET_EXCEEDED"
+_FINAL_RESPONSE_INSTRUCTION = (
+    "The execution budget is reserved for your final answer. "
+    "Do not call any more tools. Answer now using only the results already available. "
+    "Disclose tool failures and uncertainty; if evidence is insufficient, "
+    "say so instead of inventing facts."
+)
 
 
 def _runtime_context(runtime) -> AgentRuntimeContext:
@@ -67,6 +74,24 @@ def _runtime_context(runtime) -> AgentRuntimeContext:
     if not isinstance(context, AgentRuntimeContext):
         raise RuntimeError("AgentRuntimeContext is required")
     return context
+
+
+def _requires_final_response(request: ModelRequest) -> bool:
+    context = _runtime_context(request.runtime)
+    state = request.state or {}
+    return (
+        state.get("run_model_call_count", 0) >= context.budget.max_model_calls - 1
+        or state.get("run_tool_call_count", {}).get("__all__", 0)
+        >= context.budget.max_tool_calls
+    )
+
+
+def _final_response_request(request: ModelRequest) -> ModelRequest:
+    return request.override(
+        tools=[],
+        tool_choice=None,
+        model_settings={**request.model_settings, "tool_choice": "none"},
+    )
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -761,6 +786,9 @@ class DynamicContextMiddleware(AgentMiddleware):
     @staticmethod
     def _override(request: ModelRequest) -> ModelRequest:
         context = _runtime_context(request.runtime)
+        final_response = _requires_final_response(request)
+        if final_response:
+            request = _final_response_request(request)
         visible_tools = (
             None
             if request.tools is None
@@ -777,11 +805,14 @@ class DynamicContextMiddleware(AgentMiddleware):
             memory_char_limit: int | None,
             include_skill_catalog: bool,
         ) -> tuple[SystemMessage, int]:
+            content = context.dynamic_context_message(
+                memory_char_limit=memory_char_limit,
+                include_skill_catalog=include_skill_catalog,
+            )
+            if final_response:
+                content += "\n\n" + _FINAL_RESPONSE_INSTRUCTION
             message = SystemMessage(
-                content=context.dynamic_context_message(
-                    memory_char_limit=memory_char_limit,
-                    include_skill_catalog=include_skill_catalog,
-                ),
+                content=content,
                 additional_kwargs={
                     _DYNAMIC_CONTEXT_MARKER: True,
                     _ACTIVE_SKILL_MARKER: active_skill,
@@ -931,6 +962,8 @@ class ToolPolicyMiddleware(AgentMiddleware):
     @staticmethod
     def _override(request: ModelRequest) -> ModelRequest:
         context = _runtime_context(request.runtime)
+        if _requires_final_response(request):
+            return _final_response_request(request)
         if request.tools is None:
             return request
         tools = [
@@ -947,6 +980,15 @@ class ToolPolicyMiddleware(AgentMiddleware):
     @staticmethod
     def _deny(request: ToolCallRequest) -> ToolMessage | None:
         context = _runtime_context(request.runtime)
+        state = request.state or {}
+        model_calls = state.get("run_model_call_count", 0)
+        if model_calls >= context.budget.max_model_calls:
+            raise ModelCallLimitExceededError(
+                thread_count=state.get("thread_model_call_count", 0),
+                run_count=model_calls,
+                thread_limit=None,
+                run_limit=context.budget.max_model_calls,
+            )
         tool_name = str(request.tool_call.get("name") or "")
         tool_call = dict(request.tool_call)
         tool_call_id = str(tool_call.get("id") or "unknown")
