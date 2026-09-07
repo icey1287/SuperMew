@@ -43,9 +43,7 @@ def test_ledger_assigns_stable_run_local_source_ids_and_default_queries() -> Non
     )
 
     assert ledger.register_search_result(first, query="Python 3.15") == ("S1",)
-    assert ledger.register_search_result(second, query="free-threading PEP") == (
-        "S2",
-    )
+    assert ledger.register_search_result(second, query="free-threading PEP") == ("S2",)
     assert ledger.register_search_result(first, query="newer query") == ("S1",)
 
     source = ledger.resolve("S1")

@@ -138,7 +138,9 @@ uv run --no-sync pip-audit \
 
 ## 门禁范围
 
-- `ruff format --check` 覆盖仓库内全部 Python 文件。
+- `ruff format --check` 覆盖仓库内全部 Python 文件，在 CI 中为非阻断检查：保留检查日志，
+  失败不阻断后续步骤，也不单独导致工作流失败。其他门禁仍保持阻断；本地命令仍返回非零
+  退出码，可运行 `uv run --no-sync ruff format .` 修复格式。
 - `ruff check` 除基础错误外，显式阻断 async 函数中已知的同步 HTTP 调用、阻塞进程
   调用、内建文件打开和 `time.sleep`。这是针对明确调用形状的静态门禁，不会推断任意
   同步调用链，也不能自动识别同步 SQLAlchemy、第三方 SDK 或 CPU 密集工作。

@@ -440,6 +440,7 @@ class DeterministicToolGuardrailProvider:
             )
         return None
 
+
 def _safe_identifier(value: object) -> str:
     if isinstance(value, str) and _STABLE_ID_RE.fullmatch(value) is not None:
         return value
