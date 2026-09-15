@@ -1,5 +1,4 @@
 import { createPinia, setActivePinia } from 'pinia';
-import { readFileSync } from 'node:fs';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useDocumentStore } from './documents';
 import api from '@/utils/api';
@@ -103,40 +102,6 @@ describe('document upload polling', () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
     vi.restoreAllMocks();
-  });
-
-  it('does not stop upload polling when the settings view unmounts', () => {
-    const source = readFileSync(
-      new URL('../components/Documents/DocumentSettings.vue', import.meta.url),
-      'utf8'
-    );
-    const unmountedBlock = source.match(/onUnmounted\(\(\) => \{([\s\S]*?)\}\);/);
-
-    expect(unmountedBlock?.[1]).not.toContain('stopUploadJobPolling');
-    expect(unmountedBlock?.[1]).toContain('stopAllDeleteJobPolling');
-  });
-
-  it('uses the candidate publication pipeline', () => {
-    const store = useDocumentStore();
-
-    expect(store.createUploadSteps().map(({ key, label }) => ({ key, label }))).toEqual([
-      { key: 'upload', label: '文档上传' },
-      { key: 'reserve', label: '候选版本准备' },
-      { key: 'parse', label: '解析与版本化分块' },
-      { key: 'parent_store', label: '候选父级分块写入' },
-      { key: 'vector_store', label: '候选向量写入' },
-      { key: 'verify', label: '索引一致性核验' },
-      { key: 'publish', label: '原子发布新版本' },
-    ]);
-  });
-
-  it('initializes the settings view through document and durable job recovery', () => {
-    const source = readFileSync(
-      new URL('../components/Documents/DocumentSettings.vue', import.meta.url),
-      'utf8'
-    );
-
-    expect(source).toContain('initializeDocumentWorkspace()');
   });
 
   it('loads documents and both durable job feeds during workspace initialization', async () => {

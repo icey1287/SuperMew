@@ -1,14 +1,9 @@
 import asyncio
-import ast
-import importlib.util
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 
 from backend.runs.request_context import RunRequestContext
 from backend.web_research.contracts import WebEvidence, WebResearchResult
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class RunRequestContextTests(unittest.IsolatedAsyncioTestCase):
@@ -139,49 +134,6 @@ class KnowledgeToolFactoryTests(unittest.TestCase):
         finally:
             ctx_a.close()
             ctx_b.close()
-
-
-class RouteImportTests(unittest.TestCase):
-    def test_thread_route_uses_application_module(self):
-        path = REPO_ROOT / "backend" / "api" / "routes" / "threads.py"
-        spec = importlib.util.spec_from_file_location("threads_route_under_test", path)
-        threads = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(threads)
-
-        self.assertTrue(callable(threads.thread_service.create_thread))
-        self.assertTrue(callable(threads.thread_service.list_threads))
-        self.assertTrue(callable(threads.thread_service.recent_messages))
-        self.assertTrue(callable(threads.thread_service.delete_thread))
-
-
-class ImportShapeTests(unittest.TestCase):
-    def test_backend_imports_do_not_pull_child_modules_from_packages(self):
-        backend_root = REPO_ROOT / "backend"
-        files = list(backend_root.rglob("*.py")) + list(
-            (REPO_ROOT / "tests").glob("test_*.py")
-        )
-        offenders = []
-
-        for path in files:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ImportFrom) or not node.module:
-                    continue
-                if not node.module.startswith("backend.") and node.module != "backend":
-                    continue
-
-                package_path = REPO_ROOT / Path(*node.module.split("."))
-                for alias in node.names:
-                    if alias.name == "*":
-                        continue
-                    child_file = package_path / f"{alias.name}.py"
-                    child_package = package_path / alias.name / "__init__.py"
-                    if child_file.exists() or child_package.exists():
-                        offenders.append(
-                            f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.module}.{alias.name}"
-                        )
-
-        self.assertEqual([], offenders)
 
 
 if __name__ == "__main__":

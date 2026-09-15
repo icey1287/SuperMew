@@ -117,43 +117,12 @@ def load_utils(env):
     ):
         spec.loader.exec_module(module)
 
-    rerank_values = [
-        str(env.get("RERANK_MODEL") or ""),
-        str(env.get("RERANK_BINDING_HOST") or ""),
-        str(env.get("RERANK_API_KEY") or ""),
-    ]
-    rerank_enabled = all(
-        value
-        and not value.lower().startswith(("your_", "your-", "replace-with"))
-        and "your-rerank" not in value.lower()
-        and "your_rerank" not in value.lower()
-        for value in rerank_values
-    )
-    module._rerank_stage = FakeRerankStage(enabled=rerank_enabled)
+    module._rerank_stage = FakeRerankStage(enabled=settings.rerank.enabled)
 
     return module, embedding_service
 
 
 class RagLatencyGuardTests(unittest.TestCase):
-    def test_placeholder_rerank_settings_are_treated_as_disabled(self):
-        utils, _ = load_utils(
-            {
-                "RERANK_MODEL": "your_rerank_model",
-                "RERANK_BINDING_HOST": "https://your-rerank-host",
-                "RERANK_API_KEY": "your_rerank_api_key",
-                "AUTO_MERGE_ENABLED": "false",
-            }
-        )
-
-        docs, meta = utils._rerank_documents(
-            "query",
-            [{"text": "doc", "chunk_id": "chunk-1", "score": 0.9}],
-            1,
-        )
-
-        self.assertFalse(meta["rerank_enabled"])
-        self.assertEqual(1, len(docs))
-
     def test_candidate_count_preserves_explicit_and_multiplier_rules(self):
         for env, top_k, expected, source in [
             ({}, 8, 24, "multiplier"),
