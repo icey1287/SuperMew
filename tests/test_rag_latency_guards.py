@@ -1,12 +1,14 @@
 import importlib.util
 import os
-import sys
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from backend.providers.runtime import provider_runtime
+from backend.documents import retrieval as retrieval_module
+from backend.documents.retrieval import RetrievalSnapshot, RetrievalTarget
+from backend.indexing import milvus_client, parent_chunk_store
+from backend.indexing.milvus_client import HybridRetrievalUnsupported
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +24,13 @@ class FakeEmbeddingService:
 
 
 class FakeMilvusStore:
-    hybrid_error_type = RuntimeError
+    hybrid_error_type = HybridRetrievalUnsupported
+
+    def with_collection(self, collection_name):
+        return self
+
+    def has_collection(self):
+        return True
 
     def hybrid_retrieve(self, **kwargs):
         raise self.hybrid_error_type("hybrid unavailable")
@@ -70,54 +78,19 @@ def load_utils(env):
     embedding_service = FakeEmbeddingService()
     milvus_store = FakeMilvusStore()
 
-    class HybridRetrievalUnsupported(RuntimeError):
-        pass
-
-    milvus_store.hybrid_error_type = HybridRetrievalUnsupported
-
-    fake_indexing = types.ModuleType("backend.indexing")
-    fake_indexing.__path__ = []
-
-    fake_milvus = types.ModuleType("backend.indexing.milvus_client")
-    fake_milvus.HybridRetrievalUnsupported = HybridRetrievalUnsupported
-    fake_milvus.get_milvus_store = lambda: milvus_store
-
-    fake_parent_store = types.ModuleType("backend.indexing.parent_chunk_store")
-
     class ParentChunkStore:
         def get_documents_by_ids(self, chunk_ids):
             return []
 
-    fake_parent_store.ParentChunkStore = ParentChunkStore
-
-    fake_documents = types.ModuleType("backend.documents")
-    fake_documents.__path__ = []
-    fake_retrieval = types.ModuleType("backend.documents.retrieval")
-
-    class RetrievalTarget:
-        def __init__(
-            self,
-            collection_name="test_collection",
-            filter_expr="chunk_level == 3",
-            required=True,
-        ):
-            self.collection_name = collection_name
-            self.filter_expr = filter_expr
-            self.required = required
-
-    class RetrievalSnapshot:
-        def __init__(self):
-            self.tenant_id = "default"
-            self.index_id = "test-index"
-            self.targets = (RetrievalTarget(),)
-
     class DocumentRetrievalScope:
-        def resolve(self, **_kwargs):
-            return RetrievalSnapshot()
-
-    fake_retrieval.RetrievalTarget = RetrievalTarget
-    fake_retrieval.RetrievalSnapshot = RetrievalSnapshot
-    fake_retrieval.DocumentRetrievalScope = DocumentRetrievalScope
+        def resolve(self, **kwargs):
+            return RetrievalSnapshot(
+                tenant_id=kwargs["tenant_id"],
+                index_id="test-index",
+                targets=(RetrievalTarget("test_collection", "chunk_level == 3"),),
+                current_document_count=1,
+                catalog_document_count=1,
+            )
 
     module_name = f"rag_utils_under_test_{id(embedding_service)}"
     spec = importlib.util.spec_from_file_location(
@@ -129,16 +102,9 @@ def load_utils(env):
     with (
         patch.dict(os.environ, env, clear=False),
         patch.object(provider_runtime, "embedding_service", embedding_service),
-        patch.dict(
-            sys.modules,
-            {
-                "backend.indexing": fake_indexing,
-                "backend.indexing.milvus_client": fake_milvus,
-                "backend.indexing.parent_chunk_store": fake_parent_store,
-                "backend.documents": fake_documents,
-                "backend.documents.retrieval": fake_retrieval,
-            },
-        ),
+        patch.object(milvus_client, "get_milvus_store", return_value=milvus_store),
+        patch.object(parent_chunk_store, "ParentChunkStore", ParentChunkStore),
+        patch.object(retrieval_module, "DocumentRetrievalScope", DocumentRetrievalScope),
     ):
         spec.loader.exec_module(module)
 

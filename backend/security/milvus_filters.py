@@ -61,23 +61,6 @@ def in_filter(field: str, values: Iterable[str | int | float]) -> str:
     return f"{safe_field} in [{', '.join(literals)}]"
 
 
-def not_in_filter(field: str, values: Iterable[str | int | float]) -> str:
-    """构造安全排除表达式；空集合等价于不排除任何记录。"""
-
-    safe_field = _field(field)
-    literals: list[str] = []
-    for value in values:
-        if isinstance(value, str):
-            literals.append(string_literal(value))
-        elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            literals.append(str(value))
-        else:
-            raise TypeError(f"unsupported Milvus filter value: {type(value)!r}")
-    if not literals:
-        return "id >= 0"
-    return f"{safe_field} not in [{', '.join(literals)}]"
-
-
 def and_filter(*expressions: str | None) -> str:
     """安全组合多个 Milvus 表达式；空组合默认拒绝全部记录。"""
 
@@ -89,19 +72,6 @@ def and_filter(*expressions: str | None) -> str:
     if not normalized:
         return "id < 0"
     return " and ".join(f"({expression})" for expression in normalized)
-
-
-def or_filter(*expressions: str | None) -> str:
-    """安全组合备选表达式；没有备选项时默认拒绝全部记录。"""
-
-    normalized = [
-        expression.strip()
-        for expression in expressions
-        if expression is not None and expression.strip()
-    ]
-    if not normalized:
-        return "id < 0"
-    return " or ".join(f"({expression})" for expression in normalized)
 
 
 def version_identity_filter(

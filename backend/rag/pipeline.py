@@ -203,25 +203,6 @@ def _pack_grader_docs(docs: List[dict]) -> EvidencePack:
     )
 
 
-def _copy_jsonable_doc(doc: dict) -> dict:
-    """Keep resume snapshots small and JSON-safe."""
-    allowed = {
-        "filename",
-        "page_number",
-        "text",
-        "score",
-        "rrf_rank",
-        "rerank_score",
-        "chunk_id",
-        "doc_id",
-    }
-    return {key: value for key, value in doc.items() if key in allowed}
-
-
-def _copy_jsonable_docs(docs: List[dict] | None) -> List[dict]:
-    return [_copy_jsonable_doc(doc) for doc in (docs or []) if isinstance(doc, dict)]
-
-
 def _is_hitl_result(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
@@ -481,10 +462,6 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "context": context,
         "rag_trace": rag_trace,
     }
-
-
-def _route_after_initial(state: RAGState) -> Literal["grade_documents"]:
-    return "grade_documents"
 
 
 def _route_after_grade(

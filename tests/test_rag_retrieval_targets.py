@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+from backend.documents.retrieval import RetrievalSnapshot, RetrievalTarget
 
 import pytest
 
@@ -25,7 +25,7 @@ def _target(
     required: bool = True,
     filter_expr: str = "chunk_level == 3",
 ):
-    return SimpleNamespace(
+    return RetrievalTarget(
         collection_name=collection,
         filter_expr=filter_expr,
         required=required,
@@ -33,10 +33,12 @@ def _target(
 
 
 def _snapshot(*targets, index_id="index-current", tenant_id="tenant-a"):
-    return SimpleNamespace(
+    return RetrievalSnapshot(
         tenant_id=tenant_id,
         index_id=index_id,
         targets=tuple(targets),
+        current_document_count=len(targets),
+        catalog_document_count=len(targets),
     )
 
 
@@ -266,30 +268,6 @@ def test_multi_collection_hybrid_fallback_is_isolated_to_one_target():
     assert len(second_store.dense_calls) == 1
     assert result["meta"]["retrieval_mode"] == "hybrid_dense_fusion"
     assert result["meta"]["retrieval_degraded_code"] == ("HYBRID_RETRIEVAL_DEGRADED")
-
-
-def test_multi_collection_requires_an_adapter_that_can_route_targets():
-    utils = _utils()
-    utils._document_retrieval_scope = Scope(
-        _snapshot(_target("catalog_a"), _target("catalog_b"))
-    )
-    utils._embedding_service = Embedding()
-
-    class UnroutedStore:
-        calls = 0
-
-        def hybrid_retrieve(self, **_kwargs):
-            self.calls += 1
-            return []
-
-    store = UnroutedStore()
-    utils._milvus_manager = store
-
-    with pytest.raises(ProviderError) as raised:
-        utils.retrieve_documents("question", top_k=1, tenant_id="tenant-a")
-
-    assert raised.value.code == ProviderCode.VECTOR_STORE_UNAVAILABLE
-    assert store.calls == 0
 
 
 def test_required_missing_collection_is_typed_provider_failure():

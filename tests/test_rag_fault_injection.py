@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from backend.providers import ProviderCode, ProviderError, ProviderExecutor
-from test_rag_latency_guards import load_utils
+from test_rag_latency_guards import FakeMilvusStore, load_utils
 
 
 class _BrokenEmbedding:
@@ -19,7 +19,7 @@ class _HealthyEmbedding:
         return [0.1, 0.2]
 
 
-class _NeverCalledStore:
+class _NeverCalledStore(FakeMilvusStore):
     def __init__(self):
         self.calls = 0
 
@@ -96,7 +96,7 @@ class RagFaultInjectionTests(unittest.TestCase):
     def test_vector_failure_does_not_trigger_dense_fallback_or_no_knowledge(self):
         utils = self._utils()
 
-        class Store:
+        class Store(FakeMilvusStore):
             def __init__(self):
                 self.hybrid_calls = 0
                 self.dense_calls = 0
@@ -123,7 +123,7 @@ class RagFaultInjectionTests(unittest.TestCase):
     def test_malformed_vector_response_is_typed_provider_failure(self):
         utils = self._utils()
 
-        class Store:
+        class Store(FakeMilvusStore):
             def hybrid_retrieve(self, **kwargs):
                 return None
 
@@ -138,7 +138,7 @@ class RagFaultInjectionTests(unittest.TestCase):
     def test_healthy_empty_vector_result_is_the_only_empty_retrieval_outcome(self):
         utils = self._utils()
 
-        class Store:
+        class Store(FakeMilvusStore):
             def hybrid_retrieve(self, **kwargs):
                 return []
 
@@ -211,7 +211,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         )
         utils._embedding_service = _HealthyEmbedding()
 
-        class Store:
+        class Store(FakeMilvusStore):
             def hybrid_retrieve(self, **kwargs):
                 return [{"text": "evidence", "chunk_id": "c1", "score": 0.1}]
 
@@ -237,7 +237,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         )
         utils._embedding_service = _HealthyEmbedding()
 
-        class Store:
+        class Store(FakeMilvusStore):
             def hybrid_retrieve(self, **kwargs):
                 return [{"text": "evidence", "chunk_id": "c1", "score": 0.1}]
 
@@ -258,7 +258,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         utils = self._utils(RERANK_MIN_SCORE="0.5")
         utils._embedding_service = _HealthyEmbedding()
 
-        class Store:
+        class Store(FakeMilvusStore):
             def hybrid_retrieve(self, **kwargs):
                 return [{"text": "evidence", "chunk_id": "c1", "score": 0.1}]
 
@@ -285,7 +285,7 @@ class RagFaultInjectionTests(unittest.TestCase):
         clock = Clock()
         dense_timeouts = []
 
-        class Store:
+        class Store(FakeMilvusStore):
             def hybrid_retrieve(self, **kwargs):
                 clock.now = 9.0
                 raise utils.HybridRetrievalUnsupported()

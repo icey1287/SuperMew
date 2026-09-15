@@ -1,7 +1,6 @@
 from collections import defaultdict
 from collections.abc import Callable
 import asyncio
-import math
 import os
 import time
 from typing import List, Tuple, Dict, Any, Literal, Optional
@@ -160,26 +159,8 @@ def resolve_retrieval_snapshot(
             knowledge_base_id=knowledge_base_id,
             leaf_chunk_level=LEAF_RETRIEVE_LEVEL,
         )
-        if (
-            not isinstance(getattr(snapshot, "tenant_id", None), str)
-            or not snapshot.tenant_id.strip()
-            or snapshot.tenant_id.strip() != tenant_id
-            or not isinstance(getattr(snapshot, "index_id", None), str)
-            or not snapshot.index_id.strip()
-            or not isinstance(getattr(snapshot, "targets", None), (list, tuple))
-        ):
-            raise ValueError("document catalog returned an invalid retrieval snapshot")
-        for target in snapshot.targets:
-            if (
-                not isinstance(getattr(target, "collection_name", None), str)
-                or not target.collection_name.strip()
-                or not isinstance(getattr(target, "filter_expr", None), str)
-                or not target.filter_expr.strip()
-                or not isinstance(getattr(target, "required", None), bool)
-            ):
-                raise ValueError(
-                    "document catalog returned an invalid retrieval target"
-                )
+        if snapshot.tenant_id != tenant_id:
+            raise ValueError("retrieval snapshot tenant does not match request tenant")
         return snapshot
 
     return _provider_executor.call(
@@ -566,25 +547,6 @@ def rewrite_query_once(
     }
 
 
-def _store_for_target(
-    target: RetrievalTarget,
-    *,
-    allow_unrouted_adapter: bool,
-):
-    with_collection = getattr(_milvus_manager, "with_collection", None)
-    if callable(with_collection):
-        return with_collection(target.collection_name)
-    configured_collection = getattr(_milvus_manager, "collection_name", None)
-    if (
-        configured_collection is not None
-        and configured_collection != target.collection_name
-    ):
-        raise RuntimeError("Milvus adapter is bound to a different collection")
-    if not allow_unrouted_adapter:
-        raise RuntimeError("Milvus adapter cannot route multiple target collections")
-    return _milvus_manager
-
-
 def _retrieve_target(
     target: RetrievalTarget,
     *,
@@ -593,17 +555,12 @@ def _retrieve_target(
     candidate_k: int,
     vector_deadline: float,
     cancellation: Callable[[], bool] | None,
-    allow_unrouted_adapter: bool,
 ) -> tuple[bool, str, List[dict]]:
     """读取单个 target；hybrid capability 降级只影响这个 target。"""
 
     def _call() -> tuple[bool, str, List[dict]]:
-        store = _store_for_target(
-            target,
-            allow_unrouted_adapter=allow_unrouted_adapter,
-        )
-        has_collection = getattr(store, "has_collection", None)
-        if callable(has_collection) and not has_collection():
+        store = _milvus_manager.with_collection(target.collection_name)
+        if not store.has_collection():
             if target.required:
                 raise RuntimeError("required Milvus target collection is missing")
             return True, "missing_optional", []
@@ -766,26 +723,13 @@ def retrieve_documents(
         index_id=snapshot.index_id,
     )
 
-    def _embed_query() -> list[float]:
-        vector = _embedding_service.embed_query(
+    try:
+        dense_embedding = _embedding_service.embed_query(
             query,
             scope=embedding_scope,
             deadline=embedding_deadline,
             cancellation=cancellation,
         )
-        if not vector:
-            raise ValueError("embedding provider returned no vector")
-        if not isinstance(vector, list) or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            for value in vector
-        ):
-            raise ValueError("embedding provider returned an invalid vector")
-        return [float(value) for value in vector]
-
-    try:
-        dense_embedding = _embed_query()
     except asyncio.CancelledError:
         raise
     except ProviderError:
@@ -803,7 +747,6 @@ def retrieve_documents(
     target_results: list[dict[str, Any]] = []
     active_modes: list[str] = []
     optional_missing_count = 0
-    allow_unrouted_adapter = len(snapshot.targets) == 1
     for target in snapshot.targets:
         missing, mode, documents = _retrieve_target(
             target,
@@ -812,7 +755,6 @@ def retrieve_documents(
             candidate_k=candidate_k,
             vector_deadline=vector_deadline,
             cancellation=cancellation,
-            allow_unrouted_adapter=allow_unrouted_adapter,
         )
         if missing:
             optional_missing_count += 1

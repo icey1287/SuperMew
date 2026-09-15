@@ -4,8 +4,6 @@ from backend.security.milvus_filters import (
     and_filter,
     eq_filter,
     in_filter,
-    not_in_filter,
-    or_filter,
     version_identity_filter,
     version_scope_filter,
 )
@@ -34,21 +32,6 @@ class MilvusFilterTests(unittest.TestCase):
             and_filter(eq_filter("tenant_id", "t1"), eq_filter("document_id", "d1")),
         )
         self.assertEqual("id < 0", and_filter("", None))
-
-    def test_or_and_not_in_filters_have_safe_empty_semantics(self):
-        self.assertEqual(
-            '(document_version_id == "v1") or (document_version_id == "v2")',
-            or_filter(
-                eq_filter("document_version_id", "v1"),
-                eq_filter("document_version_id", "v2"),
-            ),
-        )
-        self.assertEqual("id < 0", or_filter())
-        self.assertEqual("id >= 0", not_in_filter("document_id", []))
-        self.assertEqual(
-            'document_id not in ["doc-1", "doc-2\\" or id >= 0"]',
-            not_in_filter("document_id", ["doc-1", 'doc-2" or id >= 0']),
-        )
 
     def test_version_identity_filter_is_composable_and_fails_closed(self):
         self.assertEqual(
