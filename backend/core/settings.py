@@ -63,11 +63,22 @@ class RagSettings(_EnvSettings):
     retrieval_top_k: int = Field(
         default=8, ge=1, le=100, validation_alias="RETRIEVAL_TOP_K"
     )
-    retrieval_candidate_k: int = Field(
-        default=30,
+    retrieval_candidate_k: int | None = Field(
+        default=None,
         ge=1,
         le=500,
         validation_alias="RETRIEVAL_CANDIDATE_K",
+    )
+    retrieval_candidate_multiplier: int = Field(
+        default=3, ge=1, validation_alias="RETRIEVAL_CANDIDATE_MULTIPLIER"
+    )
+    auto_merge_enabled: bool = Field(
+        default=True, validation_alias="AUTO_MERGE_ENABLED"
+    )
+    auto_merge_threshold: int = Field(default=2, validation_alias="AUTO_MERGE_THRESHOLD")
+    leaf_retrieve_level: int = Field(default=3, validation_alias="LEAF_RETRIEVE_LEVEL")
+    vector_timeout_seconds: float = Field(
+        default=10.0, gt=0, validation_alias="VECTOR_TIMEOUT_SECONDS"
     )
     max_subqueries: int = Field(
         default=4, ge=1, le=8, validation_alias="RAG_MAX_SUBQUERIES"
@@ -1426,35 +1437,6 @@ class AppSettings(BaseModel):
         if problems:
             raise ValueError("；".join(problems))
 
-    def redacted_dict(self) -> dict:
-        payload = self.model_dump(mode="json")
-        payload["models"]["api_key"] = "***"
-        payload["rerank"]["api_key"] = "***"
-        payload["security"]["jwt_secret_key"] = "***"
-        payload["security"]["admin_invite_code"] = "***"
-        payload["rate_limits"]["identity_hmac_key"] = "***"
-        payload["storage"]["database_url"] = _redact_url(
-            self.storage.database_url.get_secret_value()
-        )
-        payload["storage"]["redis_url"] = _redact_url(
-            self.storage.redis_url.get_secret_value()
-        )
-        payload["sql_assistant"]["dsn"] = _redact_url(
-            self.sql_assistant.dsn.get_secret_value()
-        )
-        return payload
-
-
-def _redact_url(value: str) -> str:
-    parsed = urlsplit(value)
-    if not parsed.password:
-        return value
-    username = parsed.username or ""
-    host = parsed.hostname or ""
-    port = f":{parsed.port}" if parsed.port else ""
-    auth = f"{username}:***@" if username else "***@"
-    return f"{parsed.scheme}://{auth}{host}{port}{parsed.path}"
-
 
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
@@ -1477,7 +1459,3 @@ def get_settings() -> AppSettings:
         custom_http=CustomHttpSettings(),
         web_research=WebResearchSettings(),
     )
-
-
-def reset_settings_cache() -> None:
-    get_settings.cache_clear()

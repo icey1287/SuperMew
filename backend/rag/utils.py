@@ -1,7 +1,6 @@
 from collections import defaultdict
 from collections.abc import Callable
 import asyncio
-import os
 import time
 from typing import List, Tuple, Dict, Any, Literal, Optional
 
@@ -30,37 +29,20 @@ from pydantic import BaseModel, Field
 from backend.agent.models import ModelRole, model_registry
 from backend.model_control import ModelCatalogSnapshot
 
-try:
-    RERANK_TIMEOUT_SECONDS = max(float(os.getenv("RERANK_TIMEOUT_SECONDS", "5")), 0.1)
-except ValueError:
-    RERANK_TIMEOUT_SECONDS = 5.0
-AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
-AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
-LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
-
-
-def _read_positive_int_env(name: str, default: int) -> int:
-    try:
-        return max(int(os.getenv(name, str(default))), 1)
-    except ValueError:
-        return default
-
-
-RETRIEVAL_CANDIDATE_MULTIPLIER = _read_positive_int_env(
-    "RETRIEVAL_CANDIDATE_MULTIPLIER", 3
-)
-_RETRIEVAL_CANDIDATE_K_RAW = os.getenv("RETRIEVAL_CANDIDATE_K", "").strip()
-RETRIEVAL_TOP_K = _read_positive_int_env("RETRIEVAL_TOP_K", 8)
-
-
-RERANK_MIN_SCORE = provider_runtime.settings.rerank.min_score
+_settings = provider_runtime.settings
+RERANK_TIMEOUT_SECONDS = _settings.rerank.timeout_seconds
+AUTO_MERGE_ENABLED = _settings.rag.auto_merge_enabled
+AUTO_MERGE_THRESHOLD = _settings.rag.auto_merge_threshold
+LEAF_RETRIEVE_LEVEL = _settings.rag.leaf_retrieve_level
+RETRIEVAL_CANDIDATE_MULTIPLIER = _settings.rag.retrieval_candidate_multiplier
+RETRIEVAL_TOP_K = _settings.rag.retrieval_top_k
+RERANK_MIN_SCORE = _settings.rerank.min_score
 
 RETRIEVAL_TRACE_FIELDS = (
     "retrieval_pipeline",
     "retrieval_mode",
     "candidate_k",
     "candidate_k_source",
-    "candidate_k_config_error",
     "retrieval_candidate_multiplier",
     "retrieval_top_k",
     "leaf_retrieve_level",
@@ -109,25 +91,9 @@ _parent_chunk_store = ParentChunkStore()
 _document_retrieval_scope = DocumentRetrievalScope()
 _provider_executor = ProviderExecutor()
 _rerank_stage: RerankStage | None = None
-_embedding_scope = EmbeddingScope(
-    namespace=os.getenv("EMBEDDING_CACHE_NAMESPACE", "default"),
-    index_id=(
-        os.getenv("INDEX_VERSION") or os.getenv("MILVUS_COLLECTION") or "default"
-    ),
-)
-
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-EMBEDDING_PROVIDER_ID = EMBEDDING_PROVIDER.rsplit("/", 1)[-1] or "embedding-model"
-try:
-    EMBEDDING_TIMEOUT_SECONDS = max(
-        float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "15")), 0.1
-    )
-except ValueError:
-    EMBEDDING_TIMEOUT_SECONDS = 15.0
-try:
-    VECTOR_TIMEOUT_SECONDS = max(float(os.getenv("VECTOR_TIMEOUT_SECONDS", "10")), 0.1)
-except ValueError:
-    VECTOR_TIMEOUT_SECONDS = 10.0
+EMBEDDING_PROVIDER_ID = _settings.embedding.model.rsplit("/", 1)[-1]
+EMBEDDING_TIMEOUT_SECONDS = _settings.embedding.timeout_seconds
+VECTOR_TIMEOUT_SECONDS = _settings.rag.vector_timeout_seconds
 _VECTOR_POLICY = ProviderPolicy(max_attempts=2)
 _MODEL_POLICY = ProviderPolicy(max_attempts=2)
 
@@ -192,17 +158,8 @@ def _validate_retrieved_documents(value: Any) -> List[dict]:
 
 def resolve_candidate_k(top_k: int) -> Tuple[int, Dict[str, Any]]:
     """解析 Milvus 候选池大小；RETRIEVAL_CANDIDATE_K 优先，否则 top_k × multiplier。"""
-    if _RETRIEVAL_CANDIDATE_K_RAW:
-        try:
-            candidate_k = max(int(_RETRIEVAL_CANDIDATE_K_RAW), top_k)
-        except ValueError:
-            candidate_k = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k)
-            return candidate_k, {
-                "candidate_k_source": "multiplier",
-                "retrieval_candidate_multiplier": RETRIEVAL_CANDIDATE_MULTIPLIER,
-                "candidate_k_config_error": "invalid RETRIEVAL_CANDIDATE_K",
-            }
-        return candidate_k, {
+    if _settings.rag.retrieval_candidate_k is not None:
+        return max(_settings.rag.retrieval_candidate_k, top_k), {
             "candidate_k_source": "env",
             "retrieval_candidate_multiplier": RETRIEVAL_CANDIDATE_MULTIPLIER,
         }
@@ -718,7 +675,7 @@ def retrieve_documents(
         cancellation=cancellation,
     )
     embedding_scope = EmbeddingScope(
-        namespace=_embedding_scope.namespace,
+        namespace=_settings.embedding.cache_namespace,
         tenant_id=snapshot.tenant_id,
         index_id=snapshot.index_id,
     )

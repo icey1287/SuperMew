@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from backend.core.settings import EmbeddingSettings, RagSettings, RerankSettings
 from backend.providers.runtime import provider_runtime
 from backend.documents import retrieval as retrieval_module
 from backend.documents.retrieval import RetrievalSnapshot, RetrievalTarget
@@ -99,8 +100,16 @@ def load_utils(env):
     )
     module = importlib.util.module_from_spec(spec)
 
+    with patch.dict(os.environ, env, clear=True):
+        settings = provider_runtime.settings.model_copy(
+            update={
+                "rag": RagSettings(_env_file=None),
+                "embedding": EmbeddingSettings(_env_file=None),
+                "rerank": RerankSettings(_env_file=None),
+            }
+        )
     with (
-        patch.dict(os.environ, env, clear=False),
+        patch.object(provider_runtime, "settings", settings),
         patch.object(provider_runtime, "embedding_service", embedding_service),
         patch.object(milvus_client, "get_milvus_store", return_value=milvus_store),
         patch.object(parent_chunk_store, "ParentChunkStore", ParentChunkStore),
@@ -144,6 +153,19 @@ class RagLatencyGuardTests(unittest.TestCase):
 
         self.assertFalse(meta["rerank_enabled"])
         self.assertEqual(1, len(docs))
+
+    def test_candidate_count_preserves_explicit_and_multiplier_rules(self):
+        for env, top_k, expected, source in [
+            ({}, 8, 24, "multiplier"),
+            ({"RETRIEVAL_CANDIDATE_MULTIPLIER": "4"}, 5, 20, "multiplier"),
+            ({"RETRIEVAL_CANDIDATE_K": "30"}, 8, 30, "env"),
+            ({"RETRIEVAL_CANDIDATE_K": "2"}, 8, 8, "env"),
+        ]:
+            with self.subTest(env=env):
+                utils, _ = load_utils(env)
+                count, meta = utils.resolve_candidate_k(top_k)
+                self.assertEqual(expected, count)
+                self.assertEqual(source, meta["candidate_k_source"])
 
     def test_dense_fallback_reuses_the_query_embedding(self):
         utils, embedding_service = load_utils(

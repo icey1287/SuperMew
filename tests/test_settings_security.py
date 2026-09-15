@@ -220,15 +220,6 @@ class SettingsSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "必须使用 PostgreSQL"):
             settings.validate_startup()
 
-    def test_redacted_dict_does_not_expose_secrets(self):
-        settings = make_settings(secret="x" * 40)
-        settings.rerank.api_key = SecretStr("rerank-secret")
-        dumped = str(settings.redacted_dict())
-        self.assertNotIn("x" * 40, dumped)
-        self.assertNotIn("app:strong", dumped)
-        self.assertNotIn("rerank-secret", dumped)
-        self.assertNotIn("r" * 40, dumped)
-
     def test_agent_budget_relationships_are_validated_at_startup(self):
         settings = make_settings(secret="x" * 40)
         settings.agent.response_reserve_tokens = settings.agent.max_context_tokens
@@ -431,17 +422,6 @@ class SettingsSecurityTests(unittest.TestCase):
                 _env_file=None,
                 SQL_ASSISTANT_SENSITIVE_COLUMNS="public.users.email;drop table x",
             )
-
-    def test_sql_assistant_dsn_is_redacted_from_settings_dump(self):
-        settings = make_settings(secret="x" * 40)
-        settings.sql_assistant.dsn = SecretStr(
-            "postgresql://sql_reader:sql-password@db/analytics"
-        )
-
-        dumped = str(settings.redacted_dict())
-
-        self.assertNotIn("sql-password", dumped)
-        self.assertIn("sql_reader:***@db", dumped)
 
     def test_web_research_is_disabled_and_keyless_by_default(self):
         web = WebResearchSettings(_env_file=None)
