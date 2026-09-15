@@ -16,6 +16,7 @@ from backend.model_control import (
     ModelCatalogSnapshot,
     ModelRole,
     ModelRuntimeSpec,
+    StructuredOutputMethod,
     build_model_catalog_snapshot,
 )
 
@@ -33,6 +34,7 @@ class ModelSpec:
     temperature: float = 0.0
     supports_stream: bool = True
     supports_structured_output: bool = True
+    structured_output_method: StructuredOutputMethod = "json_schema"
 
     @property
     def cache_key(self) -> tuple[object, ...]:
@@ -160,6 +162,7 @@ class ModelRegistry:
             temperature=requirement.temperature,
             supports_stream=runtime.supports_stream,
             supports_structured_output=runtime.supports_structured_output,
+            structured_output_method=runtime.structured_output_method,
         )
 
     def available_roles(

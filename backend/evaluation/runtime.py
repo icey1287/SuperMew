@@ -307,9 +307,9 @@ class RagEvaluationRuntime:
             + json.dumps(payload, ensure_ascii=False, sort_keys=True)
         )
         return self.executor.call(
-            lambda: model.with_structured_output(RagJudgeDecision).invoke(
-                [{"role": "user", "content": prompt}]
-            ),
+            lambda: model.with_structured_output(
+                RagJudgeDecision, method=spec.structured_output_method
+            ).invoke([{"role": "user", "content": prompt}]),
             context=ProviderCallContext(
                 provider=spec.name,
                 operation=ProviderOperation.MODEL,

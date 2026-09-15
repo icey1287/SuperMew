@@ -82,6 +82,11 @@ uv run --frozen python -c \
 uv run --frozen python -m backend.tools.registry_cli validate
 ```
 
+结构化输出模式迁移 `0019_structured_output_method` 部署时先停止 API 和两个 worker，
+执行迁移后再启动新版本，避免旧进程忽略新配置。已有模型保持 JSON Schema；
+需要 Function Calling 的模型由管理员在模型中心编辑。模式修改只影响后续 Run / Evaluation Job，
+旧快照及其哈希保持不变。该迁移不可降级；回退应通过前向修复完成。
+
 ### 4. 启动常驻进程
 
 由 systemd、Kubernetes 或等价 supervisor 分别运行：

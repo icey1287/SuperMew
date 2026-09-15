@@ -64,6 +64,7 @@ def _job_response(record: RagEvaluationJobRecord) -> RagEvaluationJobResponse:
             timeout_seconds=spec.timeout_seconds,
             supports_stream=spec.supports_stream,
             supports_structured_output=spec.supports_structured_output,
+            structured_output_method=spec.structured_output_method,
         )
         for role, spec in record.model_snapshot.assignments.items()
     }

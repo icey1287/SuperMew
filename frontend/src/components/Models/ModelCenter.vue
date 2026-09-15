@@ -199,7 +199,13 @@
               <td>
                 <div class="capability-tags">
                   <span :class="{ disabled: !profile.supports_stream }">Stream</span>
-                  <span :class="{ disabled: !profile.supports_structured_output }">Structured</span>
+                  <span :class="{ disabled: !profile.supports_structured_output }">
+                    {{
+                      profile.structured_output_method === 'function_calling'
+                        ? 'Function Calling'
+                        : 'JSON Schema'
+                    }}
+                  </span>
                   <span>{{ profile.timeout_seconds }}s</span>
                 </div>
               </td>
@@ -320,6 +326,19 @@
                   step="1"
                   required
                 />
+              </label>
+              <label class="form-field wide-field">
+                <span>结构化输出模式</span>
+                <select
+                  v-model="profileForm.structured_output_method"
+                  :disabled="!profileForm.supports_structured_output"
+                >
+                  <option value="json_schema">JSON Schema</option>
+                  <option value="function_calling">Function Calling</option>
+                </select>
+                <small>
+                  按模型支持的方式选择，用于规划、评分和评估。失败时不会自动切换；修改只影响新建任务。
+                </small>
               </label>
               <div class="secret-boundary">
                 <i class="fa-solid fa-shield-halved"></i>
@@ -456,6 +475,7 @@ const emptyProfileForm = (): ModelProfilePayload => ({
   timeout_seconds: 30,
   supports_stream: true,
   supports_structured_output: true,
+  structured_output_method: 'json_schema',
   enabled: true,
 });
 
@@ -560,6 +580,7 @@ const openEditProfile = async (profile: ModelProfile) => {
     timeout_seconds: profile.timeout_seconds,
     supports_stream: profile.supports_stream,
     supports_structured_output: profile.supports_structured_output,
+    structured_output_method: profile.structured_output_method,
     enabled: profile.enabled,
   });
   formOpen.value = true;

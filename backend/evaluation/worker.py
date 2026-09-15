@@ -232,6 +232,7 @@ class RagEvaluationWorker:
                 "profile_id": spec.profile_id,
                 "profile_version": spec.profile_version,
                 "model_name": spec.model_name,
+                "structured_output_method": spec.structured_output_method,
             }
             for role, spec in claimed.job.model_snapshot.assignments.items()
         }

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from backend.model_control import StructuredOutputMethod
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.evaluation.contracts import (
@@ -54,6 +56,7 @@ class EvaluationModelSummary(EvaluationSchema):
     timeout_seconds: float
     supports_stream: bool
     supports_structured_output: bool
+    structured_output_method: StructuredOutputMethod = "json_schema"
 
 
 class RagEvaluationJobResponse(EvaluationSchema):

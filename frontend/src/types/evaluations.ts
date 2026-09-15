@@ -1,3 +1,5 @@
+import type { StructuredOutputMethod } from './models';
+
 export type RagEvaluationJobStatus =
   'queued' | 'running' | 'cancelling' | 'cancelled' | 'succeeded' | 'failed';
 
@@ -80,6 +82,7 @@ export interface EvaluationModelSummary {
   timeout_seconds: number;
   supports_stream: boolean;
   supports_structured_output: boolean;
+  structured_output_method: StructuredOutputMethod;
 }
 
 export interface RagMetricResult {

@@ -14,6 +14,7 @@ from backend.model_control.contracts import (
     MODEL_ROLE_REQUIREMENTS,
     ModelProfileRecord,
     ModelRole,
+    StructuredOutputMethod,
 )
 
 
@@ -37,6 +38,7 @@ class ModelControlRepository:
             timeout_seconds=float(profile.timeout_seconds),
             supports_stream=profile.supports_stream,
             supports_structured_output=profile.supports_structured_output,
+            structured_output_method=profile.structured_output_method,
             enabled=profile.enabled,
             source=profile.source,
             version=profile.version,
@@ -118,6 +120,7 @@ class ModelControlRepository:
         timeout_seconds: float,
         supports_stream: bool,
         supports_structured_output: bool,
+        structured_output_method: StructuredOutputMethod = "json_schema",
         enabled: bool,
         source: str,
         username: str | None,
@@ -134,6 +137,7 @@ class ModelControlRepository:
                 timeout_seconds=Decimal(str(timeout_seconds)),
                 supports_stream=bool(supports_stream),
                 supports_structured_output=bool(supports_structured_output),
+                structured_output_method=structured_output_method,
                 enabled=bool(enabled),
                 source=source,
                 version=1,
@@ -171,6 +175,7 @@ class ModelControlRepository:
         timeout_seconds: float,
         supports_stream: bool,
         supports_structured_output: bool,
+        structured_output_method: StructuredOutputMethod = "json_schema",
         enabled: bool,
         username: str,
     ) -> ModelProfileRecord:
@@ -234,6 +239,7 @@ class ModelControlRepository:
                 profile.timeout_seconds = Decimal(str(timeout_seconds))
                 profile.supports_stream = bool(supports_stream)
                 profile.supports_structured_output = bool(supports_structured_output)
+                profile.structured_output_method = structured_output_method
                 profile.enabled = bool(enabled)
                 profile.version += 1
                 profile.updated_at = utcnow()

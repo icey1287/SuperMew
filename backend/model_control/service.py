@@ -10,6 +10,7 @@ from backend.model_control.contracts import (
     ModelCatalogSnapshot,
     ModelProfileRecord,
     ModelRole,
+    StructuredOutputMethod,
     ModelRuntimeSpec,
     build_model_catalog_snapshot,
 )
@@ -95,6 +96,7 @@ class ModelControlService:
         timeout_seconds: float,
         supports_stream: bool,
         supports_structured_output: bool,
+        structured_output_method: StructuredOutputMethod = "json_schema",
         enabled: bool = True,
     ) -> ModelProfileRecord:
         if provider != "openai":
@@ -113,6 +115,7 @@ class ModelControlService:
             timeout_seconds=timeout_seconds,
             supports_stream=supports_stream,
             supports_structured_output=supports_structured_output,
+            structured_output_method=structured_output_method,
             enabled=enabled,
             source="user",
             username=username,
@@ -130,6 +133,7 @@ class ModelControlService:
         timeout_seconds: float,
         supports_stream: bool,
         supports_structured_output: bool,
+        structured_output_method: StructuredOutputMethod = "json_schema",
         enabled: bool,
     ) -> ModelProfileRecord:
         if provider != "openai":
@@ -149,6 +153,7 @@ class ModelControlService:
             timeout_seconds=timeout_seconds,
             supports_stream=supports_stream,
             supports_structured_output=supports_structured_output,
+            structured_output_method=structured_output_method,
             enabled=enabled,
             username=username,
         )

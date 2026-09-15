@@ -57,6 +57,7 @@ function profile(role: ModelRole, overrides: Partial<ModelProfile> = {}): ModelP
     timeout_seconds: 30,
     supports_stream: true,
     supports_structured_output: true,
+    structured_output_method: 'json_schema' as const,
     enabled: true,
     source: 'user',
     version: 1,
@@ -145,6 +146,7 @@ function job(
           timeout_seconds: 30,
           supports_stream: true,
           supports_structured_output: true,
+          structured_output_method: 'json_schema' as const,
         },
       ])
     ),
@@ -323,6 +325,7 @@ describe('admin control-plane stores', () => {
       timeout_seconds: 30,
       supports_stream: true,
       supports_structured_output: true,
+      structured_output_method: 'json_schema' as const,
       enabled: true,
     };
 

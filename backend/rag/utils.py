@@ -525,8 +525,13 @@ def rewrite_query_once(
         except (AttributeError, TypeError, ValueError):
             timeout_seconds = 15.0
 
+    method = (
+        model_snapshot.require(ModelRole.FAST).structured_output_method
+        if model_snapshot is not None
+        else "json_schema"
+    )
     result = _provider_executor.call(
-        lambda: model.with_structured_output(RewritePlan).invoke(
+        lambda: model.with_structured_output(RewritePlan, method=method).invoke(
             [{"role": "user", "content": REWRITE_PROMPT.format(query=query)}]
         ),
         context=ProviderCallContext(

@@ -5,7 +5,10 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 
+import pytest
+
 import backend.evaluation.runtime as runtime_module
+from backend.model_control import build_model_catalog_snapshot
 from backend.evaluation import (
     RagEvalCase,
     RagExpectedBehavior,
@@ -33,8 +36,9 @@ class _EvaluatorModel:
     def __init__(self):
         self.schema = None
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, *, method):
         self.schema = schema
+        self.method = method
         return self
 
     def invoke(self, _messages):
@@ -61,11 +65,24 @@ class _Models:
         return self.evaluator if role.value == "evaluator" else self.answer
 
     def describe(self, role, *, snapshot):
-        assert snapshot.catalog_hash == TEST_MODEL_SNAPSHOT.catalog_hash
-        return SimpleNamespace(name=f"{role.value}-model", timeout_seconds=15)
+        assert snapshot.require(role).model_name == f"{role.value}-model"
+        return SimpleNamespace(
+            name=f"{role.value}-model",
+            timeout_seconds=15,
+            structured_output_method=snapshot.require(role).structured_output_method,
+        )
 
 
-def test_runtime_generates_answer_and_structured_judge_without_persisting_evidence_text():
+@pytest.mark.parametrize("method", ["json_schema", "function_calling"])
+def test_runtime_generates_answer_and_structured_judge_without_persisting_evidence_text(
+    method,
+):
+    snapshot = build_model_catalog_snapshot(
+        {
+            role: spec.model_copy(update={"structured_output_method": method})
+            for role, spec in TEST_MODEL_SNAPSHOT.assignments.items()
+        }
+    )
     case = RagEvalCase(
         id="answer-case",
         question="丹瑾是什么属性？",
@@ -111,7 +128,7 @@ def test_runtime_generates_answer_and_structured_judge_without_persisting_eviden
         execution = runtime.execute_case(
             job_id="rag_eval_1",
             case=case,
-            model_snapshot=TEST_MODEL_SNAPSHOT,
+            model_snapshot=snapshot,
             timeout_seconds=30,
             cancellation=lambda: False,
         )
@@ -123,6 +140,8 @@ def test_runtime_generates_answer_and_structured_judge_without_persisting_eviden
     assert execution.retrieved_identities[0]["chunk_id"] == "chunk-1"
     assert "text" not in execution.retrieved_identities[0]
     assert [role for role, _ in models.calls] == ["answer", "evaluator"]
+
+    assert models.evaluator.method == method
 
 
 def test_retrieval_provider_failure_short_circuits_answer_and_judge():

@@ -6,6 +6,7 @@ from backend.model_control.contracts import (
     ModelRole,
     ModelRoleRequirement,
     ModelRuntimeSpec,
+    StructuredOutputMethod,
     build_model_catalog_snapshot,
 )
 from backend.model_control.repository import ModelControlRepository
@@ -21,6 +22,7 @@ __all__ = [
     "ModelRole",
     "ModelRoleRequirement",
     "ModelRuntimeSpec",
+    "StructuredOutputMethod",
     "build_model_catalog_snapshot",
     "model_control_service",
 ]

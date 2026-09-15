@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -126,3 +128,37 @@ def test_non_admin_cannot_read_or_mutate_model_control():
     assert listed.status_code == 403
     assert created.status_code == 403
     assert fake.created == []
+
+
+@pytest.mark.parametrize("method", ["json_schema", "function_calling"])
+def test_model_api_accepts_both_structured_output_modes(method):
+    app, fake = _app()
+    payload = {
+        "display_name": "Mode test",
+        "model_name": "test-model",
+        "structured_output_method": method,
+    }
+    with TestClient(app) as client:
+        assert client.post("/v1/models", json=payload).status_code == 201
+        assert (
+            client.put("/v1/models/model_" + "a" * 32, json=payload).status_code == 200
+        )
+    assert [call["structured_output_method"] for call in fake.created] == [
+        method,
+        method,
+    ]
+
+
+def test_model_api_rejects_automatic_structured_output_mode():
+    app, fake = _app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/models",
+            json={
+                "display_name": "Mode test",
+                "model_name": "test-model",
+                "structured_output_method": "auto",
+            },
+        )
+    assert response.status_code == 422
+    assert not fake.created

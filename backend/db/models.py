@@ -339,6 +339,10 @@ class ModelProfile(Base):
     __tablename__ = "model_profiles"
     __table_args__ = (
         UniqueConstraint("display_name", name="uq_model_profile_display_name"),
+        CheckConstraint(
+            "structured_output_method IN ('json_schema', 'function_calling')",
+            name="ck_model_profile_structured_output_method",
+        ),
         CheckConstraint("version >= 1", name="ck_model_profile_version_positive"),
         CheckConstraint(
             "timeout_seconds > 0 AND timeout_seconds <= 600",
@@ -359,6 +363,9 @@ class ModelProfile(Base):
     supports_stream: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     supports_structured_output: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
+    )
+    structured_output_method: Mapped[str] = mapped_column(
+        String(32), default="json_schema", server_default="json_schema", nullable=False
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     source: Mapped[str] = mapped_column(

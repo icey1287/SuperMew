@@ -14,7 +14,7 @@ ADR-0014 已建立纯评分 Interface、Dataset fingerprint、baseline 和 GateP
 建立相邻的 Model Control 与 RAG Evaluation 深 Module：
 
 1. `ModelControlService` 是 Model Profile 生命周期、Model Assignment 与 Model Snapshot 的正式 Interface。PostgreSQL 持久化无 Secret 的 Model Profile 和四个角色的当前 Assignment；环境变量只在首次启动且角色尚未分配时提供种子，不再是运行时事实来源。
-2. Model Profile 保存 provider、model name、Base URL、timeout、Stream/Structured Output 能力、启用状态和单调 version。`ARK_API_KEY` 仍只由服务端设置读取，不进入数据库、HTTP 响应、Run、Checkpoint、Evaluation Job 或前端状态。
+2. Model Profile 保存 provider、model name、Base URL、timeout、Stream/Structured Output 能力、`structured_output_method`（`json_schema` 或 `function_calling`）、启用状态和单调 version。`ARK_API_KEY` 仍只由服务端设置读取，不进入数据库、HTTP 响应、Run、Checkpoint、Evaluation Job 或前端状态。
 3. Answer 必须支持 Stream；Fast、Grader 与 Evaluator 必须支持 Structured Output。创建 Assignment、修改已分配 Profile 或停用 Profile 时统一验证角色要求；已分配 Profile 不可删除或停用。
 4. 每个新 Run 在预留事务中冻结完整 Model Snapshot，并保存 `model_catalog_hash` 与 `model_snapshot_json`。幂等请求哈希包含 catalog hash；Agent、RAG、Memory、并行子问题、HITL resume 与 Tool 调用都从 Request Context 读取同一 Snapshot，不再从环境或全局单例动态选择模型。
 5. 建立持久化 RAG Evaluation Dataset、Job 与 Case。Job 创建时冻结 Dataset fingerprint、GatePolicy、可选 baseline 与四角色 Model Snapshot，并由独立 Evaluation Worker 通过 lease、heartbeat、fencing token、最大尝试次数和 orphan recovery 驱动。
@@ -42,3 +42,16 @@ ADR-0014 已建立纯评分 Interface、Dataset fingerprint、baseline 和 GateP
 RAG Evaluation Job 把长耗时模型评估从 HTTP 生命周期移入可恢复 worker，并让 Dataset、baseline、进度、取消、指标、Gate 与 Case 证据共享一个 durable seam。前端不再只是后端能力的展示层，而是完整的模型与质量控制面。
 
 代价是控制面数据库成为模型选择的事实来源，部署需要运行迁移并保证 worker 与 API 访问同一存储。修改 Assignment 不会立即改变正在运行的工作；若需要比较新模型，必须显式创建新的 Run 或 Evaluation Job。
+
+## 结构化输出模式
+
+Model Profile 的模式通过同一模型控制面维护，并与 Profile version 一起冻结到 Model Snapshot。
+Fast 复杂度规划/重写、Grader 与 Evaluator 显式传递该模式；没有 Provider 错误后自动切换模式的 fallback。
+两种协议均使用 Pydantic schema 解析与校验，Provider executor 继续是唯一重试所有者。
+
+迁移 `0019_structured_output_method` 为已有 Profile 写入 `json_schema`，保持原调用语义。
+Snapshot v1 增加有默认值的模式字段：缺省即既有的 JSON Schema 协议。canonical catalog hash
+省略 `json_schema` 默认值，保留旧 Run、Checkpoint、Evaluation Job 和请求幂等哈希；
+`function_calling` 显式参与哈希，模式变更也增加 Profile version。旧快照不需要重写或重算哈希，
+不会从可变 Profile 补读模式。未知模式仍由 schema 和数据库约束拒绝。
+迁移只允许前向执行，因为新模式可能已经进入冻结快照，旧 Runtime 无法正确解释。

@@ -181,3 +181,31 @@ def test_environment_seed_never_overrides_admin_assignment(model_control):
         model_control.runtime_snapshot().require(ModelRole.ANSWER).profile_id
         == chosen.id
     )
+
+
+def test_mode_change_versions_profile_and_preserves_frozen_snapshot(model_control):
+    model_control.ensure_environment_defaults()
+    before = model_control.runtime_snapshot()
+    profile = model_control.control_plane()["assignments"]["grader"]
+    model_control.update_profile(
+        username="admin",
+        profile_id=profile.id,
+        display_name=profile.display_name,
+        provider=profile.provider,
+        model_name=profile.model_name,
+        base_url=profile.base_url,
+        timeout_seconds=profile.timeout_seconds,
+        supports_stream=True,
+        supports_structured_output=True,
+        structured_output_method="function_calling",
+        enabled=True,
+    )
+    after = model_control.runtime_snapshot()
+    assert before.require(ModelRole.GRADER).structured_output_method == "json_schema"
+    assert (
+        after.require(ModelRole.GRADER).structured_output_method == "function_calling"
+    )
+    assert after.require(ModelRole.GRADER).profile_version == profile.version + 1
+    assert before.catalog_hash != after.catalog_hash
+    model_control.ensure_environment_defaults()
+    assert model_control.runtime_snapshot().catalog_hash == after.catalog_hash

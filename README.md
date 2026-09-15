@@ -265,7 +265,10 @@ pin、回滚和 Secret 规则见 [Skill / Tool Registry Runbook](docs/runbooks/s
 - `MODEL`、`FAST_MODEL`、`GRADE_MODEL`、`EVALUATION_MODEL` 与 `BASE_URL` 只用于数据库尚未初始化时
   的首次种子。
 - 管理员通过 `/v1/models` 维护 Model Profile，并为 Answer、Fast、Grader、Evaluator 分配模型。
-- 新 Run 和 Evaluation Job 在创建时冻结 Profile、Assignment 与能力信息；运行中修改控制面不会
+- 新建或编辑 Model Profile 时可选择“结构化输出模式”：`json_schema`（JSON Schema，默认）或
+  `function_calling`（Function Calling）。根据供应商实际支持的模式选择；两种模式都校验返回结构，
+  请求失败时不会自动切换。该设置用于 Fast 规划/重写、Grader 评分及 Evaluator 评估。
+- 新 Run 和 Evaluation Job 在创建时冻结 Profile、Assignment、结构化输出模式与能力信息；运行中修改控制面不会
   改变已经开始或正在等待 HITL 的任务。
 - 删除或停用 Profile 前必须解除仍然存在的 Assignment 或其他活跃引用。
 

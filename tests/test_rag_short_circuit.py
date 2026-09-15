@@ -33,7 +33,7 @@ class FakeStructuredModel:
     def __init__(self, handler):
         self.handler = handler
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, *, method):
         return FakeStructuredInvoker(schema, self.handler)
 
 

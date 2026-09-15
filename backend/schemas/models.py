@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.model_control.contracts import (
     ModelProfileRecord,
     ModelRoleRequirement,
+    StructuredOutputMethod,
 )
 
 
@@ -22,6 +23,7 @@ class ModelProfileCreateRequest(ModelSchema):
     timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     supports_stream: bool = True
     supports_structured_output: bool = True
+    structured_output_method: StructuredOutputMethod = "json_schema"
     enabled: bool = True
 
 

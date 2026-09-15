@@ -1,3 +1,5 @@
+export type StructuredOutputMethod = 'json_schema' | 'function_calling';
+
 export type ModelRole = 'answer' | 'fast' | 'grader' | 'evaluator';
 
 export interface ModelProfile {
@@ -9,6 +11,7 @@ export interface ModelProfile {
   timeout_seconds: number;
   supports_stream: boolean;
   supports_structured_output: boolean;
+  structured_output_method: StructuredOutputMethod;
   enabled: boolean;
   source: 'environment' | 'user';
   version: number;
@@ -39,6 +42,7 @@ export interface ModelProfilePayload {
   timeout_seconds: number;
   supports_stream: boolean;
   supports_structured_output: boolean;
+  structured_output_method: StructuredOutputMethod;
   enabled: boolean;
 }
 

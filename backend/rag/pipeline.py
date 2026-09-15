@@ -347,6 +347,7 @@ def _retrieve_for_state(state: RAGState, query: str) -> dict:
 def _invoke_structured_model(
     state: RAGState,
     *,
+    role: ModelRole,
     model,
     schema,
     messages: list[dict],
@@ -360,8 +361,12 @@ def _invoke_structured_model(
         deadline=_provider_deadline(run_deadline, timeout_seconds),
         cancellation=cancellation,
     )
+    snapshot = _state_model_snapshot(state)
+    method = (
+        snapshot.require(role).structured_output_method if snapshot else "json_schema"
+    )
     return _provider_executor.call(
-        lambda: model.with_structured_output(schema).invoke(messages),
+        lambda: model.with_structured_output(schema, method=method).invoke(messages),
         context=context,
         policy=_model_policy,
     )
@@ -657,6 +662,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
         grade = _invoke_structured_model(
             state,
             model=grader,
+            role=ModelRole.GRADER,
             schema=EvidenceGrade,
             messages=[{"role": "user", "content": prompt}],
             provider=grader_provider,
@@ -982,6 +988,7 @@ def classify_complexity(state: RAGState) -> RAGState:
     result = _invoke_structured_model(
         state,
         model=model,
+        role=ModelRole.FAST,
         schema=ComplexityResult,
         messages=[{"role": "user", "content": prompt}],
         provider=fast_provider,

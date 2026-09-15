@@ -14,6 +14,7 @@ function profile(role: ModelRole, overrides: Record<string, unknown> = {}) {
     timeout_seconds: 30,
     supports_stream: true,
     supports_structured_output: true,
+    structured_output_method: 'json_schema',
     enabled: true,
     source: 'user',
     version: 1,
@@ -74,6 +75,7 @@ test('creates a Secret-free Model Profile and assigns it to the Evaluator role',
   const controlPlane = initialControlPlane();
   let createdRequest: Record<string, unknown> | null = null;
   let assignmentRequest: Record<string, unknown> | null = null;
+  let updatedRequest: Record<string, unknown> | null = null;
 
   await page.route(/\/v1\/models(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const request = route.request();
@@ -90,11 +92,19 @@ test('creates a Secret-free Model Profile and assigns it to the Evaluator role',
         display_name: String(createdRequest?.display_name || ''),
         model_name: String(createdRequest?.model_name || ''),
         base_url: String(createdRequest?.base_url || ''),
+        structured_output_method: createdRequest?.structured_output_method,
         version: 1,
       });
       controlPlane.profiles.push(created);
       controlPlane.catalog_hash = 'e'.repeat(64);
       await route.fulfill({ status: 201, json: controlPlane });
+      return;
+    }
+    if (request.method() === 'PUT' && path === `/v1/models/model_${'e'.repeat(32)}`) {
+      updatedRequest = request.postDataJSON();
+      const selected = controlPlane.profiles.find((item) => item.id === `model_${'e'.repeat(32)}`);
+      Object.assign(selected!, updatedRequest, { version: 2 });
+      await route.fulfill({ json: controlPlane });
       return;
     }
     if (request.method() === 'PUT' && path === '/v1/models/assignments/evaluator') {
@@ -126,6 +136,8 @@ test('creates a Secret-free Model Profile and assigns it to the Evaluator role',
   await dialog.getByLabel('显示名称').fill('Evaluator Profile v2');
   await dialog.getByLabel('模型标识').fill('evaluator-model-v2');
   await dialog.getByLabel('Base URL').fill('https://eval.example.test/v1');
+  await expect(dialog.getByLabel('结构化输出模式')).toHaveValue('json_schema');
+  await dialog.getByLabel('结构化输出模式').selectOption('function_calling');
   await dialog.getByRole('button', { name: '创建 Profile' }).click();
 
   await expect(page.getByText('Evaluator Profile v2', { exact: true })).toBeVisible();
@@ -134,10 +146,21 @@ test('creates a Secret-free Model Profile and assigns it to the Evaluator role',
     model_name: 'evaluator-model-v2',
     base_url: 'https://eval.example.test/v1',
     supports_structured_output: true,
+    structured_output_method: 'function_calling',
   });
   expect(
     Object.keys(createdRequest || {}).some((key) => key.toLocaleLowerCase().includes('key'))
   ).toBe(false);
+
+  const createdRow = page.getByRole('row').filter({ hasText: 'Evaluator Profile v2' });
+  await expect(createdRow.getByText('Function Calling', { exact: true })).toBeVisible();
+  await createdRow.getByRole('button', { name: /编辑/ }).click();
+  const editDialog = page.getByRole('dialog');
+  await expect(editDialog.getByLabel('结构化输出模式')).toHaveValue('function_calling');
+  await editDialog.getByLabel('结构化输出模式').selectOption('json_schema');
+  await editDialog.getByRole('button', { name: '保存修改' }).click();
+  await expect(createdRow.getByText('JSON Schema', { exact: true })).toBeVisible();
+  expect(updatedRequest).toMatchObject({ structured_output_method: 'json_schema' });
 
   await page.getByLabel('Evaluator 模型').selectOption(`model_${'e'.repeat(32)}`);
 
@@ -190,6 +213,7 @@ test('imports a Dataset, runs automated evaluation, and inspects Report plus Cas
         timeout_seconds: 30,
         supports_stream: true,
         supports_structured_output: true,
+        structured_output_method: 'json_schema',
       },
     ])
   );

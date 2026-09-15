@@ -9,6 +9,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+StructuredOutputMethod = Literal["json_schema", "function_calling"]
+
+
 class ModelRole(StrEnum):
     ANSWER = "answer"
     FAST = "fast"
@@ -55,6 +58,7 @@ class ModelProfileRecord(BaseModel):
     timeout_seconds: float = Field(gt=0, le=600)
     supports_stream: bool
     supports_structured_output: bool
+    structured_output_method: StructuredOutputMethod = "json_schema"
     enabled: bool
     source: Literal["environment", "user"]
     version: int = Field(ge=1)
@@ -81,6 +85,7 @@ class ModelRuntimeSpec(BaseModel):
     timeout_seconds: float = Field(gt=0, le=600)
     supports_stream: bool
     supports_structured_output: bool
+    structured_output_method: StructuredOutputMethod = "json_schema"
 
     @classmethod
     def from_profile(cls, profile: ModelProfileRecord) -> ModelRuntimeSpec:
@@ -94,6 +99,7 @@ class ModelRuntimeSpec(BaseModel):
             timeout_seconds=profile.timeout_seconds,
             supports_stream=profile.supports_stream,
             supports_structured_output=profile.supports_structured_output,
+            structured_output_method=profile.structured_output_method,
         )
 
 
@@ -120,6 +126,12 @@ def model_catalog_hash(assignments: dict[ModelRole, ModelRuntimeSpec]) -> str:
         role.value: assignments[role].model_dump(mode="json")
         for role in sorted(assignments, key=lambda value: value.value)
     }
+    # The additive v1 field defaults to the original JSON Schema protocol. Omitting
+    # that default from the canonical hash preserves existing Run/Checkpoint/Job
+    # identities and idempotency hashes; a non-default method changes the hash.
+    for spec in payload.values():
+        if spec["structured_output_method"] == "json_schema":
+            del spec["structured_output_method"]
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -143,6 +155,7 @@ EMPTY_MODEL_CATALOG_SNAPSHOT = build_model_catalog_snapshot({})
 
 
 __all__ = [
+    "StructuredOutputMethod",
     "MODEL_ROLE_REQUIREMENTS",
     "EMPTY_MODEL_CATALOG_SNAPSHOT",
     "ModelCatalogSnapshot",
