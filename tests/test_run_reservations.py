@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import Base, Message, Thread, Run, User
+from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository, hash_run_request
 from backend.runs.state import MultitaskStrategy, RunStatus
 
@@ -21,19 +22,21 @@ class RunReservationTests(unittest.TestCase):
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         with self.Session.begin() as db:
             db.add(User(username="alice", password_hash="hash", role="user"))
+        self.threads = ThreadRepository(self.Session)
         self.repository = RunRepository(self.Session)
 
     def tearDown(self):
         self.engine.dispose()
 
     def reserve(self, key: str, message: str = "hello", **kwargs):
+        thread_id = kwargs.pop("thread_id", "thread-1")
+        self.threads.create_thread(username="alice", thread_id=thread_id)
         return self.repository.reserve(
             username="alice",
-            thread_id=kwargs.pop("thread_id", "thread-1"),
+            thread_id=thread_id,
             message=message,
             idempotency_key=key,
             request_hash=hash_run_request(message),
-            _allow_implicit_thread=True,
             **kwargs,
         )
 

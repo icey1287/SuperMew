@@ -23,11 +23,9 @@ class RunService:
         run_repository: RunRepository = repository,
         *,
         model_control: ModelControlService = model_control_service,
-        _allow_implicit_threads: bool = False,
     ) -> None:
         self.repository = run_repository
         self.model_control = model_control
-        self._allow_implicit_threads = _allow_implicit_threads
 
     def create_run(
         self,
@@ -62,7 +60,6 @@ class RunService:
             tenant_id=tenant_id,
             channel=channel,
             approved_tools=approved_tools,
-            _allow_implicit_thread=self._allow_implicit_threads,
         )
 
     def get_run(self, *, username: str, run_id: str) -> RunRecord:

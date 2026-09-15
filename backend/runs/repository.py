@@ -253,13 +253,12 @@ class RunRepository:
         )
 
     @staticmethod
-    def _get_or_create_thread(
+    def _require_thread(
         db: Session,
         user: User,
         thread_id: str,
         *,
         title: str | None = None,
-        allow_create: bool,
     ) -> Thread:
         thread = (
             RunRepository._thread_query(db, user.id, thread_id)
@@ -273,21 +272,7 @@ class RunRepository:
                     "title": title,
                 }
             return thread
-        if not allow_create:
-            raise AppError(ErrorCode.NOT_FOUND, "Thread 不存在", status_code=404)
-        metadata = {"title": title} if title else {}
-        thread = Thread(
-            user_id=user.id,
-            thread_id=thread_id,
-            status="active",
-            version=0,
-            message_count=0,
-            last_sequence=0,
-            metadata_json=metadata,
-        )
-        db.add(thread)
-        db.flush()
-        return thread
+        raise AppError(ErrorCode.NOT_FOUND, "Thread 不存在", status_code=404)
 
     @staticmethod
     def _existing_run(
@@ -361,7 +346,6 @@ class RunRepository:
         tenant_id: str = "default",
         channel: str = "run",
         approved_tools: frozenset[str] = frozenset(),
-        _allow_implicit_thread: bool = False,
     ) -> RunReservation:
         thread_id = validate_thread_id(thread_id)
         key = self._validate_idempotency_key(idempotency_key)
@@ -398,12 +382,11 @@ class RunRepository:
                         "用户不存在或已失效",
                         status_code=401,
                     )
-                thread = self._get_or_create_thread(
+                thread = self._require_thread(
                     db,
                     user,
                     thread_id,
                     title=title,
-                    allow_create=_allow_implicit_thread,
                 )
                 existing = self._existing_run(db, user.id, thread.id, key)
                 if existing:

@@ -18,6 +18,7 @@ from backend.events.journal import RunEventJournal
 from backend.events.outbox import OutboxPublisher
 from backend.events.redis_transport import RedisEventTransport
 from backend.events.sse import format_sse_event
+from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from tests.support import static_model_control
@@ -66,11 +67,11 @@ class EventBusTests(unittest.IsolatedAsyncioTestCase):
                     User(username="bob", password_hash="hash", role="user"),
                 ]
             )
+        self.threads = ThreadRepository(self.Session)
         self.repository = RunRepository(self.Session)
         self.service = RunService(
             self.repository,
             model_control=static_model_control,
-            _allow_implicit_threads=True,
         )
         self.journal = RunEventJournal(self.Session)
 
@@ -78,6 +79,7 @@ class EventBusTests(unittest.IsolatedAsyncioTestCase):
         self.engine.dispose()
 
     def create_run(self):
+        self.threads.create_thread(username="alice", thread_id="thread-1")
         return self.service.create_run(
             username="alice",
             thread_id="thread-1",

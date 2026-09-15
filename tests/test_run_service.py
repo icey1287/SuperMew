@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import Base, Message, Run, RunEvent, ToolAudit, User, utcnow
+from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
@@ -29,17 +30,18 @@ class RunServiceTests(unittest.TestCase):
                     User(username="bob", password_hash="hash", role="user"),
                 ]
             )
+        self.threads = ThreadRepository(self.Session)
         self.repository = RunRepository(self.Session)
         self.service = RunService(
             self.repository,
             model_control=static_model_control,
-            _allow_implicit_threads=True,
         )
 
     def tearDown(self):
         self.engine.dispose()
 
     def create(self, key="request-1", **kwargs):
+        self.threads.create_thread(username="alice", thread_id="thread-1")
         return self.service.create_run(
             username="alice",
             thread_id="thread-1",
@@ -96,6 +98,7 @@ class RunServiceTests(unittest.TestCase):
             fencing_token=claimed.fencing_token,
         )
 
+        self.threads.create_thread(username="alice", thread_id="thread-1")
         second = self.service.create_run(
             username="alice",
             thread_id="thread-1",

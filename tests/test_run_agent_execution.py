@@ -23,6 +23,7 @@ from backend.rag.checkpoint_runner import (
 )
 from backend.runs.agent_executor import RunAgentExecutor, _MessageDeltaBatcher
 from backend.runs.cancellation import CancellationRegistry, RunExecutionManager
+from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
@@ -312,11 +313,11 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         with self.Session.begin() as db:
             db.add(User(username="alice", password_hash="hash", role="user"))
+        self.threads = ThreadRepository(self.Session)
         self.repository = RunRepository(self.Session)
         self.service = RunService(
             self.repository,
             model_control=static_model_control,
-            _allow_implicit_threads=True,
         )
         self.journal = RunEventJournal(self.Session)
         self.events = PersistentEventBus(self.journal, transport=None)
@@ -341,6 +342,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.engine.dispose()
 
     async def test_run_flows_through_runtime_events_and_atomic_finalize(self):
+        self.threads.create_thread(username="alice", thread_id="thread-1")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-1",
@@ -423,6 +425,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.runtime_factory.create_kwargs[0]["model_snapshot"].catalog_hash,
         )
 
+        self.threads.create_thread(username="alice", thread_id="thread-1")
         replay = self.service.create_run(
             username="alice",
             thread_id="thread-1",
@@ -448,6 +451,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failure_flushes_buffered_delta_before_terminal_events(self):
         self.runtime_factory.failure_after_chunk = RuntimeError("provider failed")
+        self.threads.create_thread(username="alice", thread_id="thread-delta-failure")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-delta-failure",
@@ -484,6 +488,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_flushes_buffered_delta_and_partial_content(self):
         self.runtime_factory.release_after_first = asyncio.Event()
+        self.threads.create_thread(username="alice", thread_id="thread-delta-cancel")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-delta-cancel",
@@ -530,6 +535,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.runtime_factory.tool_ceiling = frozenset(
             {"search_knowledge_base", "web_search", "web_fetch"}
         )
+        self.threads.create_thread(username="alice", thread_id="thread-auto-web-skill")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-auto-web-skill",
@@ -554,6 +560,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.runtime_factory.tool_ceiling = frozenset(
             {"search_knowledge_base", "web_search", "web_fetch"}
         )
+        self.threads.create_thread(username="alice", thread_id="thread-current-version-web-skill")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-current-version-web-skill",
@@ -587,6 +594,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             source="explicit_slash",
         )
         self.runtime_factory.skill_to_activate = activated
+        self.threads.create_thread(username="alice", thread_id="thread-skill-pin")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-skill-pin",
@@ -612,6 +620,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("explicit_slash", run.skill_activation_source)
 
     async def test_run_bound_approval_survives_execution_snapshot_rebuild(self):
+        self.threads.create_thread(username="alice", thread_id="thread-approved-tool")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-approved-tool",
@@ -660,6 +669,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             attempts=2,
             max_attempts=2,
         )
+        self.threads.create_thread(username="alice", thread_id="thread-provider-failure")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-provider-failure",
@@ -707,6 +717,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             thread_limit=None,
             run_limit=4,
         )
+        self.threads.create_thread(username="alice", thread_id="thread-model-call-limit")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-model-call-limit",
@@ -736,6 +747,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rerank_warning_is_replayed_without_failing_the_run(self):
         self.runtime_factory.emit_rag_warning = True
+        self.threads.create_thread(username="alice", thread_id="thread-rerank-warning")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-rerank-warning",
@@ -784,12 +796,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             await second.close()
 
     async def test_executor_drains_promoted_queued_runs_in_order(self):
+        self.threads.create_thread(username="alice", thread_id="thread-queue")
         first = self.service.create_run(
             username="alice",
             thread_id="thread-queue",
             message="第一条",
             idempotency_key="queue-1",
         )
+        self.threads.create_thread(username="alice", thread_id="thread-queue")
         second = self.service.create_run(
             username="alice",
             thread_id="thread-queue",
@@ -827,6 +841,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_executor_renews_lease_while_runtime_is_active(self):
         self.runtime_factory.delay_seconds = 0.05
         self.executor.heartbeat_seconds = 0.01
+        self.threads.create_thread(username="alice", thread_id="thread-heartbeat")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-heartbeat",
@@ -851,6 +866,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_durable_cancelling_state_stops_runtime_without_signal(self):
         self.runtime_factory.delay_seconds = 0.05
         self.executor.heartbeat_seconds = 0.01
+        self.threads.create_thread(username="alice", thread_id="thread-durable-cancel")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-durable-cancel",
@@ -886,12 +902,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_executor_limits_cross_thread_runtime_concurrency(self):
         self.runtime_factory.delay_seconds = 0.05
         self.executor._semaphore = asyncio.Semaphore(1)
+        self.threads.create_thread(username="alice", thread_id="thread-limit-1")
         first = self.service.create_run(
             username="alice",
             thread_id="thread-limit-1",
             message="第一条并发任务",
             idempotency_key="limit-1",
         )
+        self.threads.create_thread(username="alice", thread_id="thread-limit-2")
         second = self.service.create_run(
             username="alice",
             thread_id="thread-limit-2",
@@ -915,6 +933,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runtime_trace_event_precedes_answer_delta(self):
         self.runtime_factory.emit_tool_trace = True
+        self.threads.create_thread(username="alice", thread_id="thread-trace-order")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-trace-order",
@@ -1014,6 +1033,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
                 delta_persisted.set()
             return event
 
+        self.threads.create_thread(username="alice", thread_id="thread-stale-writer")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-stale-writer",
@@ -1053,12 +1073,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shutdown_is_interrupted_and_start_recovers_promoted_pending(self):
         self.runtime_factory.delay_seconds = 60
+        self.threads.create_thread(username="alice", thread_id="thread-restart")
         first = self.service.create_run(
             username="alice",
             thread_id="thread-restart",
             message="第一条慢任务",
             idempotency_key="restart-1",
         )
+        self.threads.create_thread(username="alice", thread_id="thread-restart")
         second = self.service.create_run(
             username="alice",
             thread_id="thread-restart",
@@ -1149,6 +1171,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             run_service=self.service,
             access_validator=runtime_factory.validate_resume_access,
         )
+        self.threads.create_thread(username="alice", thread_id="thread-hitl-runtime")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-hitl-runtime",
@@ -1258,6 +1281,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             run_service=self.service,
             access_validator=runtime_factory.validate_resume_access,
         )
+        self.threads.create_thread(username="alice", thread_id="thread-hitl-revoked")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-hitl-revoked",
@@ -1339,6 +1363,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             run_service=self.service,
             access_validator=runtime_factory.validate_resume_access,
         )
+        self.threads.create_thread(username="alice", thread_id="thread-hitl-post-claim-revoke")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-hitl-post-claim-revoke",
@@ -1415,6 +1440,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             run_service=self.service,
             access_validator=runtime_factory.validate_resume_access,
         )
+        self.threads.create_thread(username="alice", thread_id="thread-fast-hitl")
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-fast-hitl",

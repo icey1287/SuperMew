@@ -19,6 +19,7 @@ from backend.rag.checkpoint_runner import (
     _assert_checkpoint_tenant,
 )
 from backend.agent.factory import runtime_factory
+from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository
 from backend.runs.resume import RunResumeCoordinator
 from backend.runs.service import RunService
@@ -238,11 +239,11 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
                     User(username="bob", password_hash="hash", role="user"),
                 ]
             )
+        self.threads = ThreadRepository(self.Session)
         self.run_repository = RunRepository(self.Session)
         self.run_service = RunService(
             self.run_repository,
             model_control=static_model_control,
-            _allow_implicit_threads=True,
         )
         self.checkpoints = HitlCheckpointRepository(self.Session)
         self.coordinator = RunResumeCoordinator(
@@ -255,6 +256,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
         self.engine.dispose()
 
     def _pause(self, *, thread_id="thread-1", request_key="request-1"):
+        self.threads.create_thread(username="alice", thread_id=thread_id)
         reservation = self.run_service.create_run(
             username="alice",
             thread_id=thread_id,
@@ -513,6 +515,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
 
     def test_normal_runner_path_creates_no_durable_checkpoint(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=0)
+        self.threads.create_thread(username="alice", thread_id="thread-no-checkpoint")
         reservation = self.run_service.create_run(
             username="alice",
             thread_id="thread-no-checkpoint",
@@ -550,6 +553,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
 
     def test_runner_rebuild_resumes_from_run_checkpoint_after_process_change(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
+        self.threads.create_thread(username="alice", thread_id="thread-runner")
         reservation = self.run_service.create_run(
             username="alice",
             thread_id="thread-runner",
@@ -631,6 +635,7 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
 
     def test_runner_supports_two_cross_process_clarifications_and_replay(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=2)
+        self.threads.create_thread(username="alice", thread_id="thread-two-clarifications")
         reservation = self.run_service.create_run(
             username="alice",
             thread_id="thread-two-clarifications",

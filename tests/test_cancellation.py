@@ -13,6 +13,7 @@ from backend.core.errors import AppError, ErrorCode
 from backend.db.models import Base, Message, Run, RunEvent, User
 from backend.providers import ProviderCode, ProviderError, ProviderOperation
 from backend.runs.cancellation import CancellationRegistry, RunExecutionManager
+from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import RunStatus
@@ -52,11 +53,11 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
                     User(username="bob", password_hash="hash", role="user"),
                 ]
             )
+        self.threads = ThreadRepository(self.Session)
         self.repository = RunRepository(self.Session)
         self.service = RunService(
             self.repository,
             model_control=static_model_control,
-            _allow_implicit_threads=True,
         )
         self.registry = CancellationRegistry(transport=None)
         self.manager = RunExecutionManager(self.service, self.registry)
@@ -65,6 +66,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
         self.engine.dispose()
 
     def create(self):
+        self.threads.create_thread(username="alice", thread_id="thread-1")
         return self.service.create_run(
             username="alice",
             thread_id="thread-1",
