@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from itertools import islice
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import httpx
 
@@ -23,6 +23,10 @@ from backend.web_research.contracts import (
     WebResearchLimits,
     WebResearchResult,
 )
+
+
+if TYPE_CHECKING:
+    from backend.core.settings import WebResearchSettings
 
 
 CancellationProbe = Callable[[], bool]
@@ -118,23 +122,6 @@ class WebResearchProvider(Protocol):
         deadline_at: float | None,
         cancellation_probe: CancellationProbe | None,
     ) -> WebExtractResult: ...
-
-
-class WebResearchSettingsLike(Protocol):
-    enabled: bool
-    request_timeout_seconds: float
-    max_query_bytes: int
-    max_url_bytes: int
-    max_title_bytes: int
-    provider_response_max_bytes: int
-    search_provider_max_results: int
-    fetch_chunks_per_source: int
-    max_concurrency: int
-    user_agent: str
-
-
-class AppWebResearchSettingsLike(Protocol):
-    web_research: WebResearchSettingsLike
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,22 +684,21 @@ class WebResearchRuntime:
 
 
 def build_web_research_runtime(
-    settings: WebResearchSettingsLike | AppWebResearchSettingsLike,
+    settings: WebResearchSettings,
 ) -> WebResearchRuntime:
-    source = getattr(settings, "web_research", settings)
     limits = WebResearchLimits(
-        max_query_bytes=getattr(source, "max_query_bytes"),
-        max_url_bytes=getattr(source, "max_url_bytes"),
-        max_title_bytes=getattr(source, "max_title_bytes"),
-        max_evidence_items=getattr(source, "search_provider_max_results"),
+        max_query_bytes=settings.max_query_bytes,
+        max_url_bytes=settings.max_url_bytes,
+        max_title_bytes=settings.max_title_bytes,
+        max_evidence_items=settings.search_provider_max_results,
     )
     config = WebResearchRuntimeConfig(
-        enabled=getattr(source, "enabled"),
-        request_timeout_seconds=getattr(source, "request_timeout_seconds"),
-        provider_response_max_bytes=getattr(source, "provider_response_max_bytes"),
-        fetch_chunks_per_source=getattr(source, "fetch_chunks_per_source"),
-        max_concurrency=getattr(source, "max_concurrency"),
-        user_agent=getattr(source, "user_agent"),
+        enabled=settings.enabled,
+        request_timeout_seconds=settings.request_timeout_seconds,
+        provider_response_max_bytes=settings.provider_response_max_bytes,
+        fetch_chunks_per_source=settings.fetch_chunks_per_source,
+        max_concurrency=settings.max_concurrency,
+        user_agent=settings.user_agent,
         limits=limits,
     )
     return WebResearchRuntime(config=config)
@@ -779,7 +765,6 @@ def _bounded_extract_chunks(
 
 
 __all__ = [
-    "AppWebResearchSettingsLike",
     "CancellationProbe",
     "TavilyKeylessProvider",
     "WebExtractResult",
@@ -788,7 +773,6 @@ __all__ = [
     "WebResearchProvider",
     "WebResearchRuntime",
     "WebResearchRuntimeConfig",
-    "WebResearchSettingsLike",
     "WebSearchHit",
     "build_web_research_runtime",
 ]

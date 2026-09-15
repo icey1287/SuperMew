@@ -70,7 +70,7 @@ def create_app() -> FastAPI:
                 capability_runtime,
             )
             capability_applied = True
-            sandbox_runtime = build_sandbox_runtime(settings)
+            sandbox_runtime = build_sandbox_runtime(settings.sandbox)
             sandbox_start_attempted = True
             await asyncio.to_thread(sandbox_runtime.start)
             install_sandbox_runtime(sandbox_runtime)

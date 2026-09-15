@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
 from backend.sandbox.contracts import (
@@ -19,6 +19,10 @@ from backend.sandbox.contracts import (
     SandboxLimits,
     SandboxReadiness,
 )
+
+
+if TYPE_CHECKING:
+    from backend.core.settings import SandboxSettings
 
 
 CancellationProbe = Callable[[], bool]
@@ -364,44 +368,36 @@ class SandboxRuntime:
 
 
 def build_sandbox_runtime(
-    settings: object | None = None,
+    settings: SandboxSettings,
     *,
     adapter_factory: Callable[[SandboxRuntimeConfig], SandboxAdapter] | None = None,
 ) -> SandboxRuntime:
-    """Map application-like settings to a runtime without importing Settings."""
+    """Map Sandbox settings to the process runtime."""
 
-    source = getattr(settings, "sandbox", settings) if settings is not None else None
-    if source is None:
-        config = SandboxRuntimeConfig()
-    else:
-        limits = SandboxLimits(
-            timeout_seconds=getattr(source, "timeout_seconds", 15.0),
-            cpu_count=getattr(source, "cpu_limit", 0.5),
-            memory_bytes=getattr(source, "memory_bytes", 256 * 1024 * 1024),
-            pids_limit=getattr(source, "pids_limit", 32),
-            workspace_bytes=getattr(source, "workspace_bytes", 64 * 1024 * 1024),
-            max_source_bytes=getattr(source, "max_source_bytes", 64 * 1024),
-            max_output_bytes=getattr(source, "max_output_bytes", 64 * 1024),
-            max_files=getattr(source, "max_files", 32),
-            max_file_bytes=getattr(source, "max_file_bytes", 8 * 1024 * 1024),
-            max_total_file_bytes=getattr(
-                source,
-                "max_total_file_bytes",
-                32 * 1024 * 1024,
-            ),
-            max_path_bytes=getattr(source, "max_path_bytes", 240),
-            max_path_depth=getattr(source, "max_path_depth", 8),
-            cleanup_timeout_seconds=getattr(source, "cleanup_timeout_seconds", 3.0),
-        )
-        config = SandboxRuntimeConfig(
-            enabled=bool(getattr(source, "enabled", False)),
-            adapter=str(getattr(source, "adapter", "docker")),
-            image=str(getattr(source, "docker_image", getattr(source, "image", ""))),
-            limits=limits,
-            docker_binary=str(getattr(source, "docker_binary", "docker")),
-            docker_host=getattr(source, "docker_host", None),
-            require_rootless=bool(getattr(source, "require_rootless", False)),
-        )
+    limits = SandboxLimits(
+        timeout_seconds=settings.timeout_seconds,
+        cpu_count=settings.cpu_limit,
+        memory_bytes=settings.memory_bytes,
+        pids_limit=settings.pids_limit,
+        workspace_bytes=settings.workspace_bytes,
+        max_source_bytes=settings.max_source_bytes,
+        max_output_bytes=settings.max_output_bytes,
+        max_files=settings.max_files,
+        max_file_bytes=settings.max_file_bytes,
+        max_total_file_bytes=settings.max_total_file_bytes,
+        max_path_bytes=settings.max_path_bytes,
+        max_path_depth=settings.max_path_depth,
+        cleanup_timeout_seconds=settings.cleanup_timeout_seconds,
+    )
+    config = SandboxRuntimeConfig(
+        enabled=settings.enabled,
+        adapter=settings.adapter,
+        image=settings.docker_image,
+        limits=limits,
+        docker_binary=settings.docker_binary,
+        docker_host=settings.docker_host,
+        require_rootless=settings.require_rootless,
+    )
 
     if not config.enabled or config.adapter == "disabled":
         runtime = SandboxRuntime.disabled()
@@ -420,8 +416,7 @@ def build_sandbox_runtime(
             adapter=adapter,
             max_concurrency=2,
         )
-    concurrency = int(getattr(source, "max_concurrency", 2)) if source else 2
-    runtime.configure_concurrency(concurrency)
+    runtime.configure_concurrency(settings.max_concurrency)
     return runtime
 
 

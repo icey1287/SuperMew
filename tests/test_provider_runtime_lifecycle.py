@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.core.settings import get_settings
+from backend.core.settings import SandboxSettings, get_settings
 from backend.providers.loop_bridge import ProviderLoopBridge
 from backend.providers.runtime import ProviderRuntime
 
@@ -634,6 +634,7 @@ class AppProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 cors_origins=["http://localhost:5173"],
                 cors_allow_credentials=True,
             ),
+            sandbox=SandboxSettings(_env_file=None, SANDBOX_ENABLED=False),
             validate_startup=lambda: None,
         )
         runtime = _CapabilityRuntime(settings, start=lambda: None, close=lambda: None)

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
-from types import SimpleNamespace
 
 import pytest
 
+from backend.core.settings import SandboxSettings
 from backend.sandbox import (
     SandboxError,
     SandboxExecutionRequest,
@@ -289,8 +289,10 @@ def test_runtime_rejects_adapter_duration_outside_execution_budget() -> None:
     assert raised.value.code == "SANDBOX_PROTOCOL_ERROR"
 
 
-def test_builder_defaults_to_disabled_without_importing_or_probing_docker():
-    runtime = build_sandbox_runtime()
+def test_disabled_builder_does_not_probe_docker():
+    runtime = build_sandbox_runtime(
+        SandboxSettings(_env_file=None, SANDBOX_ENABLED=False)
+    )
     runtime.start()
     assert runtime.readiness().to_dict() == {
         "enabled": False,
@@ -302,11 +304,6 @@ def test_builder_defaults_to_disabled_without_importing_or_probing_docker():
         "image_available": False,
         "active_executions": 0,
     }
-
-    configured = build_sandbox_runtime(
-        SimpleNamespace(enabled=False, max_concurrency=1)
-    )
-    assert configured.readiness().adapter == "disabled"
 
 
 def test_installed_runtime_is_explicit_and_clearable():
