@@ -16,7 +16,8 @@ from backend.agent.factory import AgentRuntimeFactory
 from backend.agent.models import ModelRole
 from backend.agent.runtime import AgentRuntimeInput
 from backend.runs.request_context import RunRequestContext
-from backend.core.settings import AgentSettings, RunSettings
+from backend.rag.checkpoint_runner import ResumeAccessState
+from backend.core.settings import SkillSettings, AgentSettings, RunSettings
 from backend.core.errors import AppError, ErrorCode
 from backend.skills import SkillAccess, SkillPin, SkillRegistry
 from backend.tools.catalog import build_default_tool_registry
@@ -75,6 +76,7 @@ class _QueuedModels:
 
 def _settings():
     return SimpleNamespace(
+        skills=SkillSettings(_env_file=None),
         agent=AgentSettings(_env_file=None),
         runs=RunSettings(_env_file=None, RUN_DEADLINE_SECONDS=30),
     )
@@ -222,7 +224,12 @@ def test_factory_defaults_to_an_empty_tool_ceiling():
         thread_id="factory-empty-default",
     )
     try:
-        runtime = factory.create(request_context, model_snapshot=TEST_MODEL_SNAPSHOT)
+        runtime = factory.create(
+            request_context,
+            model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
+        )
     finally:
         request_context.close()
 
@@ -331,6 +338,8 @@ def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
             allowed_network_policies=frozenset({"none", "restricted", "private-data"}),
             routed_skill="sql-assistant",
             model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
         )
 
         assert runtime.context.skill_session.active.name == "sql-assistant"
@@ -368,6 +377,8 @@ def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
             available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
             allowed_network_policies=frozenset({"none", "restricted", "private-data"}),
             model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
         )
     finally:
         request_context.close()
@@ -401,6 +412,8 @@ def test_factory_authorizes_web_only_with_configured_and_caller_runtime():
             allowed_network_policies=frozenset({"none", "restricted"}),
             routed_skill="web-research",
             model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
         )
 
         assert runtime.context.skill_session.active.name == "web-research"
@@ -438,6 +451,8 @@ def test_factory_disabled_web_cannot_be_enabled_by_a_forged_secret_name():
             available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             allowed_network_policies=frozenset({"none", "restricted"}),
             model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
         )
     finally:
         request_context.close()
@@ -473,6 +488,8 @@ def test_factory_excludes_secret_gated_weather_and_sets_explicit_allowed_tools()
             request_context,
             allowed_tools=factory.tool_ceiling,
             model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
         )
     finally:
         request_context.close()
@@ -509,6 +526,8 @@ def test_trusted_router_can_activate_a_pinned_skill_before_graph_creation():
             routed_skill="knowledge-base",
             allowed_tools=factory.tool_ceiling,
             model_snapshot=TEST_MODEL_SNAPSHOT,
+            tenant_id="default",
+            run_id="run_" + request_context.thread_id,
         )
     finally:
         request_context.close()
@@ -539,6 +558,8 @@ def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
                 unavailable_context,
                 routed_skill="missing",
                 model_snapshot=TEST_MODEL_SNAPSHOT,
+                tenant_id="default",
+                run_id="run_" + unavailable_context.thread_id,
             )
     finally:
         unavailable_context.close()
@@ -559,6 +580,8 @@ def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
                 ),
                 pinned_skill_source="explicit_slash",
                 model_snapshot=TEST_MODEL_SNAPSHOT,
+                tenant_id="default",
+                run_id="run_" + drift_context.thread_id,
             )
     finally:
         drift_context.close()
@@ -648,6 +671,8 @@ def test_factory_resume_validation_rechecks_role_secrets_and_skill_hash(tmp_path
 
     def state(**changes):
         values = {
+            "user_db_id": 1,
+            "username": "alice",
             "role": "analyst",
             "skill_name": activated.name,
             "skill_version": activated.version,
@@ -655,7 +680,7 @@ def test_factory_resume_validation_rechecks_role_secrets_and_skill_hash(tmp_path
             "skill_activation_source": "explicit_slash",
         }
         values.update(changes)
-        return SimpleNamespace(**values)
+        return ResumeAccessState(**values)
 
     factory.validate_resume_access(state())
 
@@ -718,6 +743,8 @@ async def test_slash_skill_activates_before_first_model_call_and_denies_forged_w
         available_secrets=frozenset({"AMAP_WEATHER_API", "AMAP_API_KEY"}),
         tool_overrides={"get_current_weather": fake_weather},
         model_snapshot=TEST_MODEL_SNAPSHOT,
+        tenant_id="default",
+        run_id="run_" + request_context.thread_id,
     )
     try:
         result = await runtime.ainvoke(
@@ -812,6 +839,8 @@ async def test_tool_search_remains_available_without_an_active_skill(
         request_context,
         allowed_tools=frozenset({"tool_search", "analysis_query"}),
         model_snapshot=TEST_MODEL_SNAPSHOT,
+        tenant_id="default",
+        run_id="run_" + request_context.thread_id,
     )
     try:
         result = await runtime.ainvoke(
@@ -876,6 +905,8 @@ async def test_describe_skill_returns_only_activation_acknowledgement():
         request_context,
         allowed_tools=factory.tool_ceiling,
         model_snapshot=TEST_MODEL_SNAPSHOT,
+        tenant_id="default",
+        run_id="run_" + request_context.thread_id,
     )
     try:
         result = await runtime.ainvoke(
@@ -947,11 +978,15 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
         first_request_context,
         allowed_tools=factory.tool_ceiling,
         model_snapshot=TEST_MODEL_SNAPSHOT,
+        tenant_id="default",
+        run_id="run_" + first_request_context.thread_id,
     )
     second_runtime = factory.create(
         second_request_context,
         allowed_tools=factory.tool_ceiling,
         model_snapshot=TEST_MODEL_SNAPSHOT,
+        tenant_id="default",
+        run_id="run_" + second_request_context.thread_id,
     )
     try:
         first_result = await first_runtime.ainvoke(

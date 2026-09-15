@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from uuid import uuid4
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 
@@ -15,7 +15,7 @@ from backend.agent.runtime import AgentRuntime
 from backend.runs.request_context import RunRequestContext
 from backend.model_control import ModelCatalogSnapshot
 from backend.core.errors import AppError, ErrorCode
-from backend.core.settings import AppSettings, SkillSettings, get_settings
+from backend.core.settings import AppSettings, get_settings
 from backend.guardrails import (
     DEFAULT_GUARDRAIL_POLICY,
     GuardrailPolicy,
@@ -35,6 +35,10 @@ from backend.tools.catalog import configured_secret_names, tool_registry
 from backend.tools.control import make_control_tool_overrides
 from backend.tools.registry import ToolAccess, ToolRegistry
 from backend.tools.sandbox import make_sandbox_execute
+
+
+if TYPE_CHECKING:
+    from backend.rag.checkpoint_runner import ResumeAccessState
 
 
 SYSTEM_PROMPT = (
@@ -80,11 +84,7 @@ class AgentRuntimeFactory:
         self.models = models
         self.agent_builder = agent_builder
         self.tools = tools
-        skill_settings = getattr(
-            self.settings,
-            "skills",
-            SkillSettings(_env_file=None),
-        )
+        skill_settings = self.settings.skills
         self.skills = skills or SkillRegistry.load(
             skill_settings.skill_dir,
             self.tools.names,
@@ -227,14 +227,14 @@ class AgentRuntimeFactory:
             )
         return authorized
 
-    def validate_resume_access(self, state: object) -> None:
+    def validate_resume_access(self, state: ResumeAccessState) -> None:
         """Validate a transaction-locked durable HITL resume snapshot."""
 
         values = (
-            getattr(state, "skill_name", None),
-            getattr(state, "skill_version", None),
-            getattr(state, "skill_content_hash", None),
-            getattr(state, "skill_activation_source", None),
+            state.skill_name,
+            state.skill_version,
+            state.skill_content_hash,
+            state.skill_activation_source,
         )
         pinned_skill = None
         if any(values):
@@ -252,7 +252,7 @@ class AgentRuntimeFactory:
                 content_hash=str(values[2]),
             )
         self.validate_access(
-            roles=frozenset({str(getattr(state, "role", ""))}),
+            roles=frozenset({state.role}),
             allowed_tools=self.tool_ceiling,
             pinned_skill=pinned_skill,
             pinned_skill_source=(str(values[3]) if values[3] is not None else None),
@@ -266,9 +266,9 @@ class AgentRuntimeFactory:
         persistent_note: str = "",
         user_db_id: int | None = None,
         roles: frozenset[str] = frozenset({"user"}),
-        tenant_id: str | None = None,
+        tenant_id: str,
         channel: str = "run",
-        run_id: str | None = None,
+        run_id: str,
         request_id: str | None = None,
         allowed_tools: frozenset[str] | None = None,
         available_secrets: frozenset[str] | None = None,
@@ -291,19 +291,12 @@ class AgentRuntimeFactory:
             if deadline_seconds is None
             else max(deadline_seconds, 0.0)
         )
-        effective_run_id = run_id or f"run_{uuid4().hex}"
         request_context.configure_model_snapshot(model_snapshot)
-        app_settings = getattr(self.settings, "app", None)
-        effective_tenant_id = tenant_id or getattr(
-            app_settings,
-            "default_tenant_id",
-            "default",
-        )
         if approval_grant is not None and not approval_grant.is_bound_to(
             user_id=request_context.user_id,
-            tenant_id=effective_tenant_id,
+            tenant_id=tenant_id,
             thread_id=request_context.thread_id,
-            run_id=effective_run_id,
+            run_id=run_id,
         ):
             raise AppError(
                 ErrorCode.POLICY_DENIED,
@@ -321,9 +314,9 @@ class AgentRuntimeFactory:
             thread_id=request_context.thread_id,
             user_db_id=user_db_id,
             roles=frozenset(roles),
-            tenant_id=effective_tenant_id,
+            tenant_id=tenant_id,
             channel=channel,
-            run_id=effective_run_id,
+            run_id=run_id,
             request_id=request_id,
             persistent_note=persistent_note,
             allowed_tools=frozenset(),

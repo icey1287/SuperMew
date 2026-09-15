@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
@@ -30,6 +31,7 @@ from backend.runs.service import RunService
 from tests.support import static_model_control
 from backend.runs.state import MultitaskStrategy
 from backend.skills import ActivatedSkill, SkillPin
+from backend.tools.catalog import build_default_tool_registry
 from backend.guardrails import RunToolApprovalGrant
 from test_native_checkpoint_hitl import NativeCheckpointGraphTests
 
@@ -154,6 +156,7 @@ class FakeRuntimeFactory:
         self.failure_after_chunk: Exception | None = None
         self.chunks = ("你", "好")
         self.skill_to_activate: ActivatedSkill | None = None
+        self.tools = build_default_tool_registry()
         self.tool_ceiling = frozenset({"search_knowledge_base"})
         self.validation_requests = []
         self.validation_error: Exception | None = None
@@ -231,6 +234,7 @@ class CheckpointRuntimeFactory:
         self.create_kwargs = []
         self.pause_recorded = asyncio.Event()
         self.release_initial: asyncio.Event | None = None
+        self.tools = build_default_tool_registry()
         self.tool_ceiling = frozenset({"search_knowledge_base"})
         self.validation_requests = []
         self.validation_error: Exception | None = None
@@ -330,7 +334,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.runtime_factory = FakeRuntimeFactory()
         self.executor = RunAgentExecutor(
             run_service=self.service,
-            runtime_builder=self.runtime_factory,
+            runtime_builder=lambda: nullcontext(self.runtime_factory),
             events=self.events,
             manager=self.manager,
             worker_id="worker-agent-test",
@@ -777,14 +781,14 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_process_worker_identity_is_unique_even_with_shared_prefix(self):
         first = RunAgentExecutor(
             run_service=self.service,
-            runtime_builder=self.runtime_factory,
+            runtime_builder=lambda: nullcontext(self.runtime_factory),
             events=self.events,
             manager=self.manager,
             checkpoint_runner=self.checkpoint_runner,
         )
         second = RunAgentExecutor(
             run_service=self.service,
-            runtime_builder=self.runtime_factory,
+            runtime_builder=lambda: nullcontext(self.runtime_factory),
             events=self.events,
             manager=self.manager,
             checkpoint_runner=self.checkpoint_runner,
@@ -1165,7 +1169,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_hitl_resumes_same_checkpoint_and_finalizes(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
         runtime_factory = CheckpointRuntimeFactory()
-        self.executor.runtime_builder = runtime_factory
+        self.executor.runtime_builder = lambda: nullcontext(runtime_factory)
         coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.service,
@@ -1275,7 +1279,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_resume_revalidates_before_claim_or_rag_side_effects(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
         runtime_factory = CheckpointRuntimeFactory()
-        self.executor.runtime_builder = runtime_factory
+        self.executor.runtime_builder = lambda: nullcontext(runtime_factory)
         coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.service,
@@ -1357,7 +1361,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_revalidates_snapshot_after_role_revoked_post_claim(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
         runtime_factory = CheckpointRuntimeFactory()
-        self.executor.runtime_builder = runtime_factory
+        self.executor.runtime_builder = lambda: nullcontext(runtime_factory)
         coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.service,
@@ -1434,7 +1438,7 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=1)
         runtime_factory = CheckpointRuntimeFactory()
         runtime_factory.release_initial = asyncio.Event()
-        self.executor.runtime_builder = runtime_factory
+        self.executor.runtime_builder = lambda: nullcontext(runtime_factory)
         coordinator = RunResumeCoordinator(
             checkpoints=self.checkpoints,
             run_service=self.service,

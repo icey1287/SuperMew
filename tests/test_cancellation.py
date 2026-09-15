@@ -88,7 +88,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(60)
             return "unreachable"
 
-        task = self.manager.spawn(run=claimed, runner=runner)
+        task = asyncio.create_task(self.manager.execute(run=claimed, runner=runner))
         await started.wait()
         cancelling = self.service.request_cancel(
             username="alice",
@@ -366,7 +366,7 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
                     operation=ProviderOperation.MODEL,
                 ) from cause
 
-        task = self.manager.spawn(run=claimed, runner=runner)
+        task = asyncio.create_task(self.manager.execute(run=claimed, runner=runner))
         await started.wait()
         cancelling = self.service.request_cancel(
             username="alice",

@@ -43,7 +43,7 @@ from backend.agent.models import ModelRegistry, ModelRole
 from backend.agent.runtime import AgentRuntime, AgentRuntimeInput
 from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
-from backend.core.settings import AgentSettings, ModelSettings, RunSettings
+from backend.core.settings import SkillSettings, AgentSettings, ModelSettings, RunSettings
 from backend.guardrails import DEFAULT_GUARDRAIL_POLICY, ToolGuardrail
 from backend.model_control import (
     ModelRuntimeSpec,
@@ -1174,6 +1174,7 @@ class AgentRuntimeFactoryTests(unittest.TestCase):
             return Mock()
 
         settings = SimpleNamespace(
+            skills=SkillSettings(_env_file=None),
             agent=AgentSettings(_env_file=None),
             runs=RunSettings(_env_file=None, RUN_DEADLINE_SECONDS=30),
         )
@@ -1192,6 +1193,7 @@ class AgentRuntimeFactoryTests(unittest.TestCase):
                 run_id="run_1",
                 allowed_tools=frozenset({"search_knowledge_base"}),
                 model_snapshot=TEST_MODEL_SNAPSHOT,
+                tenant_id="default",
             )
         finally:
             request_context.close()

@@ -10,7 +10,7 @@ from backend.agent.factory import AgentRuntimeFactory
 from backend.agent.middleware import ToolPolicyMiddleware
 from backend.runs.request_context import RunRequestContext
 from backend.core.errors import AppError, ErrorCode
-from backend.core.settings import AgentSettings, RunSettings, SandboxSettings
+from backend.core.settings import SkillSettings, AgentSettings, RunSettings, SandboxSettings
 from backend.guardrails import RunToolApprovalGrant
 from backend.skills import SkillRegistry
 from backend.tools.catalog import build_default_tool_registry
@@ -36,6 +36,7 @@ def _factory() -> AgentRuntimeFactory:
     root = Path(__file__).resolve().parents[1]
     skills = SkillRegistry.load(root / "skills", registry.names)
     settings = SimpleNamespace(
+        skills=SkillSettings(_env_file=None),
         agent=AgentSettings(_env_file=None),
         runs=RunSettings(_env_file=None),
         app=SimpleNamespace(default_tenant_id="default"),
@@ -70,6 +71,7 @@ def _runtime(*, approval_grant: RunToolApprovalGrant):
         allowed_tools=frozenset({"sandbox_execute"}),
         approval_grant=approval_grant,
         routed_skill="sandbox",
+        tenant_id="default",
     )
     runtime.context.tool_session.search("sandbox", limit=1)
     return context, runtime
@@ -124,6 +126,7 @@ def test_factory_rejects_a_cross_run_approval_grant() -> None:
             run_id="run-1",
             allowed_tools=frozenset({"sandbox_execute"}),
             approval_grant=_grant(run_id="run-2"),
+            tenant_id="default",
         )
 
     assert raised.value.code is ErrorCode.POLICY_DENIED

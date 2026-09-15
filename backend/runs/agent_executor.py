@@ -8,14 +8,14 @@ import re
 import socket
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from typing import Iterator, cast
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from backend.agent.factory import AgentRuntimeFactory
+from backend.tools.registry import ToolRegistry
 from backend.agent.runtime import AgentRuntimeInput, AgentRuntimeResult
 from backend.capabilities.control_service import capability_control_service
 from backend.runs.request_context import RunRequestContext
@@ -333,8 +333,7 @@ class RunAgentExecutor:
         self,
         *,
         run_service: RunService = service,
-        runtime_builder: AgentRuntimeFactory
-        | Callable[[], AbstractContextManager[AgentRuntimeFactory]] = (
+        runtime_builder: Callable[[], AbstractContextManager[AgentRuntimeFactory]] = (
             capability_control_service.acquire_factory
         ),
         events: PersistentEventBus = event_bus,
@@ -366,21 +365,6 @@ class RunAgentExecutor:
         self._closing = False
         self._dispatcher_stop = asyncio.Event()
         self._dispatcher_task: asyncio.Task[None] | None = None
-
-    @contextmanager
-    def _runtime_scope(self) -> Iterator[AgentRuntimeFactory]:
-        if hasattr(self.runtime_builder, "create"):
-            yield cast(AgentRuntimeFactory, self.runtime_builder)
-            return
-        with self.runtime_builder() as runtime_factory:
-            yield runtime_factory
-
-    @staticmethod
-    def _runtime_tool_ceiling(runtime_factory: AgentRuntimeFactory) -> frozenset[str]:
-        ceiling: object = getattr(runtime_factory, "tool_ceiling", frozenset())
-        if isinstance(ceiling, (set, frozenset, tuple, list)):
-            return frozenset(str(name) for name in ceiling)
-        return frozenset()
 
     async def spawn_once(
         self,
@@ -480,7 +464,7 @@ class RunAgentExecutor:
             raise
 
         async def runner(token: CancellationToken) -> RunExecutionOutcome:
-            with self._runtime_scope() as runtime_factory:
+            with self.runtime_builder() as runtime_factory:
                 snapshot = await self._load_execution_snapshot(
                     username=username,
                     run_id=claimed.id,
@@ -504,7 +488,7 @@ class RunAgentExecutor:
         answer: str,
         idempotency_key: str,
     ) -> None:
-        with self._runtime_scope() as runtime_factory:
+        with self.runtime_builder() as runtime_factory:
             consumed = await asyncio.to_thread(
                 self.checkpoint_runner.checkpoints.consume_resume,
                 username=username,
@@ -731,7 +715,7 @@ class RunAgentExecutor:
 
         pinned_skill = _pinned_skill(snapshot.run)
         effective_user_text = user_text or snapshot.user_text
-        tool_ceiling = self._runtime_tool_ceiling(runtime_factory)
+        tool_ceiling = runtime_factory.tool_ceiling
         routed_skill = None
         if not disable_tools and pinned_skill is None and "web_search" in tool_ceiling:
             routed_skill = _routed_skill_for_user_text(effective_user_text)
@@ -807,7 +791,7 @@ class RunAgentExecutor:
                 trace_queue,
                 pump_stop,
                 pump_error,
-                getattr(runtime_factory, "tools", None),
+                runtime_factory.tools,
             ),
             name=f"run-trace-events:{snapshot.run.id}",
         )
@@ -898,7 +882,7 @@ class RunAgentExecutor:
         trace_queue: asyncio.Queue,
         stop_event: asyncio.Event,
         error_event: asyncio.Event,
-        registry: object | None,
+        registry: ToolRegistry,
     ) -> None:
         while True:
             try:
@@ -959,20 +943,16 @@ class RunAgentExecutor:
         run: RunRecord,
         stage: str,
         item: dict,
-        registry: object | None,
+        registry: ToolRegistry,
     ) -> None:
         tool_name = str(item.get("tool_name") or "unknown")
-        descriptor = (
-            registry.descriptor(tool_name)
-            if registry is not None and hasattr(registry, "descriptor")
-            else None
-        )
+        descriptor = registry.descriptor(tool_name)
         metadata = {
-            "tool_version": getattr(descriptor, "version", ""),
-            "tool_group": getattr(descriptor, "group", ""),
+            "tool_version": (descriptor.version if descriptor is not None else ""),
+            "tool_group": (descriptor.group if descriptor is not None else ""),
             "skill_name": run.skill_name or "",
             "skill_version": run.skill_version or "",
-            "tool_catalog_hash": getattr(registry, "catalog_hash", ""),
+            "tool_catalog_hash": registry.catalog_hash,
         }
         audit_metadata = item.get("audit_metadata")
         if isinstance(audit_metadata, dict):
@@ -999,7 +979,7 @@ class RunAgentExecutor:
             audit_key=audit_key,
             tool_call_id=str(item.get("tool_call_id") or "") or None,
             tool_name=tool_name,
-            tool_version=str(getattr(descriptor, "version", "")),
+            tool_version=descriptor.version if descriptor is not None else "",
             decision=str(
                 guardrail_audit.get("decision")
                 or ("DENY" if stage == "tool.denied" else "ALLOW")

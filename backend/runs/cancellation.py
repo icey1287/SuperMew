@@ -410,17 +410,6 @@ class RunExecutionManager:
         finally:
             await self.registry.unregister(run.id)
 
-    def spawn(
-        self,
-        *,
-        run: RunOwnership,
-        runner: Runner,
-    ) -> asyncio.Task[None]:
-        return asyncio.create_task(
-            self.execute(run=run, runner=runner),
-            name=f"run-execution:{run.id}",
-        )
-
 
 default_cancellation_transport = RedisCancellationTransport()
 cancellation_registry = CancellationRegistry(default_cancellation_transport)
