@@ -84,10 +84,6 @@ def sanitize_original_filename(value: str) -> str:
     return basename
 
 
-def is_supported_document(filename: str) -> bool:
-    return Path(filename).suffix.lower() in _SUPPORTED_EXTENSIONS
-
-
 def _validate_claimed_mime(extension: str, content_type: str | None) -> None:
     claimed = (content_type or "").lower().split(";", 1)[0].strip()
     if claimed in _GENERIC_MIME_TYPES:

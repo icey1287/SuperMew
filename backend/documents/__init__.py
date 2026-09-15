@@ -1,7 +1,6 @@
 from backend.documents.catalog import (
     BuildProfile,
     CleanupBuild,
-    CleanupCandidate,
     CleanupJobExecution,
     CleanupJobRecord,
     CleanupJobStatus,
@@ -38,7 +37,6 @@ from backend.documents.retrieval import (
 __all__ = [
     "BuildProfile",
     "CleanupBuild",
-    "CleanupCandidate",
     "CleanupJobExecution",
     "CleanupJobRecord",
     "CleanupJobStatus",

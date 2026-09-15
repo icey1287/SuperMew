@@ -47,14 +47,5 @@ class RedisCache:
 
         return int(self._get_client().delete(self._key(key)))
 
-    def delete_pattern(self, pattern: str) -> None:
-        try:
-            full_pattern = self._key(pattern)
-            keys = self._get_client().keys(full_pattern)
-            if keys:
-                self._get_client().delete(*keys)
-        except Exception:
-            return
-
 
 cache = RedisCache()

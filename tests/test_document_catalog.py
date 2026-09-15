@@ -185,11 +185,10 @@ class DocumentCatalogTests(unittest.TestCase):
         self.publish(first)
         candidate = self.reserve("version-two")
 
-        while_building = self.catalog.get_current(
+        while_building = self.catalog.list_documents(
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
+        )[0]
         self.assertEqual(first.version.id, while_building.current_version.id)
 
         self.catalog.fail(
@@ -198,11 +197,10 @@ class DocumentCatalogTests(unittest.TestCase):
             error_code="EMBEDDING_UNAVAILABLE",
             error_detail_redacted="provider unavailable",
         )
-        current = self.catalog.get_current(
+        current = self.catalog.list_documents(
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
+        )[0]
         self.assertEqual(first.version.id, current.current_version.id)
         self.assertIsNone(current.pending_version)
         with self.Session() as db:
@@ -210,8 +208,6 @@ class DocumentCatalogTests(unittest.TestCase):
             self.assertEqual(DocumentVersionStatus.FAILED, failed.status)
             self.assertIsNotNone(failed.cleanup_after)
 
-        cleanup = self.catalog.cleanup_candidates(tenant_id="tenant-a")
-        self.assertEqual([candidate.version.id], [item.version.id for item in cleanup])
         cleanup_failed = self.catalog.record_cleanup(
             document_version_id=candidate.version.id,
             error_code="VECTOR_DELETE_FAILED",
@@ -227,7 +223,6 @@ class DocumentCatalogTests(unittest.TestCase):
         )
         self.assertIsNotNone(late_error.index_cleaned_at)
         self.assertIsNone(late_error.cleanup_error_code)
-        self.assertEqual([], self.catalog.cleanup_candidates(tenant_id="tenant-a"))
 
     def test_publish_uses_fence_and_marks_previous_version_for_cleanup(self):
         first = self.reserve("version-one")
@@ -270,11 +265,10 @@ class DocumentCatalogTests(unittest.TestCase):
                 expected_current_version_id=stale.expected_current_version_id,
             )
         self.assertEqual(ErrorCode.CONFLICT, raised.exception.code)
-        visible = self.catalog.get_current(
+        visible = self.catalog.list_documents(
             tenant_id="tenant-a",
-            canonical_name="guide.pdf",
             knowledge_base_id=self.knowledge_base.id,
-        )
+        )[0]
         self.assertEqual(current.version.id, visible.current_version.id)
         self.assertEqual(latest.version.id, visible.pending_version.id)
 
@@ -358,11 +352,10 @@ class DocumentCatalogTests(unittest.TestCase):
             status=IndexJobStatus.CANCELLED,
             current_step="cancelled",
         )
-        visible = self.catalog.get_current(
+        visible = self.catalog.list_documents(
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
+        )[0]
         self.assertEqual(current.version.id, visible.current_version.id)
         self.assertIsNone(visible.pending_version)
         with self.assertRaises(AppError):
@@ -383,11 +376,10 @@ class DocumentCatalogTests(unittest.TestCase):
             current_step="dead_letter",
             step_state_patch={"error_code": "INDEX_RETRIES_EXHAUSTED"},
         )
-        visible = self.catalog.get_current(
+        visible = self.catalog.list_documents(
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
+        )[0]
         self.assertEqual(current.version.id, visible.current_version.id)
         self.assertIsNone(visible.pending_version)
         with self.assertRaises(AppError):
@@ -415,13 +407,6 @@ class DocumentCatalogTests(unittest.TestCase):
         self.assertTrue(retired.found)
         self.assertFalse(retired.already_deleted)
         self.assertEqual(2, len(retired.cleanup_versions))
-        self.assertIsNone(
-            self.catalog.get_current(
-                tenant_id="tenant-a",
-                knowledge_base_id=self.knowledge_base.id,
-                canonical_name="guide.pdf",
-            )
-        )
         self.assertEqual(
             [],
             self.catalog.list_documents(
@@ -500,11 +485,10 @@ class DocumentCatalogTests(unittest.TestCase):
         self.catalog.record_cleanup(
             document_version_id=stale_cleanup_version.id,
         )
-        current = self.catalog.get_current(
+        current = self.catalog.list_documents(
             tenant_id="tenant-a",
             knowledge_base_id=self.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
+        )[0]
         self.assertEqual(replacement.version.id, current.current_version.id)
         with self.Session() as db:
             old = db.get(DocumentVersion, stale_cleanup_version.id)

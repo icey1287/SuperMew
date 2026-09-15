@@ -386,11 +386,10 @@ def test_retry_wait_is_not_claimable_early_and_exhaustion_dead_letters(catalog_e
     assert second.job.attempts == 2
     assert exhausted.status == IndexJobStatus.DEAD_LETTER
     assert exhausted.owner_worker_id is None
-    visible = catalog_env.catalog.get_current(
+    visible = catalog_env.catalog.list_documents(
         tenant_id="tenant-a",
         knowledge_base_id=catalog_env.knowledge_base.id,
-        canonical_name="guide.pdf",
-    )
+    )[0]
     assert visible.current_version.id == current.version.id
     assert visible.pending_version is None
 
@@ -762,11 +761,10 @@ def test_staged_reclaim_only_publishes_and_old_execution_cannot_commit(catalog_e
     assert outcome.version.id == reservation.version.id
     assert loader.calls == 0
     assert writer.write_calls == 0
-    current = catalog_env.catalog.get_current(
+    current = catalog_env.catalog.list_documents(
         tenant_id="tenant-a",
         knowledge_base_id=catalog_env.knowledge_base.id,
-        canonical_name="guide.pdf",
-    )
+    )[0]
     assert current.current_version.id == reservation.version.id
 
 
@@ -1013,14 +1011,9 @@ def test_atomic_retirement_scope_is_revoked_and_cleanup_is_immediately_claimable
         version.cleanup_after == database_clock
         for version in retirement.cleanup_versions
     )
-    assert (
-        catalog_env.catalog.get_current(
-            tenant_id="tenant-a",
-            knowledge_base_id=catalog_env.knowledge_base.id,
-            canonical_name="guide.pdf",
-        )
-        is None
-    )
+    assert catalog_env.catalog.list_documents(
+        tenant_id="tenant-a", knowledge_base_id=catalog_env.knowledge_base.id
+    ) == []
     due = retirement.cleanup_versions[0].cleanup_after
     claimed = catalog_env.catalog.claim_cleanup_job(
         worker_id="cleanup-worker-a",

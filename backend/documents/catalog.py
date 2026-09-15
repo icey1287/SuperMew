@@ -336,15 +336,6 @@ class RetirementJobRecord:
 
 
 @dataclass(frozen=True)
-class CleanupCandidate:
-    tenant_id: str
-    knowledge_base_id: str
-    document_id: str
-    canonical_name: str
-    version: DocumentVersionRecord
-
-
-@dataclass(frozen=True)
 class RetrievalCatalogSnapshot:
     tenant_id: str
     knowledge_base_id: str | None
@@ -917,29 +908,6 @@ class DocumentCatalog:
             finally:
                 db.close()
         raise AssertionError("unreachable")
-
-    def find_knowledge_base(
-        self,
-        *,
-        tenant_id: str,
-        name: str,
-    ) -> KnowledgeBaseRecord | None:
-        tenant = _required_text(tenant_id, "tenant_id", 64)
-        normalized_name = _required_text(name, "name", 160)
-        db = self._session_factory()
-        try:
-            row = (
-                db.query(KnowledgeBase)
-                .filter(
-                    KnowledgeBase.tenant_id == tenant,
-                    KnowledgeBase.name == normalized_name,
-                    KnowledgeBase.status == "active",
-                )
-                .first()
-            )
-            return self._knowledge_base_record(row) if row else None
-        finally:
-            db.close()
 
     def reserve_upload(
         self,
@@ -2377,38 +2345,6 @@ class DocumentCatalog:
         finally:
             db.close()
 
-    def dead_letter_index_job(
-        self,
-        *,
-        job_id: str,
-        execution: IndexJobExecution,
-        error_code: str,
-        error_detail_redacted: str | None = None,
-    ) -> IndexJobRecord:
-        code = _required_text(error_code, "error_code", 64)
-        detail = str(error_detail_redacted or "")[:2000] or None
-        db = self._session_factory()
-        try:
-            with db.begin():
-                job, version, document, knowledge_base = self._job_graph(
-                    db, job_id=job_id, tenant_id=None, lock=True
-                )
-                clock = _database_now(db)
-                self._assert_index_execution(job, execution, now=clock)
-                return self._dead_letter_locked(
-                    db,
-                    job=job,
-                    version=version,
-                    document=document,
-                    knowledge_base=knowledge_base,
-                    publication_fence=job.publication_fence,
-                    error_code=code,
-                    error_detail_redacted=detail,
-                    now=clock,
-                )
-        finally:
-            db.close()
-
     def load_build(
         self,
         *,
@@ -2460,41 +2396,6 @@ class DocumentCatalog:
                 .all()
             )
             return self._document_records(db, rows)
-        finally:
-            db.close()
-
-    def get_current(
-        self,
-        *,
-        tenant_id: str,
-        canonical_name: str,
-        knowledge_base_id: str | None = None,
-    ) -> DocumentRecord | None:
-        db = self._session_factory()
-        try:
-            document = self._document(
-                db,
-                tenant_id=tenant_id,
-                canonical_name=canonical_name,
-                knowledge_base_id=knowledge_base_id,
-            )
-            if (
-                not document
-                or document.deleted_at is not None
-                or not document.current_version_id
-            ):
-                return None
-            record = self._document_records(db, [document])[0]
-            if (
-                not record.current_version
-                or record.current_version.status != DocumentVersionStatus.READY
-            ):
-                raise AppError(
-                    ErrorCode.CONFLICT,
-                    "current_version 尚未处于 ready 状态",
-                    status_code=409,
-                )
-            return record
         finally:
             db.close()
 
@@ -3117,21 +3018,6 @@ class DocumentCatalog:
         finally:
             db.close()
 
-    def get_cleanup_job(self, *, job_id: str) -> CleanupBuild:
-        db = self._session_factory()
-        try:
-            job, version, document, _knowledge_base = self._cleanup_graph(
-                db, job_id=job_id, lock=False
-            )
-            return self._cleanup_build(
-                db,
-                job=job,
-                version=version,
-                document=document,
-            )
-        finally:
-            db.close()
-
     def requeue_cleanup_job(
         self,
         *,
@@ -3204,38 +3090,6 @@ class DocumentCatalog:
                     version=version,
                     document=document,
                 )
-        finally:
-            db.close()
-
-    def list_cleanup_jobs_for_document(
-        self,
-        *,
-        document_id: str,
-        tenant_id: str | None = None,
-    ) -> list[CleanupBuild]:
-        db = self._session_factory()
-        try:
-            rows = (
-                db.query(DocumentCleanupJob, DocumentVersion, Document)
-                .join(
-                    DocumentVersion,
-                    DocumentVersion.id == DocumentCleanupJob.document_version_id,
-                )
-                .join(Document, Document.id == DocumentVersion.document_id)
-                .filter(Document.id == document_id)
-            )
-            if tenant_id is not None:
-                rows = rows.filter(Document.tenant_id == tenant_id)
-            rows = rows.order_by(DocumentCleanupJob.created_at.asc()).all()
-            return [
-                self._cleanup_build(
-                    db,
-                    job=job,
-                    version=version,
-                    document=document,
-                )
-                for job, version, document in rows
-            ]
         finally:
             db.close()
 
@@ -3392,39 +3246,6 @@ class DocumentCatalog:
                 .all()
             )
             return [self._retirement_job_record(row) for row in rows]
-        finally:
-            db.close()
-
-    def record_retirement_error(
-        self,
-        *,
-        job_id: str,
-        tenant_id: str,
-        error_code: str,
-    ) -> RetirementJobRecord:
-        code = _required_text(error_code, "error_code", 64)
-        db = self._session_factory()
-        try:
-            with db.begin():
-                row = (
-                    db.query(DocumentRetirementJob)
-                    .filter(
-                        DocumentRetirementJob.id == job_id,
-                        DocumentRetirementJob.tenant_id == tenant_id,
-                    )
-                    .with_for_update()
-                    .first()
-                )
-                if row is None:
-                    raise AppError(
-                        ErrorCode.NOT_FOUND,
-                        "文档删除任务不存在",
-                        status_code=404,
-                    )
-                row.error_code = code
-                row.updated_at = _database_now(db)
-                db.flush()
-                return self._retirement_job_record(row)
         finally:
             db.close()
 
@@ -3660,48 +3481,6 @@ class DocumentCatalog:
                 incompatible_fresh_workers=incompatible_fresh_workers,
                 expected_build_fingerprint=expected_capability,
             )
-        finally:
-            db.close()
-
-    def cleanup_candidates(
-        self,
-        *,
-        tenant_id: str,
-        now: datetime | None = None,
-        limit: int = 100,
-    ) -> list[CleanupCandidate]:
-        cutoff = _utc_naive(now) if now is not None else utcnow()
-        db = self._session_factory()
-        try:
-            rows = (
-                db.query(DocumentVersion, Document)
-                .join(Document, Document.id == DocumentVersion.document_id)
-                .filter(
-                    Document.tenant_id == tenant_id,
-                    DocumentVersion.status.in_(
-                        {
-                            DocumentVersionStatus.FAILED,
-                            DocumentVersionStatus.SUPERSEDED,
-                        }
-                    ),
-                    DocumentVersion.cleanup_after.is_not(None),
-                    DocumentVersion.cleanup_after <= cutoff,
-                    DocumentVersion.index_cleaned_at.is_(None),
-                )
-                .order_by(DocumentVersion.cleanup_after.asc())
-                .limit(limit)
-                .all()
-            )
-            return [
-                CleanupCandidate(
-                    tenant_id=document.tenant_id,
-                    knowledge_base_id=document.knowledge_base_id,
-                    document_id=document.id,
-                    canonical_name=document.canonical_name,
-                    version=self._version_record(version),
-                )
-                for version, document in rows
-            ]
         finally:
             db.close()
 
