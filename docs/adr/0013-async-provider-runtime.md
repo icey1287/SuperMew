@@ -5,11 +5,11 @@
 
 ## 背景
 
-RAG Module 仍以同步 LangGraph 节点和同步 `PostgresSaver` 运行。持久 Run 的知识 Tool 会由 LangChain 放入 worker thread，HITL resume 也显式使用 `asyncio.to_thread()`；因此同步图本身不会直接占用 FastAPI 主 event loop。
+RAG Module 以同步 LangGraph 节点运行，正式 HITL 状态由 `HitlCheckpointRepository` 持久化。持久 Run 的知识 Tool 会由 LangChain 放入 worker thread，HITL resume 也显式使用 `asyncio.to_thread()`；因此同步图本身不会直接占用 FastAPI 主 event loop。
 
 旧 Embedding Implementation 在模块导入时加载 BGE-M3，查询错误地复用 `embed_documents()`，没有并发限制、微批或查询缓存。旧 Rerank Implementation 则在同步检索函数中逐次调用 `requests.post()`，无法复用异步连接池，也不能主动取消在途 HTTP。
 
-直接把同步图改为 `graph.ainvoke()` 并不能解决问题：没有 async Implementation 的 LangGraph 节点会在 event loop 上直接执行同步 `invoke()`，同步 `PostgresSaver` 也没有可用的 async checkpoint Interface。只替换调用方法会把模型、Milvus、父块读取和 checkpoint I/O 一起压到主 event loop。
+直接把同步图改为 `graph.ainvoke()` 并不能解决问题：没有 async Implementation 的 LangGraph 节点会在 event loop 上直接执行同步 `invoke()`，当前 Checkpoint Repository 也没有 async Interface。只替换调用方法会把模型、Milvus、父块读取和 checkpoint I/O 一起压到主 event loop。
 
 ## 决策
 
@@ -40,6 +40,9 @@ RAG Module 仍以同步 LangGraph 节点和同步 `PostgresSaver` 运行。持�
 若未来把 checkpoint 图改为 async，必须一次性提供 async checkpoint saver、async start/resume/outcome，以及所有模型、检索、rewrite、grader、子问题和 HITL targeted retrieval 节点的 async Implementation。不得只切换 `graph.ainvoke()` 留下同步节点。
 
 ## 结果
+
+未使用的 `PostgresSaver` 工厂及 `langgraph-checkpoint-postgres` 依赖已删除；
+既有 Alembic checkpoint 表迁移保留，历史数据库仍可沿完整迁移链升级。
 
 调用者跨越一个小的 Provider Runtime Interface，即获得连接池、查询语义、微批、缓存、并发限制、deadline、取消、重试和生命周期的 Leverage。模型与 HTTP 资源集中在一个 Module，提高 Locality；同步图只跨越一个明确的 bridge seam，不再决定 Provider 的运行方式。
 
