@@ -339,7 +339,7 @@ class RunRepository:
         request_hash: str | None = None,
         expected_thread_version: int | None = None,
         model_name: str = "",
-        model_snapshot: ModelCatalogSnapshot | None = None,
+        model_snapshot: ModelCatalogSnapshot,
         on_disconnect: str | None = None,
         multitask_strategy: MultitaskStrategy | str | None = None,
         title: str | None = None,
@@ -360,11 +360,10 @@ class RunRepository:
             maximum=32,
         )
         normalized_approved_tools = self._approved_tools(approved_tools)
-        resolved_model_snapshot = model_snapshot or EMPTY_MODEL_CATALOG_SNAPSHOT
         calculated_hash = request_hash or hash_run_request(
             message,
             model_name=model_name,
-            model_catalog_hash=resolved_model_snapshot.catalog_hash,
+            model_catalog_hash=model_snapshot.catalog_hash,
             tenant_id=normalized_tenant,
             channel=normalized_channel,
             approved_tools=normalized_approved_tools,
@@ -440,8 +439,8 @@ class RunRepository:
                     idempotency_key=key,
                     request_hash=calculated_hash,
                     model_name=model_name,
-                    model_catalog_hash=resolved_model_snapshot.catalog_hash,
-                    model_snapshot_json=resolved_model_snapshot.model_dump(mode="json"),
+                    model_catalog_hash=model_snapshot.catalog_hash,
+                    model_snapshot_json=model_snapshot.model_dump(mode="json"),
                     on_disconnect=on_disconnect or settings.disconnect_policy,
                     multitask_strategy=strategy.value,
                     fencing_token=1,

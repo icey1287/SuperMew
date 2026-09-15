@@ -5,14 +5,18 @@ from langchain_core.messages import AIMessage
 
 from backend.agent.memory import PersistentMemoryManager
 from backend.providers import ProviderExecutor, ProviderPolicy
+from tests.support import TEST_MODEL_SNAPSHOT
 
 
 class _Models:
     def __init__(self, model):
         self.model = model
 
-    def get(self, role, *, snapshot=None):
+    def get(self, role, *, snapshot):
         return self.model
+
+    def describe(self, role, *, snapshot):
+        return snapshot.require(role)
 
 
 class _FailingModel:
@@ -44,7 +48,9 @@ class AgentMemoryProviderTests(unittest.TestCase):
         manager = self._manager(model)
 
         with self.assertLogs("backend.agent.memory", level="WARNING") as logs:
-            note = manager.update_sync("keep me", "user", "answer")
+            note = manager.update_sync(
+                "keep me", "user", "answer", model_snapshot=TEST_MODEL_SNAPSHOT
+            )
 
         self.assertEqual("keep me", note)
         self.assertEqual(2, model.calls)
@@ -60,7 +66,9 @@ class AgentMemoryProviderTests(unittest.TestCase):
             invoke=lambda messages: AIMessage(content="  compact note  "),
         )
 
-        note = self._manager(model).update_sync("", "user", "answer")
+        note = self._manager(model).update_sync(
+            "", "user", "answer", model_snapshot=TEST_MODEL_SNAPSHOT
+        )
 
         self.assertEqual("compact note", note)
 

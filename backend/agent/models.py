@@ -113,11 +113,10 @@ class ModelRegistry:
         self,
         role: ModelRole | str,
         *,
-        snapshot: ModelCatalogSnapshot | None = None,
+        snapshot: ModelCatalogSnapshot,
     ) -> ModelSpec:
         resolved_role = ModelRole(role)
-        catalog = snapshot or self._environment_snapshot
-        runtime = catalog.assignments.get(resolved_role)
+        runtime = snapshot.assignments.get(resolved_role)
         if runtime is None:
             raise AppError(
                 ErrorCode.MODEL_UNAVAILABLE,
@@ -165,19 +164,11 @@ class ModelRegistry:
             structured_output_method=runtime.structured_output_method,
         )
 
-    def available_roles(
-        self,
-        *,
-        snapshot: ModelCatalogSnapshot | None = None,
-    ) -> tuple[ModelRole, ...]:
-        catalog = snapshot or self._environment_snapshot
-        return tuple(role for role in ModelRole if role in catalog.assignments)
-
     def get(
         self,
         role: ModelRole | str,
         *,
-        snapshot: ModelCatalogSnapshot | None = None,
+        snapshot: ModelCatalogSnapshot,
     ) -> BaseChatModel:
         spec = self.describe(role, snapshot=snapshot)
         api_key = self.settings.models.api_key.get_secret_value().strip()

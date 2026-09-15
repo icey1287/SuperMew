@@ -9,6 +9,7 @@ from backend.db.models import Base, Message, Thread, Run, User
 from backend.threads.repository import ThreadRepository
 from backend.runs.repository import RunRepository, hash_run_request
 from backend.runs.state import MultitaskStrategy, RunStatus
+from tests.support import TEST_MODEL_SNAPSHOT
 
 
 class RunReservationTests(unittest.TestCase):
@@ -37,6 +38,7 @@ class RunReservationTests(unittest.TestCase):
             message=message,
             idempotency_key=key,
             request_hash=hash_run_request(message),
+            model_snapshot=TEST_MODEL_SNAPSHOT,
             **kwargs,
         )
 

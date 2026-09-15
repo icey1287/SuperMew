@@ -57,6 +57,7 @@ from backend.providers import (
 )
 from backend.tools.contracts import new_tool_failure, new_tool_success
 from backend.web_research.contracts import WebEvidence, WebResearchResult
+from tests.support import TEST_MODEL_SNAPSHOT
 
 
 def test_tool_audit_key_never_fingerprints_argument_values():
@@ -189,11 +190,11 @@ class ModelRegistryTests(unittest.TestCase):
         )
         registry = ModelRegistry(settings=settings, initializer=initializer)
 
-        first = registry.get(ModelRole.ANSWER)
-        second = registry.get("answer")
+        snapshot = registry.environment_snapshot()
+        first = registry.get(ModelRole.ANSWER, snapshot=snapshot)
+        second = registry.get("answer", snapshot=snapshot)
 
         self.assertIs(first, second)
-        self.assertEqual((ModelRole.ANSWER, ModelRole.FAST), registry.available_roles())
         initializer.assert_called_once_with(
             model="answer-model",
             model_provider="openai",
@@ -205,7 +206,7 @@ class ModelRegistryTests(unittest.TestCase):
             timeout=12.5,
         )
         with self.assertRaises(AppError) as raised:
-            registry.get(ModelRole.GRADER)
+            registry.get(ModelRole.GRADER, snapshot=snapshot)
         self.assertEqual(ErrorCode.MODEL_UNAVAILABLE, raised.exception.code)
 
     def test_explicit_model_snapshots_get_independent_cached_clients(self):
@@ -262,7 +263,8 @@ class ModelRegistryTests(unittest.TestCase):
             )
         )
 
-        model = ModelRegistry(settings=settings).get(ModelRole.ANSWER)
+        registry = ModelRegistry(settings=settings)
+        model = registry.get(ModelRole.ANSWER, snapshot=registry.environment_snapshot())
 
         self.assertEqual(0, model.root_client.max_retries)
         self.assertEqual(9.5, model.request_timeout)
@@ -1189,6 +1191,7 @@ class AgentRuntimeFactoryTests(unittest.TestCase):
                 persistent_note="remember this",
                 run_id="run_1",
                 allowed_tools=frozenset({"search_knowledge_base"}),
+                model_snapshot=TEST_MODEL_SNAPSHOT,
             )
         finally:
             request_context.close()

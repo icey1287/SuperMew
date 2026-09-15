@@ -52,7 +52,7 @@ class PersistentMemoryManager:
         ai_response: str,
         *,
         history_messages: list | None = None,
-        model_snapshot: ModelCatalogSnapshot | None = None,
+        model_snapshot: ModelCatalogSnapshot,
     ) -> str:
         try:
             history_text = ""
@@ -76,17 +76,10 @@ class PersistentMemoryManager:
                 f"▼ 最新一轮对话：\n用户：{user_text}\nAI：{ai_response}\n\n"
                 "请直接输出更新后的纯文本笔记："
             )
-            model = (
-                self.models.get(ModelRole.FAST, snapshot=model_snapshot)
-                if model_snapshot is not None
-                else self.models.get(ModelRole.FAST)
-            )
-            timeout_seconds = self.settings.models.timeout_seconds
-            if model_snapshot is not None:
-                timeout_seconds = self.models.describe(
-                    ModelRole.FAST,
-                    snapshot=model_snapshot,
-                ).timeout_seconds
+            model = self.models.get(ModelRole.FAST, snapshot=model_snapshot)
+            timeout_seconds = self.models.describe(
+                ModelRole.FAST, snapshot=model_snapshot
+            ).timeout_seconds
             provider = str(
                 getattr(model, "model_name", None)
                 or getattr(model, "model", None)
@@ -117,7 +110,7 @@ class PersistentMemoryManager:
         ai_response: str,
         *,
         history_messages: list | None = None,
-        model_snapshot: ModelCatalogSnapshot | None = None,
+        model_snapshot: ModelCatalogSnapshot,
     ) -> str:
         return await asyncio.to_thread(
             self.update_sync,

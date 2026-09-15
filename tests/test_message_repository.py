@@ -9,6 +9,7 @@ from backend.db.models import Base, Message, Thread, User
 from backend.runs.repository import RunRepository
 from backend.runs.state import RunStatus
 from backend.threads.repository import ThreadRepository
+from tests.support import TEST_MODEL_SNAPSHOT
 
 
 class MessageRepositoryTests(unittest.TestCase):
@@ -57,6 +58,7 @@ class MessageRepositoryTests(unittest.TestCase):
             thread_id="thread-1",
             message="one",
             idempotency_key="request-1",
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
         statements = []
 
@@ -85,6 +87,7 @@ class MessageRepositoryTests(unittest.TestCase):
             thread_id="thread-1",
             message="durable question",
             idempotency_key="request-1",
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
         claimed = run_repository.claim(
             run_id=reservation.run.id,
@@ -131,6 +134,7 @@ class MessageRepositoryTests(unittest.TestCase):
             thread_id="thread-1",
             message="durable question",
             idempotency_key="request-1",
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
 
         with self.assertRaises(AppError) as raised:

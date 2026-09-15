@@ -71,22 +71,6 @@ class ModelControlRepository:
         finally:
             db.close()
 
-    def get_profile(self, profile_id: str) -> ModelProfileRecord:
-        db = self._session_factory()
-        try:
-            row = db.query(ModelProfile).filter(ModelProfile.id == profile_id).first()
-            if row is None:
-                raise AppError(
-                    ErrorCode.NOT_FOUND,
-                    "Model Profile 不存在",
-                    status_code=404,
-                    category="model",
-                    stage="catalog",
-                )
-            return self._record(row)
-        finally:
-            db.close()
-
     def find_profile(
         self,
         *,

@@ -22,6 +22,7 @@ from backend.skills import SkillAccess, SkillPin, SkillRegistry
 from backend.tools.catalog import build_default_tool_registry
 from backend.tools.contracts import TOOL_RESULT_V1_SCHEMA
 from backend.tools.registry import ToolDescriptor, ToolExposure, ToolRegistry
+from tests.support import TEST_MODEL_SNAPSHOT
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -58,7 +59,7 @@ class _FixedModels:
     def __init__(self, model: BaseChatModel) -> None:
         self.model = model
 
-    def get(self, role: ModelRole | str):
+    def get(self, role: ModelRole | str, *, snapshot):
         assert ModelRole(role) is ModelRole.ANSWER
         return self.model
 
@@ -67,7 +68,7 @@ class _QueuedModels:
     def __init__(self, *models: BaseChatModel) -> None:
         self.models = list(models)
 
-    def get(self, role: ModelRole | str):
+    def get(self, role: ModelRole | str, *, snapshot):
         assert ModelRole(role) is ModelRole.ANSWER
         return self.models.pop(0)
 
@@ -221,7 +222,7 @@ def test_factory_defaults_to_an_empty_tool_ceiling():
         thread_id="factory-empty-default",
     )
     try:
-        runtime = factory.create(request_context)
+        runtime = factory.create(request_context, model_snapshot=TEST_MODEL_SNAPSHOT)
     finally:
         request_context.close()
 
@@ -329,6 +330,7 @@ def test_factory_authorizes_sql_only_with_configured_and_caller_secret():
             available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
             allowed_network_policies=frozenset({"none", "restricted", "private-data"}),
             routed_skill="sql-assistant",
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
 
         assert runtime.context.skill_session.active.name == "sql-assistant"
@@ -365,6 +367,7 @@ def test_factory_disabled_sql_cannot_be_enabled_by_a_forged_secret_name():
             allowed_tools=factory.tool_ceiling,
             available_secrets=frozenset({"SQL_ASSISTANT_DSN"}),
             allowed_network_policies=frozenset({"none", "restricted", "private-data"}),
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
     finally:
         request_context.close()
@@ -397,6 +400,7 @@ def test_factory_authorizes_web_only_with_configured_and_caller_runtime():
             available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             allowed_network_policies=frozenset({"none", "restricted"}),
             routed_skill="web-research",
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
 
         assert runtime.context.skill_session.active.name == "web-research"
@@ -433,6 +437,7 @@ def test_factory_disabled_web_cannot_be_enabled_by_a_forged_secret_name():
             allowed_tools=factory.tool_ceiling,
             available_secrets=frozenset({"WEB_RESEARCH_RUNTIME"}),
             allowed_network_policies=frozenset({"none", "restricted"}),
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
     finally:
         request_context.close()
@@ -467,6 +472,7 @@ def test_factory_excludes_secret_gated_weather_and_sets_explicit_allowed_tools()
         runtime = factory.create(
             request_context,
             allowed_tools=factory.tool_ceiling,
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
     finally:
         request_context.close()
@@ -502,6 +508,7 @@ def test_trusted_router_can_activate_a_pinned_skill_before_graph_creation():
             request_context,
             routed_skill="knowledge-base",
             allowed_tools=factory.tool_ceiling,
+            model_snapshot=TEST_MODEL_SNAPSHOT,
         )
     finally:
         request_context.close()
@@ -528,7 +535,11 @@ def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
     )
     try:
         with pytest.raises(AppError) as unavailable:
-            factory.create(unavailable_context, routed_skill="missing")
+            factory.create(
+                unavailable_context,
+                routed_skill="missing",
+                model_snapshot=TEST_MODEL_SNAPSHOT,
+            )
     finally:
         unavailable_context.close()
     assert unavailable.value.code is ErrorCode.POLICY_DENIED
@@ -547,6 +558,7 @@ def test_factory_maps_unavailable_and_drifted_skill_to_stable_errors():
                     content_hash="0" * 64,
                 ),
                 pinned_skill_source="explicit_slash",
+                model_snapshot=TEST_MODEL_SNAPSHOT,
             )
     finally:
         drift_context.close()
@@ -705,6 +717,7 @@ async def test_slash_skill_activates_before_first_model_call_and_denies_forged_w
         allowed_tools=factory.tool_ceiling,
         available_secrets=frozenset({"AMAP_WEATHER_API", "AMAP_API_KEY"}),
         tool_overrides={"get_current_weather": fake_weather},
+        model_snapshot=TEST_MODEL_SNAPSHOT,
     )
     try:
         result = await runtime.ainvoke(
@@ -798,6 +811,7 @@ async def test_tool_search_remains_available_without_an_active_skill(
     runtime = factory.create(
         request_context,
         allowed_tools=frozenset({"tool_search", "analysis_query"}),
+        model_snapshot=TEST_MODEL_SNAPSHOT,
     )
     try:
         result = await runtime.ainvoke(
@@ -861,6 +875,7 @@ async def test_describe_skill_returns_only_activation_acknowledgement():
     runtime = factory.create(
         request_context,
         allowed_tools=factory.tool_ceiling,
+        model_snapshot=TEST_MODEL_SNAPSHOT,
     )
     try:
         result = await runtime.ainvoke(
@@ -931,10 +946,12 @@ async def test_runtime_skill_and_reveal_state_do_not_leak_between_runs(
     first_runtime = factory.create(
         first_request_context,
         allowed_tools=factory.tool_ceiling,
+        model_snapshot=TEST_MODEL_SNAPSHOT,
     )
     second_runtime = factory.create(
         second_request_context,
         allowed_tools=factory.tool_ceiling,
+        model_snapshot=TEST_MODEL_SNAPSHOT,
     )
     try:
         first_result = await first_runtime.ainvoke(

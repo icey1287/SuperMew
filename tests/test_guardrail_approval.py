@@ -14,6 +14,7 @@ from backend.core.settings import AgentSettings, RunSettings, SandboxSettings
 from backend.guardrails import RunToolApprovalGrant
 from backend.skills import SkillRegistry
 from backend.tools.catalog import build_default_tool_registry
+from tests.support import TEST_MODEL_SNAPSHOT
 
 
 _IMAGE = "sha256:" + ("a" * 64)
@@ -21,7 +22,7 @@ _IMAGE = "sha256:" + ("a" * 64)
 
 class _Models:
     @staticmethod
-    def get(_role):
+    def get(_role, *, snapshot):
         return object()
 
 
@@ -63,6 +64,7 @@ def _runtime(*, approval_grant: RunToolApprovalGrant):
     context = RunRequestContext.for_sync(user_id="admin", thread_id="thread-1")
     runtime = _factory().create(
         context,
+        model_snapshot=TEST_MODEL_SNAPSHOT,
         roles=frozenset({"admin"}),
         run_id="run-1",
         allowed_tools=frozenset({"sandbox_execute"}),
@@ -117,6 +119,7 @@ def test_factory_rejects_a_cross_run_approval_grant() -> None:
     with pytest.raises(AppError) as raised:
         _factory().create(
             request_context,
+            model_snapshot=TEST_MODEL_SNAPSHOT,
             roles=frozenset({"admin"}),
             run_id="run-1",
             allowed_tools=frozenset({"sandbox_execute"}),
