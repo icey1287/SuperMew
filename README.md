@@ -717,7 +717,7 @@ Case，并由独立 worker 执行。CLI 更适合仓库 Gate、分支比较与�
   Rate Limit。
 - **向量与检索**：Milvus 2.5+、HNSW Dense index、SPARSE_INVERTED_INDEX、原生中文 analyzer、
   BM25 Function、RRF、Auto-merging。
-- **Embedding 与 Rerank**：`langchain_huggingface` 本地 Embedding，默认固定 revision 的
+- **Embedding 与 Rerank**：`sentence-transformers` 本地 Embedding，默认固定 revision 的
   `BAAI/bge-m3`；可选 Jina-compatible Rerank Provider。
 - **文档解析**：PyPDF、docx2txt、Unstructured、openpyxl、msoffcrypto-tool 和多级递归分块。
 - **前端**：Vite、Vue 3 SFC、TypeScript、Pinia、Axios、Marked、DOMPurify、Highlight.js、
@@ -918,7 +918,7 @@ Event 表达。
 
 ### 6. Hybrid Search 深度实现
 
-- **Dense Pathway**：`langchain_huggingface.HuggingFaceEmbeddings` 使用固定模型 revision 生成
+- **Dense Pathway**：`sentence_transformers.SentenceTransformer` 使用固定模型 revision 生成
   Dense vector，维度必须与 Milvus `dense_embedding` schema 一致；默认 `BAAI/bge-m3` 为 1024。
 - **Sparse Pathway**：文档只需写入启用中文 analyzer 的 `text` 字段，Milvus 通过
   `FunctionType.BM25` 生成并维护 `sparse_embedding`。

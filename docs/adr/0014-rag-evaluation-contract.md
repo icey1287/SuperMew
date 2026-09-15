@@ -13,6 +13,8 @@ PR-15 之前还没有稳定的 DocumentVersion 与 IndexManifest 身份；当前
 
 ## 决策
 
+评测统一使用 `scripts/evaluate_rag.py`；旧 `langsmith_eval.py` 转发入口已删除。
+
 建立 `backend.evaluation` RAG 评测 Module：
 
 1. `evaluate_rag()` 是纯评分 Interface。输入严格版本化 Dataset、Observation、GatePolicy 和可选 baseline，Implementation 集中完成排名指标、路线/结果/HITL 指标、标签切片、Provider 故障统计、基线比较和门禁；Pydantic 模型生成的 JSON Schema 作为跨工具契约并由 CI 检查是否过期。
