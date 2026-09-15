@@ -85,7 +85,7 @@ uv run --no-sync alembic upgrade head
 uv run --no-sync python -c "from backend.infra.database import assert_schema_current; assert_schema_current()"
 ```
 
-RAG 基线必须能从受控 observations 原样重建：
+RAG 基线必须能从受控 observations 原样重建；源码变更本身不要求重建或更新 baseline：
 
 ```bash
 uv run --no-sync python scripts/evaluate_rag.py score \

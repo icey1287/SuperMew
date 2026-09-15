@@ -94,7 +94,7 @@ cmp /tmp/rebuilt-rag-baseline.json evals/rag/baseline_v1.json
 
 测试文件名随仓库演进时，以 `tests/` 中实际存在的同领域文件为准。不要为了满足命令而新建空壳测试。
 
-修改会影响 RAG source fingerprint、Dataset、Observation 或 Gate 时，继续遵守 `../../evals/rag/AGENTS.md`；不能只改 baseline hash 让 CI 变绿。
+修改 Dataset、Observation、评分逻辑或 Gate 时，继续遵守 `../../evals/rag/AGENTS.md`。源码清理不要求更新 baseline。
 
 ## Code Review Rules
 

@@ -53,7 +53,6 @@ jobs:
             --observations evals/rag/offline_smoke_observations_v1.json \
             --gates evals/rag/gates_v1.json \
             --baseline /tmp/base-rag-baseline.json \
-            --allow-source-mismatch \
             --report /tmp/rag-eval-report.json \
             --markdown /tmp/rag-eval-report.md \
             --fail-on-regression

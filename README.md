@@ -697,8 +697,8 @@ uv run --frozen python scripts/evaluate_rag.py run \
 
 - offline smoke 用于验证 Dataset / Observation / Report 契约、指标计算和 baseline Gate 可复现性，
   provenance 为 `contract_smoke`，不代表生产检索质量。
-- live run 真实调用当前 RAG、Provider 和索引，provenance 为 `live_rag`；报告绑定 corpus、RAG 源码、
-  lockfile、模型、Embedding、Rerank 和检索配置的脱敏 fingerprint。
+- live run 真实调用当前 RAG、Provider 和索引，provenance 为 `live_rag`；报告绑定 corpus、模型、
+  Embedding、Rerank 和检索配置的脱敏 fingerprint。
 
 报告与 Observation 不保存 chunk 正文、Provider endpoint、Secret 或原始异常。修改 Dataset 后
 fingerprint 会变化，旧 Observation 和 baseline 会被拒绝。生产门禁应逐步扩展到至少 200 条人工

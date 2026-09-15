@@ -17,7 +17,7 @@
 ## 不变量
 
 - Dataset 内容变化会改变 fingerprint；旧 Observation 和 baseline 必须被拒绝，不能通过 override 默认混用。
-- baseline 比较要求相同 Dataset fingerprint、RAG source fingerprint、corpus/profile/index 等可比 provenance；显式 mismatch override 只能用于调查，不能成为发布门禁。
+- baseline 比较要求相同 Dataset fingerprint、corpus/profile/index 等可比 provenance；源码变化不参与比较，也不要求更新 baseline。
 - 不手工修改 Observation 或 baseline 来提高指标。静态 Observation 是受控测试夹具；live Observation 必须由 Adapter 运行正式 RAG/HITL 产生。
 - Report/Observation 不保存 chunk 正文、endpoint、Secret、完整 provider payload、原始异常或私有推理。
 - 离线测试不得联网、下载模型或要求 Provider credential；live 运行必须在独立进程和隔离索引执行。
@@ -83,7 +83,7 @@ cmp /tmp/rebuilt-rag-baseline.json evals/rag/baseline_v1.json
 
 ### 不可比 baseline
 
-- 阻止跨 Dataset/source/corpus/model/index fingerprint 比较后宣称回归或提升。
+- 阻止跨 Dataset/corpus/model/index fingerprint 比较后宣称回归或提升。
   安全路径：只比较冻结身份相同的报告，或明确作为非门禁实验。
 
 ### 评测复制生产逻辑

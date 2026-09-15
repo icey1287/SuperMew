@@ -26,9 +26,6 @@ from backend.evaluation.rag import (
 )
 
 
-RAG_SOURCE_FINGERPRINT_VERSION = "1"
-
-
 class RagEvalExecutionError(RuntimeError):
     """Raised when a live evaluation cannot produce a valid Observation."""
 
@@ -270,54 +267,6 @@ def observation_from_rag_results(
             "rewrite_retrieved_chunks",
         ),
     )
-
-
-def rag_source_fingerprint(root: str | Path) -> str:
-    """Hash the implementation files that can materially change RAG observations.
-
-    Dependency manifests are intentionally excluded because unrelated tooling or
-    development dependency changes should not invalidate the committed RAG
-    baseline. Bump ``RAG_SOURCE_FINGERPRINT_VERSION`` when a dependency change is
-    expected to alter RAG behavior without changing the files below.
-    """
-
-    root_path = Path(root)
-    relative_paths = (
-        "backend/core/settings.py",
-        "backend/runs/request_context.py",
-        "backend/documents/catalog.py",
-        "backend/documents/publication.py",
-        "backend/documents/retrieval.py",
-        "backend/indexing/document_loader.py",
-        "backend/indexing/embedding.py",
-        "backend/indexing/html_processor.py",
-        "backend/indexing/milvus_client.py",
-        "backend/indexing/milvus_writer.py",
-        "backend/indexing/parent_chunk_store.py",
-        "backend/providers/core.py",
-        "backend/providers/embedding.py",
-        "backend/providers/rerank.py",
-        "backend/providers/runtime.py",
-        "backend/rag/evidence.py",
-        "backend/rag/outcomes.py",
-        "backend/rag/pipeline.py",
-        "backend/rag/reranking.py",
-        "backend/rag/runtime_context.py",
-        "backend/rag/utils.py",
-        "backend/schemas/rag.py",
-        "backend/security/milvus_filters.py",
-    )
-    digest = hashlib.sha256()
-    digest.update(b"rag-source-fingerprint\0")
-    digest.update(RAG_SOURCE_FINGERPRINT_VERSION.encode("utf-8"))
-    digest.update(b"\0")
-    for relative in relative_paths:
-        path = root_path / relative
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def artifact_tree_fingerprint(path: str | Path) -> str:
@@ -645,11 +594,9 @@ __all__ = [
     "artifact_tree_fingerprint",
     "LiveRagEvalAdapter",
     "PredictionFileAdapter",
-    "RAG_SOURCE_FINGERPRINT_VERSION",
     "RagEvalExecutionError",
     "RagEvalExecutor",
     "observation_from_rag_results",
     "live_rag_profile_snapshot",
     "profile_fingerprint",
-    "rag_source_fingerprint",
 ]

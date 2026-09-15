@@ -34,7 +34,6 @@ from backend.evaluation.rag_adapters import (  # noqa: E402
     artifact_tree_fingerprint,
     live_rag_profile_snapshot,
     profile_fingerprint,
-    rag_source_fingerprint,
 )
 
 
@@ -94,11 +93,6 @@ def _add_common_score_arguments(
         default=None if live else "controlled-corpus-v1",
     )
     parser.add_argument(
-        "--allow-source-mismatch",
-        action="store_true",
-        help="allow comparison with a baseline from another RAG source fingerprint",
-    )
-    parser.add_argument(
         "--fail-on-regression",
         action="store_true",
         help="return exit code 1 when a quality gate fails",
@@ -136,11 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             corpus_path=args.corpus_path,
             profile_id=args.profile_id,
             index_id=args.index_id,
-            source_mismatch_override=bool(
-                baseline is not None and args.allow_source_mismatch
-            ),
         )
-        if baseline is not None and not args.allow_source_mismatch:
+        if baseline is not None:
             _require_comparable_source(metadata, baseline)
 
         if args.command == "run":
@@ -199,7 +190,6 @@ def _metadata(
     corpus_path: Path,
     profile_id: str,
     index_id: str,
-    source_mismatch_override: bool,
 ) -> dict[str, Any]:
     if live:
         from backend.env import load_env
@@ -227,8 +217,6 @@ def _metadata(
         "profile_id": profile_id,
         "index_id": index_id,
         "profile_fingerprint": profile_fingerprint(profile),
-        "rag_source_fingerprint": rag_source_fingerprint(PROJECT_ROOT),
-        "source_mismatch_override": source_mismatch_override,
     }
 
 
@@ -244,7 +232,6 @@ def _require_comparable_source(
             "profile_id",
             "index_id",
             "profile_fingerprint",
-            "rag_source_fingerprint",
         )
         if baseline.metadata.get(key) != metadata.get(key)
     ]

@@ -12,7 +12,6 @@ from backend.core.errors import (
     serialize_public_error,
 )
 from backend.core.settings import AppSettings, get_settings
-from backend.env import PROJECT_ROOT
 from backend.evaluation.contracts import ClaimedRagEvaluationJob
 from backend.evaluation.rag import (
     RagEvalObservationBundle,
@@ -20,7 +19,6 @@ from backend.evaluation.rag import (
     evaluate_rag,
     evaluate_rag_partial,
 )
-from backend.evaluation.rag_adapters import rag_source_fingerprint
 from backend.evaluation.repository import (
     RagEvaluationRepository,
     rag_evaluation_repository,
@@ -251,7 +249,6 @@ class RagEvaluationWorker:
             "model_catalog_hash": claimed.job.model_catalog_hash,
             "models": safe_models,
             "retrieval_index_ids": retrieval_index_ids,
-            "rag_source_fingerprint": rag_source_fingerprint(PROJECT_ROOT),
             "judge_schema_version": 1,
         }
 

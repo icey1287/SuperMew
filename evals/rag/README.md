@@ -41,7 +41,7 @@ uv run python scripts/evaluate_rag.py run \
   --timeout-seconds 60
 ```
 
-`run` 会懒加载生产 RAG，并使用当前本地 Provider、Milvus 与模型配置。一次进程只运行一个 profile；修改模型、索引或 RAG 参数后请启动新进程。`profile-id` 与 `index-id` 必须显式填写；报告还会自动绑定 corpus 字节、RAG 源码、依赖锁文件以及脱敏后的模型/Embedding/Rerank/检索配置 fingerprint。报告和 Observation 不保存 chunk 正文、endpoint、密钥或原始异常。
+`run` 会懒加载生产 RAG，并使用当前本地 Provider、Milvus 与模型配置。一次进程只运行一个 profile；修改模型、索引或 RAG 参数后请启动新进程。`profile-id` 与 `index-id` 必须显式填写；报告还会自动绑定 corpus 字节以及脱敏后的模型/Embedding/Rerank/检索配置 fingerprint。报告和 Observation 不保存 chunk 正文、endpoint、密钥或原始异常。
 
 `gates_v1.json` 只接受 `contract_smoke` provenance；静态 Observation 不能冒充实时质量结果。`live_gates_v1.json` 只接受由 `run` 产生的 `live_rag` provenance。GitHub 的默认 workflow 验证评分器、baseline 可重建性和基准分支差异；没有配置模型、Milvus 与隔离测试索引的托管 runner 时，它不会宣称已经执行生产 RAG。RAG 发布前仍必须在受控索引上运行 live 命令并审查对应报告。
 

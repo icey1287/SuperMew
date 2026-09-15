@@ -80,7 +80,7 @@ def test_cli_returns_one_for_a_quality_regression(tmp_path):
     assert exit_code == 1
 
 
-def test_cli_returns_two_for_source_fingerprint_mismatch(tmp_path):
+def test_cli_accepts_baseline_with_extra_metadata(tmp_path):
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     baseline["metadata"]["rag_source_fingerprint"] = "0" * 64
     baseline_path = tmp_path / "baseline.json"
@@ -102,33 +102,7 @@ def test_cli_returns_two_for_source_fingerprint_mismatch(tmp_path):
         ]
     )
 
-    assert exit_code == 2
-
-    report = tmp_path / "override-report.json"
-    override_exit = main(
-        [
-            "score",
-            "--dataset",
-            str(DATASET),
-            "--observations",
-            str(OBSERVATIONS),
-            "--gates",
-            str(GATES),
-            "--baseline",
-            str(baseline_path),
-            "--report",
-            str(report),
-            "--allow-source-mismatch",
-        ]
-    )
-
-    assert override_exit == 0
-    assert (
-        json.loads(report.read_text(encoding="utf-8"))["metadata"][
-            "source_mismatch_override"
-        ]
-        is True
-    )
+    assert exit_code == 0
 
 
 def test_cli_returns_two_for_invalid_dataset(tmp_path):
@@ -273,8 +247,6 @@ def test_live_cli_pins_adapter_to_requested_index(monkeypatch, tmp_path):
             "profile_id": "release-profile",
             "index_id": "catalog-index-v2",
             "profile_fingerprint": "b" * 64,
-            "rag_source_fingerprint": "c" * 64,
-            "source_mismatch_override": False,
         },
     )
 

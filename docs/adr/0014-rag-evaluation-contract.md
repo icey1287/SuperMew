@@ -3,6 +3,7 @@
 - 状态：已接受
 - 日期：2026-07-15
 - 修订：2026-07-17
+- 部分取代：源码一致性要求由 [ADR-0027](0027-remove-rag-source-fingerprint.md) 撤销。
 
 ## 背景
 
@@ -17,7 +18,7 @@ PR-15 之前还没有稳定的 DocumentVersion 与 IndexManifest 身份；当前
 1. `evaluate_rag()` 是纯评分 Interface。输入严格版本化 Dataset、Observation、GatePolicy 和可选 baseline，Implementation 集中完成排名指标、路线/结果/HITL 指标、标签切片、Provider 故障统计、基线比较和门禁；Pydantic 模型生成的 JSON Schema 作为跨工具契约并由 CI 检查是否过期。
 2. Dataset 与 Observation 分离。Dataset 是人工标注事实；Observation 是某次 RAG 执行的脱敏投影，不保存 chunk 正文、上游响应、endpoint、凭证或原始异常。
 3. `PredictionFileAdapter` 提供完全离线评分；`LiveRagEvalAdapter` 调用当前原始 RAG 图并生成同一 Observation Interface。离线测试与 CI 不得导入或启动生产模型、Milvus、Provider Runtime。
-4. Dataset 使用内容规范化后的 SHA-256 fingerprint。Observation 与 baseline 必须绑定同一 fingerprint；数据集变化时不得静默沿用旧报告。可比性还必须同时绑定 corpus 相对路径与字节、RAG 源码和依赖锁文件，以及脱敏的模型/Embedding/Rerank/检索配置 profile；PR-15 后 `index_id` 改用 IndexManifest hash。
+4. Dataset 使用内容规范化后的 SHA-256 fingerprint。Observation 与 baseline 必须绑定同一 fingerprint；数据集变化时不得静默沿用旧报告。可比性还必须同时绑定 corpus 相对路径与字节，以及脱敏的模型/Embedding/Rerank/检索配置 profile；PR-15 后 `index_id` 改用 IndexManifest hash。
 5. 初始门禁覆盖 Recall/Precision/MRR/nDCG、document recall、route、complexity、outcome、HITL、rewrite improvement、Provider failure 和 critical case。延迟仅报告 p50/p95，不跨硬件默认门禁。
 6. 持久化 Evaluation Runtime 现已提供 generated answer、受控 Evidence 与结构化 Evaluator Judge Interface，因此启用 answer correctness、groundedness、answer relevance、completeness、context relevance、unsupported claim rate 与 conflict disclosure rate。Judge 只返回数值和简短 reason，不持久化私有推理。Citation precision/recall 与 parent expansion precision 在稳定引用/lineage Interface 完成前仍显式 unavailable，禁止用字符重合伪装指标。
 7. 仓库提交一个受控 Orion HTML corpus、覆盖计划中主要问题类型的 smoke Dataset，以及明确标记为 `contract_smoke` 的 sanitized baseline。静态 Prediction Adapter 不能通过 `live_rag` provenance 门禁；真实发布报告只能由 Live Adapter 在显式 profile/index identity 下生成。
@@ -33,7 +34,7 @@ PR-15 之前还没有稳定的 DocumentVersion 与 IndexManifest 身份；当前
 - critical case 从通过变为失败时零容忍；缺失 observation、执行错误和 eligible case 数下降默认失败。
 - HITL resolution 必须离开等待状态、没有 Provider failure，并命中标注的最终 outcome；最终 `NO_KNOWLEDGE` 不能冒充预期为 `ANSWERABLE` 的成功恢复。
 - Release CLI 拒绝关闭 critical protection、清空必需指标、降低绝对阈值或放宽回归容差的 GatePolicy。
-- Dataset fingerprint、corpus/index identity 或 RAG source fingerprint 不一致时，报告必须说明并拒绝不安全比较。
+- Dataset fingerprint 或 corpus/index identity 不一致时，报告必须说明并拒绝不安全比较。
 - JSON 和 Markdown 报告不得包含文档正文、密钥、endpoint、原始异常或私有推理。
 - 每个 Run 与 RAG Evaluation Job 只使用创建时冻结的 Model Snapshot；Model Assignment 变化只影响后续新建工作，不允许执行中热切换或从环境变量重新解析模型。
 - Case 响应只包含问题、生成答案、数值指标、简短 Judge reason、公开 Evidence identity 与稳定错误；不得包含 Evidence 正文、endpoint、Secret、原始异常或私有推理。

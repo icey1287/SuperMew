@@ -24,7 +24,6 @@ from backend.evaluation.rag_adapters import (
     live_rag_profile_snapshot,
     observation_from_rag_results,
     profile_fingerprint,
-    rag_source_fingerprint,
 )
 from backend.indexing.html_processor import parse_html_file_to_sections
 
@@ -424,15 +423,6 @@ def test_live_adapter_rejects_catalog_index_changes_between_cases(monkeypatch):
 
     with pytest.raises(RagEvalExecutionError, match="index changed"):
         LiveRagEvalAdapter(expected_index_id="catalog-index-v1").execute(dataset)
-
-
-def test_rag_source_fingerprint_is_stable_and_content_addressed():
-    first = rag_source_fingerprint(".")
-    second = rag_source_fingerprint(".")
-
-    assert first == second
-    assert len(first) == 64
-    assert set(first) <= set("0123456789abcdef")
 
 
 def test_live_profile_uses_catalog_snapshot_as_effective_index(monkeypatch):
