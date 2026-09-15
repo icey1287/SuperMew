@@ -280,66 +280,10 @@ async def store_upload(
         )
     _validate_claimed_mime(extension, file.content_type)
 
-    sync_stream = getattr(file, "file", None)
-    if sync_stream is not None and callable(getattr(sync_stream, "read", None)):
-        return await asyncio.to_thread(
-            _store_upload_stream,
-            sync_stream,
-            policy=policy,
-            original_name=original_name,
-            extension=extension,
-        )
-
-    # Lightweight test doubles may only expose the async UploadFile interface.
-    # Production Starlette UploadFile objects always take the fully threaded path above.
-    policy.directory.mkdir(parents=True, exist_ok=True)
-    directory = policy.directory.resolve()
-    object_key = f"{uuid4().hex}{extension}"
-    final_path = (directory / object_key).resolve()
-    if final_path.parent != directory:
-        raise AppError(ErrorCode.UPLOAD_INVALID, "上传路径无效", status_code=400)
-    temporary_path = final_path.with_suffix(f"{final_path.suffix}.uploading")
-
-    total = 0
-    digest = hashlib.sha256()
-    head = bytearray()
-    try:
-        with temporary_path.open("xb") as output:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > policy.max_bytes:
-                    raise AppError(
-                        ErrorCode.UPLOAD_TOO_LARGE,
-                        f"文件超过大小限制（最多 {policy.max_bytes} 字节）",
-                        status_code=413,
-                    )
-                if len(head) < 8192:
-                    head.extend(chunk[: 8192 - len(head)])
-                digest.update(chunk)
-                output.write(chunk)
-            output.flush()
-            os.fsync(output.fileno())
-
-        if total == 0:
-            raise AppError(
-                ErrorCode.UPLOAD_INVALID, "上传文件不能为空", status_code=400
-            )
-        media_type = _sniff_media_type(extension, bytes(head))
-        _validate_saved_document(temporary_path, extension, policy)
-        os.replace(temporary_path, final_path)
-        return StoredUpload(
-            original_name=original_name,
-            object_key=object_key,
-            path=final_path,
-            extension=extension,
-            media_type=media_type,
-            size_bytes=total,
-            content_sha256=digest.hexdigest(),
-        )
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        final_path.unlink(missing_ok=True)
-        raise
+    return await asyncio.to_thread(
+        _store_upload_stream,
+        file.file,
+        policy=policy,
+        original_name=original_name,
+        extension=extension,
+    )
