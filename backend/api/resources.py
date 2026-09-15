@@ -8,7 +8,7 @@ from backend.documents.publication import (
 )
 from backend.documents.retrieval import DocumentRetrievalScope
 from backend.indexing.document_loader import DocumentLoader
-from backend.indexing.embedding import embedding_service
+from backend.providers.runtime import provider_runtime
 from backend.indexing.milvus_client import get_milvus_store
 from backend.indexing.milvus_writer import MilvusWriter
 from backend.indexing.parent_chunk_store import ParentChunkStore
@@ -20,7 +20,7 @@ loader = DocumentLoader()
 parent_chunk_store = ParentChunkStore()
 milvus_manager = get_milvus_store()
 milvus_writer = MilvusWriter(
-    embedding_service=embedding_service,
+    embedding_service=provider_runtime.embedding_service,
     milvus_manager=milvus_manager,
 )
 document_catalog = DocumentCatalog()

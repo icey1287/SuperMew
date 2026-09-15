@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from backend.providers.runtime import provider_runtime
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,9 +16,9 @@ class FakeEmbeddingService:
     def __init__(self):
         self.calls = 0
 
-    def get_embeddings(self, texts):
+    def embed_query(self, text, **kwargs):
         self.calls += 1
-        return [[0.1, 0.2]]
+        return [0.1, 0.2]
 
 
 class FakeMilvusStore:
@@ -80,9 +82,6 @@ def load_utils(env):
     fake_milvus.HybridRetrievalUnsupported = HybridRetrievalUnsupported
     fake_milvus.get_milvus_store = lambda: milvus_store
 
-    fake_embedding = types.ModuleType("backend.indexing.embedding")
-    fake_embedding.embedding_service = embedding_service
-
     fake_parent_store = types.ModuleType("backend.indexing.parent_chunk_store")
 
     class ParentChunkStore:
@@ -129,12 +128,12 @@ def load_utils(env):
 
     with (
         patch.dict(os.environ, env, clear=False),
+        patch.object(provider_runtime, "embedding_service", embedding_service),
         patch.dict(
             sys.modules,
             {
                 "backend.indexing": fake_indexing,
                 "backend.indexing.milvus_client": fake_milvus,
-                "backend.indexing.embedding": fake_embedding,
                 "backend.indexing.parent_chunk_store": fake_parent_store,
                 "backend.documents": fake_documents,
                 "backend.documents.retrieval": fake_retrieval,
@@ -196,7 +195,7 @@ class RagLatencyGuardTests(unittest.TestCase):
         self.assertEqual("dense_fallback", result["meta"]["retrieval_mode"])
         self.assertEqual(1, len(result["docs"]))
 
-    def test_retrieval_uses_query_embedding_semantics_when_available(self):
+    def test_retrieval_uses_query_embedding_semantics(self):
         utils, _ = load_utils(
             {
                 "RERANK_MODEL": "",
@@ -214,7 +213,7 @@ class RagLatencyGuardTests(unittest.TestCase):
                 self.calls.append((text, kwargs))
                 return [0.1, 0.2]
 
-            def get_embeddings(self, texts):
+            def embed_documents(self, texts):
                 raise AssertionError(f"query must not use document semantics: {texts}")
 
         embedding = SemanticEmbedding()

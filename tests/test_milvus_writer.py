@@ -1,60 +1,19 @@
-import importlib.util
-import sys
-import types
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_milvus_writer_module():
-    fake_indexing = types.ModuleType("backend.indexing")
-    fake_indexing.__path__ = []
-
-    fake_embedding = types.ModuleType("backend.indexing.embedding")
-
-    class EmbeddingService:
-        pass
-
-    fake_embedding.EmbeddingService = EmbeddingService
-    fake_embedding.embedding_service = None
-
-    fake_client = types.ModuleType("backend.indexing.milvus_client")
-
-    class MilvusStore:
-        pass
-
-    fake_client.MilvusStore = MilvusStore
-    fake_client.get_milvus_store = lambda: None
-
-    with patch.dict(
-        sys.modules,
-        {
-            "backend.indexing": fake_indexing,
-            "backend.indexing.embedding": fake_embedding,
-            "backend.indexing.milvus_client": fake_client,
-        },
-    ):
-        path = REPO_ROOT / "backend" / "indexing" / "milvus_writer.py"
-        spec = importlib.util.spec_from_file_location("milvus_writer_under_test", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+from backend.indexing import milvus_writer as module
 
 
 class FakeEmbeddingService:
     def __init__(self, events):
         self.events = events
 
-    def get_embeddings(self, texts):
+    def embed_documents(self, texts):
         self.events.append(("embed", list(texts)))
         return [[float(idx)] for idx, _ in enumerate(texts, start=1)]
 
 
 class ShortEmbeddingService:
-    def get_embeddings(self, texts):
+    def embed_documents(self, texts):
         return [[1.0]] * max(len(texts) - 1, 0)
 
 
@@ -111,7 +70,7 @@ class FailSecondEmbeddingOnce:
     def __init__(self):
         self.calls = 0
 
-    def get_embeddings(self, texts):
+    def embed_documents(self, texts):
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("synthetic embedding failure")
@@ -139,7 +98,6 @@ def versioned_document(index, *, version="version-1", document="doc-1"):
 
 class MilvusWriterTests(unittest.TestCase):
     def test_versioned_write_defaults_to_isolated_catalog_collection_and_receipt(self):
-        module = load_milvus_writer_module()
         events = []
         base_store = VersionedStore(events)
         writer = module.MilvusWriter(
@@ -195,7 +153,6 @@ class MilvusWriterTests(unittest.TestCase):
         self.assertLess(cleanup_index, insert_index)
 
     def test_versioned_write_rejects_mixed_scope_and_duplicate_ids(self):
-        module = load_milvus_writer_module()
         events = []
         writer = module.MilvusWriter(
             embedding_service=FakeEmbeddingService(events),
@@ -212,7 +169,6 @@ class MilvusWriterTests(unittest.TestCase):
         self.assertFalse(any(event[0] == "versioned_init" for event in events))
 
     def test_versioned_write_rejects_embedding_and_insert_count_mismatches(self):
-        module = load_milvus_writer_module()
         events = []
         writer = module.MilvusWriter(
             embedding_service=ShortEmbeddingService(),
@@ -237,7 +193,6 @@ class MilvusWriterTests(unittest.TestCase):
             )
 
     def test_receipt_verify_and_delete_use_the_receipt_collection_and_scope(self):
-        module = load_milvus_writer_module()
         events = []
         store = VersionedStore(events)
         writer = module.MilvusWriter(
@@ -256,7 +211,6 @@ class MilvusWriterTests(unittest.TestCase):
         self.assertEqual("version-1", delete_event[2]["document_version_id"])
 
     def test_partial_failure_retry_replaces_same_scope_without_duplicate_auto_ids(self):
-        module = load_milvus_writer_module()
         events = []
         store = VersionedStore(events)
         embedding = FailSecondEmbeddingOnce()
@@ -288,7 +242,6 @@ class MilvusWriterTests(unittest.TestCase):
         )
 
     def test_scope_can_cleanup_partial_candidate_when_no_receipt_exists(self):
-        module = load_milvus_writer_module()
         events = []
         store = VersionedStore(events)
         writer = module.MilvusWriter(

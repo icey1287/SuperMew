@@ -325,7 +325,7 @@ class EmbeddingServiceTests(unittest.TestCase):
         bridge = ProviderLoopBridge()
         service = EmbeddingService(runtime=runtime, bridge=bridge)
         try:
-            first = service.get_embeddings(["document"])
+            first = service.embed_documents(["document"])
             loop_thread = bridge.thread_ident
             second = service.embed_query("query")
 

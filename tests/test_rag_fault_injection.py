@@ -9,14 +9,14 @@ class _BrokenEmbedding:
     def __init__(self):
         self.calls = 0
 
-    def get_embeddings(self, texts):
+    def embed_query(self, text, **kwargs):
         self.calls += 1
         raise ConnectionError("secret embedding endpoint and token")
 
 
 class _HealthyEmbedding:
-    def get_embeddings(self, texts):
-        return [[0.1, 0.2]]
+    def embed_query(self, text, **kwargs):
+        return [0.1, 0.2]
 
 
 class _NeverCalledStore:

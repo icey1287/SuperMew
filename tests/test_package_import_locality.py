@@ -14,7 +14,7 @@ def test_milvus_adapter_import_does_not_load_embedding_or_upload_stacks() -> Non
 
         forbidden = {
             "backend.indexing.document_loader",
-            "backend.indexing.embedding",
+            "backend.providers.embedding",
             "backend.security.uploads",
             "langchain_community",
             "sentence_transformers",

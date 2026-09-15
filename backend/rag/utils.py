@@ -15,7 +15,6 @@ from backend.indexing.milvus_client import (
     HybridRetrievalUnsupported,
     get_milvus_store,
 )
-from backend.indexing.embedding import embedding_service as _embedding_service
 from backend.indexing.parent_chunk_store import ParentChunkStore
 from backend.providers import (
     EmbeddingScope,
@@ -105,7 +104,7 @@ RETRIEVAL_TRACE_FIELDS = (
     "retrieval_degraded_code",
 )
 
-# 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
+_embedding_service = provider_runtime.embedding_service
 _milvus_manager = get_milvus_store()
 _parent_chunk_store = ParentChunkStore()
 _document_retrieval_scope = DocumentRetrievalScope()
@@ -768,19 +767,12 @@ def retrieve_documents(
     )
 
     def _embed_query() -> list[float]:
-        query_method = getattr(_embedding_service, "embed_query", None)
-        if callable(query_method):
-            vector = query_method(
-                query,
-                scope=embedding_scope,
-                deadline=embedding_deadline,
-                cancellation=cancellation,
-            )
-        else:
-            dense_embeddings = _embedding_service.get_embeddings([query])
-            if not dense_embeddings:
-                raise ValueError("embedding provider returned no vector")
-            vector = dense_embeddings[0]
+        vector = _embedding_service.embed_query(
+            query,
+            scope=embedding_scope,
+            deadline=embedding_deadline,
+            cancellation=cancellation,
+        )
         if not vector:
             raise ValueError("embedding provider returned no vector")
         if not isinstance(vector, list) or any(

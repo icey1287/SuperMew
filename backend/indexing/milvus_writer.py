@@ -6,10 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from backend.indexing.embedding import (
-    EmbeddingService,
-    embedding_service as _default_embedding_service,
-)
+from backend.providers.embedding import EmbeddingService
+from backend.providers.runtime import provider_runtime
 from backend.indexing.milvus_client import MilvusStore, get_milvus_store
 
 if TYPE_CHECKING:
@@ -141,7 +139,7 @@ class MilvusWriter:
         milvus_manager: MilvusStore | None = None,
         versioned_milvus_manager: MilvusStore | None = None,
     ):
-        self.embedding_service = embedding_service or _default_embedding_service
+        self.embedding_service = embedding_service or provider_runtime.embedding_service
         self.milvus_manager = milvus_manager or get_milvus_store()
         self.versioned_milvus_manager = versioned_milvus_manager
 
@@ -272,7 +270,7 @@ class MilvusWriter:
                 ownership_guard()
             batch = normalized_documents[index : index + batch_size]
             texts = [document["text"] for document in batch]
-            dense_embeddings = self.embedding_service.get_embeddings(texts)
+            dense_embeddings = self.embedding_service.embed_documents(texts)
             if len(dense_embeddings) != len(batch):
                 raise RuntimeError(
                     "embedding provider returned an unexpected vector count"

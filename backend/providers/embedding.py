@@ -841,16 +841,11 @@ class EmbeddingService:
 
     def __init__(
         self,
-        state_path: str | None = None,
         *,
-        runtime: EmbeddingRuntime | None = None,
+        runtime: EmbeddingRuntime,
         bridge: ProviderLoopBridge,
-        **runtime_kwargs: Any,
     ) -> None:
-        del state_path
-        if runtime is not None and runtime_kwargs:
-            raise ValueError("runtime_kwargs cannot be used with an existing runtime")
-        self._runtime = runtime or EmbeddingRuntime(**runtime_kwargs)
+        self._runtime = runtime
         self._bridge = bridge
 
     @property
@@ -875,7 +870,7 @@ class EmbeddingService:
             cancellation=cancellation,
         )
 
-    def get_embeddings(
+    def embed_documents(
         self,
         texts: Sequence[str],
         *,
@@ -890,21 +885,6 @@ class EmbeddingService:
                 deadline=deadline,
                 cancellation=cancellation,
             ),
-            cancellation=cancellation,
-        )
-
-    def embed_documents(
-        self,
-        texts: Sequence[str],
-        *,
-        scope: EmbeddingScope | None = None,
-        deadline: float | None = None,
-        cancellation: CancellationProbe | None = None,
-    ) -> list[Vector]:
-        return self.get_embeddings(
-            texts,
-            scope=scope,
-            deadline=deadline,
             cancellation=cancellation,
         )
 
