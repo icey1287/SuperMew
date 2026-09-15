@@ -83,16 +83,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
 import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
 import ArtifactShelf from '@/components/Artifacts/ArtifactShelf.vue';
-import type { RunTimelineItem } from '@/events/runEventReducer';
 import type { RetrievedChunk } from '@/types/chat';
 import emptyEvidence from '@/assets/images/empty-evidence.webp';
-
-interface RunStepView {
-  key: string;
-  label: string;
-  detail?: string;
-  time?: string;
-}
 
 const emit = defineEmits<{
   (e: 'cite-click', msgIndex: number, chunkIndex: number): void;
@@ -115,7 +107,7 @@ onUnmounted(() => {
 const latestMessageIndex = computed(() => {
   for (let index = chatStore.messages.length - 1; index >= 0; index -= 1) {
     const message = chatStore.messages[index];
-    if (!message.isUser && !message.isHitlRequest) return index;
+    if (!message.isUser) return index;
   }
   return -1;
 });
@@ -138,86 +130,7 @@ const statusLabel = computed(() => {
   return latestMessage.value ? '已完成' : '待命';
 });
 
-const runSteps = computed<RunStepView[]>(() => {
-  const streamedSteps = latestMessage.value?.ragSteps || [];
-  if (streamedSteps.length) {
-    return streamedSteps.slice(-6).map((step, index) => ({
-      key: step.key || String(index),
-      label: step.label,
-      detail: step.detail,
-      time: step.elapsed_ms != null ? formatMilliseconds(step.elapsed_ms) : '',
-    }));
-  }
-
-  const currentTrace = trace.value;
-  if (!currentTrace) {
-    return [
-      {
-        key: 'answer',
-        label: isRunning.value ? '正在连接喵喵 Agent' : '直接回答已完成',
-        detail: isRunning.value ? '准备理解问题与选择工具' : '本次未产生检索轨迹',
-      },
-    ];
-  }
-
-  const result: RunStepView[] = [];
-  if (currentTrace.complexity) {
-    result.push({
-      key: 'complexity',
-      label: '意图与复杂度判断',
-      detail: currentTrace.complexity === 'complex' ? '复杂问题 · 多步处理' : '简单问题 · 快速路径',
-    });
-  }
-  if (currentTrace.sub_agent_count) {
-    result.push({
-      key: 'sub-agents',
-      label: '子问题并行处理',
-      detail: currentTrace.sub_agent_count + ' 路 Agent',
-    });
-  }
-  if (currentTrace.tool_used || currentTrace.retrieval_mode) {
-    result.push({
-      key: 'retrieve',
-      label: currentTrace.retrieval_mode || '知识库检索',
-      detail: formatRetrievalFunnel(currentTrace),
-    });
-  }
-  if (currentTrace.rerank_applied || currentTrace.rerank_enabled) {
-    result.push({
-      key: 'rerank',
-      label: '证据精排',
-      detail: currentTrace.rerank_model || 'Rerank',
-    });
-  }
-  result.push({
-    key: 'synthesis',
-    label: '证据合成',
-    detail: sources.value.length ? sources.value.length + ' 个来源已对齐' : '回答生成完成',
-  });
-  return result;
-});
-
-const timelineItems = computed<RunTimelineItem[]>(() => {
-  const durableItems = latestMessage.value?.runTimeline || [];
-  if (durableItems.length) return durableItems;
-  return runSteps.value.map((step, index) => ({
-    id: `legacy-rag:${step.key}:${index}`,
-    sequence: index + 1,
-    kind: 'retrieval',
-    eventType: 'retrieval.progress',
-    status: isRunning.value && index === runSteps.value.length - 1 ? 'running' : 'completed',
-    title: step.label,
-    detail: step.detail || null,
-    timestamp: '',
-    toolName: null,
-    toolCallId: null,
-    durationMs: null,
-    resultSize: null,
-    guardrailDecision: null,
-    guardrailReasonCode: null,
-    error: null,
-  }));
-});
+const timelineItems = computed(() => latestMessage.value?.runTimeline || []);
 
 const confidence = computed<number | null>(() => {
   const raw = trace.value?.evidence_confidence;
@@ -247,23 +160,12 @@ const totalDuration = computed(() => {
     return total > 0 ? formatMilliseconds(total) : '';
   }
 
-  const elapsed = (latestMessage.value?.ragSteps || []).reduce((latest, step) => {
-    const sample = Number(step.elapsed_ms);
-    return Number.isFinite(sample) ? Math.max(latest, sample) : latest;
-  }, 0);
-  return elapsed > 0 ? formatMilliseconds(elapsed) : '';
+  return '';
 });
 
 const formatMilliseconds = (milliseconds: number) => {
   if (milliseconds < 1000) return Math.round(milliseconds) + 'ms';
   return (milliseconds / 1000).toFixed(1) + 's';
-};
-
-const formatRetrievalFunnel = (currentTrace: any) => {
-  const recall = currentTrace.recall_count;
-  const output = currentTrace.retrieved_chunks?.length;
-  if (recall != null && output != null) return recall + ' → ' + output + ' 个片段';
-  return currentTrace.retrieval_pipeline || '混合召回';
 };
 
 const sourceLocation = (source: RetrievedChunk, index: number) => {

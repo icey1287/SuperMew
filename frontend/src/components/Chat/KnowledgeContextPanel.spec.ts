@@ -44,5 +44,6 @@ describe('KnowledgeContextPanel', () => {
     await nextTick();
 
     expect(root.querySelector('.context-card-heading > span')?.textContent).toBe('35.0s');
+    expect(root.querySelectorAll('.execution-item')).toHaveLength(0);
   });
 });

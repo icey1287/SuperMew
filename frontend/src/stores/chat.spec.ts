@@ -251,6 +251,7 @@ describe('durable chat projection', () => {
       'confirm',
       vi.fn(() => true)
     );
+    vi.mocked(getRunEvents).mockResolvedValue({ events: [], next_after: 0 });
     vi.mocked(createThread).mockResolvedValue(threadDetail());
     vi.mocked(getThreadMessages).mockResolvedValue({
       messages: [],
@@ -514,7 +515,7 @@ describe('durable chat projection', () => {
       isStreaming: false,
     });
     expect(chatStore.isInputLocked).toBe(false);
-    expect(getRunEvents).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledOnce();
   });
 
   it('restores an active Run missing from the latest Message page', async () => {
@@ -598,21 +599,21 @@ describe('durable chat projection', () => {
 
     expect(capabilityStore.selectedSkillName).toBeNull();
     expect(getRun).not.toHaveBeenCalled();
-    expect(getRunEvents).not.toHaveBeenCalled();
+    expect(getRunEvents).toHaveBeenCalledOnce();
+    expect(getRunEvents).toHaveBeenCalledWith('run-general', { after: 0, limit: 1000 });
   });
 
   it.each(['completed', 'failed', 'cancelled'] as const)(
-    'loads a persisted %s Message without querying its terminal Run',
+    'loads a historical %s Message without a Run ID',
     async (messageStatus) => {
-      const runId = `run-${messageStatus}`;
       const content = `${messageStatus} 持久正文`;
       const { chatStore, runsStore } = setupStores();
       vi.mocked(getThreadMessages).mockResolvedValue({
         messages: [
-          threadMessage(1, 'user', '问题', { run_id: runId }),
+          threadMessage(1, 'user', '问题'),
           threadMessage(2, 'assistant', content, {
-            run_id: runId,
             status: messageStatus,
+            rag_trace: { retrieved_chunks: [{ filename: '历史.pdf', text: '引用原文' }] },
           }),
         ],
         previous_cursor: null,
@@ -624,14 +625,15 @@ describe('durable chat projection', () => {
         isThinking: false,
         text: content,
       });
-      expect(runsStore.byId[runId]).toBeUndefined();
+      expect(chatStore.messages[1].ragTrace?.retrieved_chunks?.[0].filename).toBe('历史.pdf');
+      expect(runsStore.byId).toEqual({});
       expect(getRun).not.toHaveBeenCalled();
       expect(getRunEvents).not.toHaveBeenCalled();
     }
   );
 
   it.each(['completed', 'failed', 'cancelled'] as const)(
-    'keeps a persisted %s Message authoritative when on-demand Event replay fails',
+    'keeps a persisted %s Message authoritative when Event replay fails',
     async (messageStatus) => {
       const runId = `run-${messageStatus}`;
       const content = `${messageStatus} 持久正文`;
@@ -649,9 +651,6 @@ describe('durable chat projection', () => {
       vi.mocked(getRunEvents).mockRejectedValue(new TypeError('offline journal'));
 
       await chatStore.loadThread('thread-1');
-      await expect(chatStore.restoreRunProjection(runId, 'thread-1')).rejects.toThrow(
-        'offline journal'
-      );
 
       expect(chatStore.messages[1]).toMatchObject({
         status: messageStatus,
@@ -663,7 +662,7 @@ describe('durable chat projection', () => {
     }
   );
 
-  it('loads terminal Run timeline and Artifacts on demand without a Run metadata hop', async () => {
+  it('restores the latest terminal Run timeline and Artifacts from Event replay', async () => {
     const { chatStore } = setupStores();
     vi.mocked(getThreadMessages).mockResolvedValue({
       messages: [
@@ -709,15 +708,7 @@ describe('durable chat projection', () => {
 
     await chatStore.loadThread('thread-1');
 
-    let assistant = chatStore.messages.find((message) => !message.isUser);
-    expect(assistant?.runTimeline).toBeUndefined();
-    expect(assistant?.artifacts).toBeUndefined();
-    expect(getRun).not.toHaveBeenCalled();
-    expect(getRunEvents).not.toHaveBeenCalled();
-
-    await chatStore.restoreRunProjection('run-terminal', 'thread-1');
-
-    assistant = chatStore.messages.find((message) => !message.isUser);
+    const assistant = chatStore.messages.find((message) => !message.isUser);
     expect(assistant?.runTimeline).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

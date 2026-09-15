@@ -427,13 +427,13 @@ export const useChatStore = defineStore('chat', {
       this.attachRunProjection(runId, effectiveThreadId);
       const run = await runsStore.replay(runId, effectiveThreadId);
       this.projectRunState(run);
-      if (!run.terminal && run.status !== 'waiting_input') {
+      if (!run.terminal && BUSY_RUN_STATUSES.has(run.status)) {
         void this.connectRun(runId, authStore.token);
       }
       return run;
     },
 
-    async restoreRecoverableRunsForThread(threadId: string) {
+    async restoreRunsForThread(threadId: string) {
       const runsStore = useRunsStore();
       const threadStore = useThreadStore();
       const messages = this.ensureThreadMessages(threadId);
@@ -459,6 +459,11 @@ export const useChatStore = defineStore('chat', {
         } else {
           runIds.push(activeRunId);
         }
+      }
+
+      const latestAssistant = [...messages].reverse().find((message) => !message.isUser);
+      if (latestAssistant?.runId && !runIds.includes(latestAssistant.runId)) {
+        runIds.push(latestAssistant.runId);
       }
 
       const restore = async (runId: string) => {
@@ -505,12 +510,12 @@ export const useChatStore = defineStore('chat', {
         useCapabilityStore().restoreThreadSkill(latestRunMessage?.skillName ?? null, threadId);
         this.setViewedThread(threadId, loadedMessages);
         this.mergeCachedThreadsIntoHistory();
-        await this.restoreRecoverableRunsForThread(threadId);
+        await this.restoreRunsForThread(threadId);
       } catch (error) {
         const publicError = getPublicError(error);
         this.threadLoadError = publicError.message;
         if (!cachedMessages && this.threadId === threadId) this.messages = [];
-        if (cachedMessages) await this.restoreRecoverableRunsForThread(threadId);
+        if (cachedMessages) await this.restoreRunsForThread(threadId);
         throw publicError;
       } finally {
         if (this.loadingThreadId === threadId) this.loadingThreadId = '';

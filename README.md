@@ -876,6 +876,9 @@ data: {"schema_version":1,"event_id":"evt_xxx","sequence":42,"run_id":"run_xxx",
 
 ### 3. 重放、重连与 heartbeat
 
+打开历史 Thread 时，前端通过持久 Event 恢复最近一条 assistant Message 所属 Run 的时间线，
+包括已完成、失败或取消的 Run。没有 Run ID 的旧消息仍可读取正文与引用，不推测执行步骤。
+
 首次订阅：
 
 ```http
