@@ -27,7 +27,7 @@ from pymilvus.exceptions import (
     ServerVersionIncompatibleException,
 )
 
-from backend.security.milvus_filters import in_filter, version_scope_filter
+from backend.security.milvus_filters import version_scope_filter
 
 QUERY_MAX_LIMIT = 16384
 T = TypeVar("T")
@@ -427,16 +427,6 @@ class MilvusStore:
             return out
 
         return self._run(_query_all)
-
-    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
-        ids = [item for item in chunk_ids if item]
-        if not ids:
-            return []
-        return self.query(
-            filter_expr=in_filter("chunk_id", ids),
-            output_fields=RETRIEVAL_OUTPUT_FIELDS,
-            limit=len(ids),
-        )
 
     def hybrid_retrieve(
         self,

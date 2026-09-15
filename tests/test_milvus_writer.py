@@ -192,6 +192,29 @@ class MilvusWriterTests(unittest.TestCase):
                 [versioned_document(0), versioned_document(1)]
             )
 
+    def test_versioned_write_rejects_missing_or_invalid_insert_counts(self):
+        for response in (
+            {},
+            {"upsert_count": 2},
+            {"insert_count": None},
+            {"insert_count": True},
+            {"insert_count": -1},
+            {"insert_count": "2"},
+        ):
+            with self.subTest(response=response):
+                events = []
+                store = VersionedStore(events)
+                candidate = store.with_collection("documents_catalog_v1")
+                candidate.insert_responses = [response]
+                writer = module.MilvusWriter(
+                    embedding_service=FakeEmbeddingService(events),
+                    milvus_manager=store,
+                )
+                with self.assertRaisesRegex(RuntimeError, "invalid insert count"):
+                    writer.write_versioned_documents(
+                        [versioned_document(0), versioned_document(1)]
+                    )
+
     def test_receipt_verify_and_delete_use_the_receipt_collection_and_scope(self):
         events = []
         store = VersionedStore(events)

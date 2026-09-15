@@ -105,22 +105,10 @@ def _normalize_acl_tags(value) -> list[str]:
     return normalized
 
 
-def _insert_count(response, expected: int) -> int:
-    """校验 Milvus 明确返回的 insert count；无 count 时按成功批次计数。"""
+def _insert_count(response: dict, expected: int) -> int:
+    """校验 Milvus insert 回执中的实际写入数量。"""
 
-    count = None
-    if isinstance(response, Mapping):
-        for field in ("insert_count", "upsert_count"):
-            if field in response:
-                count = response[field]
-                break
-    else:
-        for field in ("insert_count", "upsert_count"):
-            if hasattr(response, field):
-                count = getattr(response, field)
-                break
-    if count is None:
-        return expected
+    count = response.get("insert_count")
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise RuntimeError("Milvus returned an invalid insert count")
     if count != expected:
