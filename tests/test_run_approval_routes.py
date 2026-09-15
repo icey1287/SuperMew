@@ -5,8 +5,18 @@ import pytest
 from pydantic import ValidationError
 
 import backend.api.routes.runs as routes
+from backend.tools.catalog import build_default_tool_registry
 from backend.core.errors import AppError, ErrorCode
 from backend.schemas.runs import RunCreateRequest
+
+
+@pytest.fixture(autouse=True)
+def capability_runtime(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "capability_control_service",
+        SimpleNamespace(tools=build_default_tool_registry()),
+    )
 
 
 def _request(*approved_tools: str) -> RunCreateRequest:

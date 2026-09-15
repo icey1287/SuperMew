@@ -28,7 +28,6 @@ from backend.sql_assistant.runtime import SqlAssistantRuntime
 from backend.tools.catalog import (
     build_default_tool_registry,
     configured_secret_names,
-    tool_registry,
 )
 from backend.tools.custom_http import (
     CustomHttpToolRuntime,
@@ -148,45 +147,44 @@ class CapabilityControlService:
         self.settings = settings or get_settings()
         self._apply_lock = threading.RLock()
         self._active_runtime: CapabilityRuntime | None = None
-        self._fallback_catalog = CapabilityCatalog(
-            skills=runtime_factory.skills,
-            tools=tool_registry,
-            secret_names_provider=configured_secret_names,
-        )
 
     @property
     def active_runtime(self) -> CapabilityRuntime | None:
         with self._apply_lock:
             return self._active_runtime
 
-    @property
-    def active_settings(self) -> AppSettings | None:
-        current = self.active_runtime
-        return None if current is None else current.settings
-
     @contextmanager
     def acquire_factory(self) -> Iterator[AgentRuntimeFactory]:
         current: CapabilityRuntime | None
         with self._apply_lock:
             current = self._active_runtime
-            factory = runtime_factory if current is None else current.factory
-            if current is not None:
-                current.resources.acquire()
+            if current is None:
+                raise AppError(
+                    ErrorCode.TOOL_UNAVAILABLE, "能力运行时尚未就绪", status_code=503
+                )
+            current.resources.acquire()
         try:
-            yield factory
+            yield current.factory
         finally:
-            if current is not None:
-                current.resources.release()
+            current.resources.release()
 
     @property
     def catalog(self) -> CapabilityCatalog:
         current = self.active_runtime
-        return self._fallback_catalog if current is None else current.catalog
+        if current is None:
+            raise AppError(
+                ErrorCode.TOOL_UNAVAILABLE, "能力运行时尚未就绪", status_code=503
+            )
+        return current.catalog
 
     @property
     def tools(self) -> ToolRegistry:
         current = self.active_runtime
-        return tool_registry if current is None else current.tools
+        if current is None:
+            raise AppError(
+                ErrorCode.TOOL_UNAVAILABLE, "能力运行时尚未就绪", status_code=503
+            )
+        return current.tools
 
     def ensure_defaults(self) -> None:
         self.repository.ensure_defaults(

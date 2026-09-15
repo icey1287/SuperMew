@@ -22,6 +22,9 @@
 替换当前引用并关闭之前的 Runtime。API 不维护额外的版本或发布状态，也不要求为普通配置修改
 重启进程。进程启动时使用相同逻辑加载数据库配置。
 
+执行和能力目录只使用已激活的 Runtime；初始化完成前返回不可用，readiness 为未就绪。静态
+Registry/Skill 仅供首次种子使用，不能在运行时缺失时回退执行。
+
 自定义 Tool 只允许公共 HTTPS 443、GET/POST、Draft 2020-12 object JSON Schema、静态 Header
 和环境 Secret Header 引用。Endpoint 继续经过 DNS pinning、SSRF、redirect、deadline、Content
 Type 与 byte budget 门禁。控制面不接受 Python、Shell、动态模块、任意命令或私网访问。已启用

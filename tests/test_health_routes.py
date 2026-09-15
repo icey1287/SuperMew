@@ -1,7 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import backend.api.routes.health as health
 
@@ -74,6 +74,35 @@ def _catalog(
 
 
 class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        patcher = patch.object(health, "capability_control_service")
+        capabilities = patcher.start()
+        self.addCleanup(patcher.stop)
+        type(capabilities).active_runtime = PropertyMock(
+            side_effect=lambda: SimpleNamespace(
+                settings=health.provider_runtime.settings,
+                sql_runtime=None,
+                web_runtime=None,
+            )
+        )
+
+    async def test_ready_rejects_an_uninitialized_capability_runtime(self):
+        with (
+            patch.object(
+                health,
+                "provider_runtime",
+                _runtime(running=True, embedding_ready=True, warmup=True),
+            ),
+            patch.object(health, "document_catalog", _catalog()),
+            patch.object(
+                health, "capability_control_service", SimpleNamespace(active_runtime=None)
+            ),
+        ):
+            response = await health.ready()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual("not_ready", json.loads(response.body)["status"])
+
     async def test_live_is_process_only(self):
         self.assertEqual({"status": "live"}, await health.live())
 
@@ -236,8 +265,8 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         sql_runtime = SimpleNamespace(readiness=lambda: next(sql_snapshots))
         capabilities = SimpleNamespace(
-            active_settings=None,
             active_runtime=SimpleNamespace(
+                settings=runtime.settings,
                 sql_runtime=sql_runtime,
                 web_runtime=None,
             ),
@@ -285,8 +314,8 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         web_runtime = SimpleNamespace(readiness=lambda: next(snapshots))
         capabilities = SimpleNamespace(
-            active_settings=None,
             active_runtime=SimpleNamespace(
+                settings=runtime.settings,
                 sql_runtime=None,
                 web_runtime=web_runtime,
             ),

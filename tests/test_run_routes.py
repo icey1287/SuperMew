@@ -6,10 +6,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import backend.api.routes.runs as routes
+from backend.tools.catalog import build_default_tool_registry
 from backend.core.errors import install_exception_handlers
 from backend.events.contracts import new_run_event
 from backend.infra.auth import get_current_user
 from backend.runs.repository import RunRecord, RunReservation
+
+
+@pytest.fixture(autouse=True)
+def capability_runtime(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "capability_control_service",
+        SimpleNamespace(tools=build_default_tool_registry()),
+    )
 
 
 def _run_record(

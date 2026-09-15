@@ -24,52 +24,30 @@ async def live() -> dict[str, str]:
 async def ready() -> JSONResponse:
     snapshot = provider_runtime.readiness()
     worker_settings = provider_runtime.settings.worker
-    capability_settings = (
-        capability_control_service.active_settings or provider_runtime.settings
-    )
-    sql_enabled = bool(
-        getattr(
-            getattr(capability_settings, "sql_assistant", None),
-            "enabled",
-            False,
-        )
-    )
+    runtime = capability_control_service.active_runtime
+    sql_enabled = runtime is not None and runtime.settings.sql_assistant.enabled
     sql_ready = False
     sql_catalog_hash = None
     if sql_enabled:
         try:
-            runtime = capability_control_service.active_runtime
             if runtime is not None and runtime.sql_runtime is not None:
                 sql_snapshot = runtime.sql_runtime.readiness()
                 sql_ready = bool(sql_snapshot.ready)
                 sql_catalog_hash = sql_snapshot.catalog_hash
         except Exception:
             sql_ready = False
-    web_enabled = bool(
-        getattr(
-            getattr(capability_settings, "web_research", None),
-            "enabled",
-            False,
-        )
-    )
+    web_enabled = runtime is not None and runtime.settings.web_research.enabled
     web_ready = False
     web_search_ready = False
     if web_enabled:
         try:
-            runtime = capability_control_service.active_runtime
             if runtime is not None and runtime.web_runtime is not None:
                 web_snapshot = runtime.web_runtime.readiness()
                 web_ready = bool(web_snapshot.get("ready"))
                 web_search_ready = bool(web_snapshot.get("search_ready"))
         except Exception:
             web_ready = False
-    sandbox_enabled = bool(
-        getattr(
-            getattr(capability_settings, "sandbox", None),
-            "enabled",
-            False,
-        )
-    )
+    sandbox_enabled = runtime is not None and runtime.settings.sandbox.enabled
     sandbox_snapshot = None
     sandbox_ready = False
     if sandbox_enabled:
@@ -102,7 +80,8 @@ async def ready() -> JSONResponse:
         worker_available = False
     warmup_required = provider_runtime.settings.embedding.warmup_on_start
     is_ready = (
-        snapshot.running
+        runtime is not None
+        and snapshot.running
         and snapshot.embedding.ready
         and catalog_available
         and (not sql_enabled or sql_ready)

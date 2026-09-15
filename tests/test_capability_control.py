@@ -118,6 +118,18 @@ def test_custom_http_tool_and_skill_are_loaded_into_runtime(capability_control):
         runtime.close()
 
 
+@pytest.mark.parametrize("access", ["factory", "catalog", "tools"])
+def test_uninitialized_runtime_is_unavailable(capability_control, access):
+    with pytest.raises(AppError) as raised:
+        if access == "factory":
+            with capability_control.acquire_factory():
+                pytest.fail("uninitialized runtime must not execute")
+        else:
+            getattr(capability_control, access)
+    assert raised.value.code is ErrorCode.TOOL_UNAVAILABLE
+    assert raised.value.status_code == 503
+
+
 def test_saved_configuration_is_applied_to_current_runtime(capability_control):
     capability_control.update_web_research(username="admin", enabled=True)
 
@@ -126,7 +138,7 @@ def test_saved_configuration_is_applied_to_current_runtime(capability_control):
 
     assert state["web_research"]["enabled"] is True
     assert "revision" not in state
-    assert capability_control.active_settings.web_research.enabled is True
+    assert capability_control.active_runtime.settings.web_research.enabled is True
 
 
 def test_skill_changes_publish_one_snapshot_and_reuse_runtime_resources(
