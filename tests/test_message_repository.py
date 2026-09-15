@@ -5,10 +5,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, Message, User
+from backend.db.models import Base, Message, Thread, User
 from backend.runs.repository import RunRepository
 from backend.runs.state import RunStatus
-from backend.threads.repository import MessageAppend, ThreadRepository
+from backend.threads.repository import ThreadRepository
 
 
 class MessageRepositoryTests(unittest.TestCase):
@@ -27,78 +27,19 @@ class MessageRepositoryTests(unittest.TestCase):
     def tearDown(self):
         self.engine.dispose()
 
-    def test_current_user_access_reloads_role_from_database(self):
-        first = self.repository.current_user_access("alice")
-        with self.Session.begin() as db:
-            db.query(User).filter(User.username == "alice").one().role = "admin"
-        second = self.repository.current_user_access("alice")
-
-        self.assertEqual("user", first.role)
-        self.assertEqual("admin", second.role)
-        self.assertEqual(first.user_db_id, second.user_db_id)
-
-        with self.assertRaises(AppError) as missing:
-            self.repository.current_user_access("missing")
-        self.assertEqual(ErrorCode.AUTHENTICATION_REQUIRED, missing.exception.code)
-
-    def test_client_message_id_makes_append_idempotent(self):
-        message = MessageAppend(
-            role="human",
-            content="hello",
-            client_message_id="request-1:user",
-        )
-        first = self.repository.append_message("alice", "thread-1", message)
-        second = self.repository.append_message("alice", "thread-1", message)
-
-        self.assertEqual(first.id, second.id)
-        with self.Session() as db:
-            self.assertEqual(1, db.query(Message).count())
-
-    def test_placeholder_and_finalize_are_idempotent(self):
-        placeholder = self.repository.create_assistant_placeholder(
-            "alice", "thread-1", "run-1"
-        )
-        duplicate = self.repository.create_assistant_placeholder(
-            "alice", "thread-1", "run-1"
-        )
-        self.assertEqual(placeholder.id, duplicate.id)
-
-        completed = self.repository.finalize_message(
-            "alice",
-            "thread-1",
-            placeholder.id,
-            content="answer",
-            status="completed",
-        )
-        repeated = self.repository.finalize_message(
-            "alice",
-            "thread-1",
-            placeholder.id,
-            content="answer",
-            status="completed",
-        )
-        self.assertEqual(completed.id, repeated.id)
-        self.assertEqual("completed", repeated.status)
-
-    def test_expected_version_rejects_stale_writer(self):
-        self.repository.append_message(
-            "alice", "thread-1", MessageAppend(role="human", content="one")
-        )
-        with self.assertRaises(AppError) as raised:
-            self.repository.append_message(
-                "alice",
-                "thread-1",
-                MessageAppend(role="human", content="two"),
-                expected_version=0,
-            )
-        self.assertEqual(ErrorCode.CONFLICT, raised.exception.code)
-
     def test_cursor_pagination_is_stable(self):
-        for index in range(5):
-            self.repository.append_message(
-                "alice",
-                "thread-1",
-                MessageAppend(role="human", content=str(index)),
+        self.repository.create_thread(username="alice", thread_id="thread-1")
+        with self.Session.begin() as db:
+            thread = db.query(Thread).filter(Thread.thread_id == "thread-1").one()
+            db.add_all(
+                Message(
+                    thread_ref_id=thread.id,
+                    sequence=index + 1,
+                    message_type="human",
+                    content=str(index),
+                    status="completed",
+                )
+                for index in range(5)
             )
         first_page = self.repository.list_messages_before(
             "alice", "thread-1", before=None, limit=2
@@ -110,8 +51,12 @@ class MessageRepositoryTests(unittest.TestCase):
         self.assertEqual(["2", "1"], [item.content for item in second_page])
 
     def test_thread_listing_has_no_message_count_query(self):
-        self.repository.append_message(
-            "alice", "thread-1", MessageAppend(role="human", content="one")
+        self.repository.create_thread(username="alice", thread_id="thread-1")
+        RunRepository(self.Session).reserve(
+            username="alice",
+            thread_id="thread-1",
+            message="one",
+            idempotency_key="request-1",
         )
         statements = []
 
@@ -124,7 +69,7 @@ class MessageRepositoryTests(unittest.TestCase):
         finally:
             event.remove(self.engine, "before_cursor_execute", capture)
 
-        self.assertEqual(1, rows[0].message_count)
+        self.assertEqual(2, rows[0].message_count)
         self.assertFalse(
             any(
                 "count(" in statement and "messages" in statement

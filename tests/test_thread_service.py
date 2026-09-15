@@ -8,9 +8,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.threads.repository import MessageAppend, ThreadRepository
+from backend.threads.repository import ThreadRepository
 from backend.core.errors import AppError, ErrorCode
-from backend.db.models import Base, Thread, Run, User
+from backend.db.models import Base, Message, Thread, Run, User
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from tests.support import static_model_control
@@ -79,16 +79,19 @@ def test_internal_explicit_identity_uses_shared_validation(thread_environment) -
 def test_recent_messages_start_from_latest_and_page_backwards(
     thread_environment,
 ) -> None:
-    _, _, conversations, threads, _ = thread_environment
+    _, session_factory, _, threads, _ = thread_environment
     threads.create_thread(username="alice", thread_id="thread_recent")
-    for index in range(1, 6):
-        conversations.append_message(
-            "alice",
-            "thread_recent",
-            MessageAppend(
-                role="human" if index % 2 else "ai",
+    with session_factory.begin() as db:
+        thread = db.query(Thread).filter(Thread.thread_id == "thread_recent").one()
+        db.add_all(
+            Message(
+                thread_ref_id=thread.id,
+                sequence=index,
+                message_type="human" if index % 2 else "ai",
                 content=str(index),
-            ),
+                status="completed",
+            )
+            for index in range(1, 6)
         )
 
     latest = threads.recent_messages(
