@@ -43,18 +43,8 @@ def sanitize_text(text: str) -> str:
     text = _CONTROL_CHAR_RE.sub("", text)
     text = re.sub(r"[\ue000-\uf8ff]", "", text)
 
-    # 4. 彻底擦除孤立代理项 (Surrogates)，收敛至 100% 合规的 UTF-8 (对应 PostgreSQL 的 utf8mb4 标准)
-    try:
-        cleaned = text.encode("utf-8", "ignore").decode("utf-8", "ignore")
-    except Exception:
-        chars = []
-        for char in text:
-            if 0xD800 <= ord(char) <= 0xDFFF:
-                continue
-            chars.append(char)
-        cleaned = "".join(chars)
-
-    return cleaned
+    # 剥离孤立的 UTF-16 代理项。
+    return text.encode("utf-8", "ignore").decode("utf-8")
 
 
 def _normalize_metadata_text(value: object) -> str:

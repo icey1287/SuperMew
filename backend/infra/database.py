@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import re
-import unicodedata
 from pathlib import Path
 
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from backend.core.settings import PROJECT_ROOT, get_settings
@@ -23,47 +21,6 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 Base = declarative_base()
-
-
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_INVISIBLE_CHAR_RE = re.compile(r"[\u200b-\u200d\ufeff\u200f\u202a-\u202e]")
-
-
-def _clean_nul_chars(value):
-    if isinstance(value, str):
-        value = unicodedata.normalize("NFC", value)
-        value = _INVISIBLE_CHAR_RE.sub("", value)
-        value = _CONTROL_CHAR_RE.sub("", value)
-        value = re.sub(r"[\ue000-\uf8ff]", "", value)
-        try:
-            return value.encode("utf-8", "ignore").decode("utf-8", "ignore")
-        except Exception:
-            return "".join(
-                character
-                for character in value
-                if not 0xD800 <= ord(character) <= 0xDFFF
-            )
-    if isinstance(value, dict):
-        return {key: _clean_nul_chars(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_clean_nul_chars(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_clean_nul_chars(item) for item in value)
-    return value
-
-
-@event.listens_for(engine, "before_cursor_execute", retval=True)
-def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-    if parameters is not None:
-        if isinstance(parameters, dict):
-            for key, value in list(parameters.items()):
-                parameters[key] = _clean_nul_chars(value)
-        elif isinstance(parameters, list):
-            for index, value in enumerate(parameters):
-                parameters[index] = _clean_nul_chars(value)
-        elif isinstance(parameters, tuple):
-            parameters = tuple(_clean_nul_chars(value) for value in parameters)
-    return statement, parameters
 
 
 def alembic_config(database_url: str | None = None) -> Config:
