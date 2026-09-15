@@ -351,12 +351,6 @@ class AgentSettings(_EnvSettings):
         ge=256,
         validation_alias="AGENT_RESPONSE_RESERVE_TOKENS",
     )
-    memory_message_threshold: int = Field(
-        default=6,
-        ge=2,
-        le=100,
-        validation_alias="AGENT_MEMORY_MESSAGE_THRESHOLD",
-    )
 
     @property
     def minimum_recursion_limit(self) -> int:
