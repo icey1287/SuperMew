@@ -1051,52 +1051,6 @@ class RunRepository:
         finally:
             db.close()
 
-    def set_waiting_input(
-        self,
-        *,
-        run_id: str,
-        worker_id: str,
-        fencing_token: int,
-    ) -> RunRecord:
-        db = self._session_factory()
-        try:
-            with db.begin():
-                run = db.query(Run).filter(Run.id == run_id).with_for_update().first()
-                if not run:
-                    raise AppError(
-                        ErrorCode.RUN_NOT_FOUND, "Run 不存在", status_code=404
-                    )
-                self._assert_fencing(run, fencing_token)
-                if run.owner_worker_id != worker_id:
-                    raise AppError(
-                        ErrorCode.RUN_STATE_CONFLICT,
-                        "当前 worker 不再拥有该 Run",
-                        status_code=409,
-                    )
-                self._transition(run, RunStatus.WAITING_INPUT)
-                run.owner_worker_id = None
-                run.lease_expires_at = None
-                thread = db.query(Thread).filter(Thread.id == run.thread_ref_id).first()
-                if run.assistant_message_id:
-                    message = (
-                        db.query(Message)
-                        .filter(Message.id == run.assistant_message_id)
-                        .first()
-                    )
-                    if message:
-                        message.status = "waiting_input"
-                        message.updated_at = utcnow()
-                append_event_in_session(
-                    db,
-                    run=run,
-                    thread_id=thread.thread_id,
-                    event_type=RunEventType.RUN_WAITING_INPUT,
-                    data={"status": run.status},
-                )
-                return self._record(run, thread.thread_id)
-        finally:
-            db.close()
-
     def mark_cancelling(self, *, username: str, run_id: str) -> RunRecord:
         db = self._session_factory()
         try:

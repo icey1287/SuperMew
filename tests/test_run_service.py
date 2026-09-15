@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 from backend.core.errors import AppError, ErrorCode
 from backend.db.models import Base, Message, Run, RunEvent, ToolAudit, User, utcnow
 from backend.threads.repository import ThreadRepository
+from backend.rag.checkpoint_runner import HitlCheckpointRepository
 from backend.runs.repository import RunRepository
 from backend.runs.service import RunService
 from backend.runs.state import MultitaskStrategy, RunStatus, can_transition
@@ -353,11 +354,17 @@ class RunServiceTests(unittest.TestCase):
             fencing_token=claimed.fencing_token,
             lease_seconds=30,
         )
-        waiting = self.service.wait_for_input(
+        HitlCheckpointRepository(self.Session).record_pause(
             run_id=claimed.id,
             worker_id="worker-1",
             fencing_token=claimed.fencing_token,
+            checkpoint_id="checkpoint-1",
+            interrupt_id="interrupt-1",
+            interrupt_value={"prompt": "请补充角色名"},
+            state={"question": "hello"},
+            next_nodes=("await_hitl",),
         )
+        waiting = self.service.get_run(username="alice", run_id=claimed.id)
 
         self.assertEqual(RunStatus.WAITING_INPUT, waiting.status)
         self.assertIsNone(waiting.owner_worker_id)

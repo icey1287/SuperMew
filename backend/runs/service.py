@@ -81,19 +81,6 @@ class RunService:
             fencing_token=fencing_token,
         )
 
-    def wait_for_input(
-        self,
-        *,
-        run_id: str,
-        worker_id: str,
-        fencing_token: int,
-    ) -> RunRecord:
-        return self.repository.set_waiting_input(
-            run_id=run_id,
-            worker_id=worker_id,
-            fencing_token=fencing_token,
-        )
-
     def complete_run(
         self,
         *,
