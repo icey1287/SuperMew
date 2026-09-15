@@ -540,11 +540,7 @@ describe('durable chat projection', () => {
     await chatStore.loadThread('thread-1');
 
     expect(getRun).not.toHaveBeenCalled();
-    expect(getRunEvents).toHaveBeenCalledWith(
-      'run-server',
-      'test-token',
-      expect.objectContaining({ after: 0 })
-    );
+    expect(getRunEvents).toHaveBeenCalledWith('run-server', expect.objectContaining({ after: 0 }));
     expect(connectRunEventStream).toHaveBeenCalledWith(
       expect.objectContaining({ runId: 'run-server', threadId: 'thread-1', after: 2 })
     );
@@ -923,8 +919,7 @@ describe('durable chat projection', () => {
     const resumedConnection = streams.connections.get('run_1');
     expect(resumeRun).toHaveBeenCalledWith(
       'run_1',
-      expect.objectContaining({ hitl_token: 'hitl_1', answer: '丹瑾' }),
-      'test-token'
+      expect.objectContaining({ hitl_token: 'hitl_1', answer: '丹瑾' })
     );
 
     resumedConnection?.options.onEvent(
@@ -974,7 +969,7 @@ describe('durable chat projection', () => {
     chatStore.handleStop();
     await flushPromises();
 
-    expect(cancelRun).toHaveBeenCalledWith('run_1', 'test-token');
+    expect(cancelRun).toHaveBeenCalledWith('run_1');
     expect(streams.connections.get('run_1')?.options.signal?.aborted).toBe(false);
     expect(chatStore.currentRunStatus).toBe('cancelling');
 
@@ -1035,11 +1030,7 @@ describe('durable chat projection', () => {
     await chatStore.loadThread('thread-1');
 
     expect(getRun).not.toHaveBeenCalled();
-    expect(getRunEvents).toHaveBeenCalledWith(
-      'run_1',
-      'test-token',
-      expect.objectContaining({ after: 0 })
-    );
+    expect(getRunEvents).toHaveBeenCalledWith('run_1', expect.objectContaining({ after: 0 }));
     expect(connectRunEventStream).not.toHaveBeenCalled();
     expect(chatStore.currentPendingHitl).toMatchObject({
       runId: 'run_1',

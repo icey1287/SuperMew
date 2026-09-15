@@ -1,4 +1,4 @@
-import api, { getPublicError } from '@/utils/api';
+import api from '@/utils/api';
 import type {
   ModelAssignmentPayload,
   ModelControlPlane,
@@ -7,47 +7,27 @@ import type {
 } from '@/types/models';
 
 export async function getModelControlPlane(): Promise<ModelControlPlane> {
-  try {
-    return (await api.get<ModelControlPlane>('/v1/models')).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
+  return (await api.get<ModelControlPlane>('/v1/models')).data;
 }
 
 export async function createModelProfile(payload: ModelProfilePayload): Promise<ModelControlPlane> {
-  try {
-    return (await api.post<ModelControlPlane>('/v1/models', payload)).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
+  return (await api.post<ModelControlPlane>('/v1/models', payload)).data;
 }
 
 export async function updateModelProfile(
   profileId: string,
   payload: ModelProfilePayload
 ): Promise<ModelControlPlane> {
-  try {
-    return (await api.put<ModelControlPlane>(`/v1/models/${profileId}`, payload)).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
+  return (await api.put<ModelControlPlane>(`/v1/models/${profileId}`, payload)).data;
 }
 
 export async function deleteModelProfile(profileId: string): Promise<void> {
-  try {
-    await api.delete(`/v1/models/${profileId}`);
-  } catch (error) {
-    throw getPublicError(error);
-  }
+  await api.delete(`/v1/models/${profileId}`);
 }
 
 export async function assignModelRole(
   role: ModelRole,
   payload: ModelAssignmentPayload
 ): Promise<ModelControlPlane> {
-  try {
-    return (await api.put<ModelControlPlane>(`/v1/models/assignments/${role}`, payload)).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
+  return (await api.put<ModelControlPlane>(`/v1/models/assignments/${role}`, payload)).data;
 }

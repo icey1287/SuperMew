@@ -425,7 +425,7 @@ export const useChatStore = defineStore('chat', {
       const runsStore = useRunsStore();
       const effectiveThreadId = threadId || this.threadId;
       this.attachRunProjection(runId, effectiveThreadId);
-      const run = await runsStore.replay(runId, effectiveThreadId, authStore.token);
+      const run = await runsStore.replay(runId, effectiveThreadId);
       this.projectRunState(run);
       if (!run.terminal && run.status !== 'waiting_input') {
         void this.connectRun(runId, authStore.token);
@@ -613,7 +613,7 @@ export const useChatStore = defineStore('chat', {
       const runsStore = useRunsStore();
       const activeRun = runsStore.activeForThread(this.threadId);
       if (!activeRun || activeRun.status === 'cancelling') return;
-      void runsStore.cancel(activeRun.runId, useAuthStore().token).catch((error) => {
+      void runsStore.cancel(activeRun.runId).catch((error) => {
         alert(getPublicError(error).message);
       });
     },

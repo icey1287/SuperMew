@@ -36,7 +36,7 @@ describe('run client', () => {
     expect(first.length).toBeLessThanOrEqual(128);
   });
 
-  it('creates a Run with an explicit Bearer token and exact durable payload', async () => {
+  it('creates a Run with the durable payload through the shared API client', async () => {
     vi.mocked(api.post).mockResolvedValue({
       data: {
         run: { id: 'run_1', thread_id: 'thread_one', status: 'pending' },
@@ -45,44 +45,32 @@ describe('run client', () => {
       },
     } as any);
 
-    await createRun(
-      'thread_one',
-      {
-        message: 'hello',
-        idempotency_key: 'run_key',
-        multitask_strategy: 'reject',
-        on_disconnect: 'continue',
-        approved_tools: [],
-      },
-      'token-1'
-    );
+    await createRun('thread_one', {
+      message: 'hello',
+      idempotency_key: 'run_key',
+      multitask_strategy: 'reject',
+      on_disconnect: 'continue',
+      approved_tools: [],
+    });
 
-    expect(api.post).toHaveBeenCalledWith(
-      '/v1/threads/thread_one/runs',
-      {
-        message: 'hello',
-        idempotency_key: 'run_key',
-        multitask_strategy: 'reject',
-        on_disconnect: 'continue',
-        approved_tools: [],
-      },
-      { headers: { Authorization: 'Bearer token-1' } }
-    );
+    expect(api.post).toHaveBeenCalledWith('/v1/threads/thread_one/runs', {
+      message: 'hello',
+      idempotency_key: 'run_key',
+      multitask_strategy: 'reject',
+      on_disconnect: 'continue',
+      approved_tools: [],
+    });
   });
 
   it('rejects an invalid Thread ID before issuing a Run request', async () => {
     await expect(
-      createRun(
-        'thread/one',
-        {
-          message: 'hello',
-          idempotency_key: 'run_key',
-          multitask_strategy: 'reject',
-          on_disconnect: 'continue',
-          approved_tools: [],
-        },
-        'token-1'
-      )
+      createRun('thread/one', {
+        message: 'hello',
+        idempotency_key: 'run_key',
+        multitask_strategy: 'reject',
+        on_disconnect: 'continue',
+        approved_tools: [],
+      })
     ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
 
     expect(api.post).not.toHaveBeenCalled();
@@ -95,14 +83,11 @@ describe('run client', () => {
       } as any)
       .mockResolvedValueOnce({ data: { events: [], next_after: 7 } } as any);
 
-    await getRun('run/1', 'token');
-    await getRunEvents('run/1', 'token', { after: 7, limit: 5000 });
+    await getRun('run/1');
+    await getRunEvents('run/1', { after: 7, limit: 5000 });
 
-    expect(api.get).toHaveBeenNthCalledWith(1, '/v1/runs/run%2F1', {
-      headers: { Authorization: 'Bearer token' },
-    });
+    expect(api.get).toHaveBeenNthCalledWith(1, '/v1/runs/run%2F1');
     expect(api.get).toHaveBeenNthCalledWith(2, '/v1/runs/run%2F1/events', {
-      headers: { Authorization: 'Bearer token' },
       params: { after: 7, limit: 1000 },
     });
   });
@@ -120,39 +105,18 @@ describe('run client', () => {
         },
       } as any);
 
-    await cancelRun('run_1', 'token');
-    await resumeRun(
-      'run_1',
-      {
-        hitl_token: 'hitl_1',
-        answer: '丹瑾',
-        idempotency_key: 'resume_1',
-      },
-      'token'
-    );
-
-    expect(api.post).toHaveBeenNthCalledWith(1, '/v1/runs/run_1/cancel', undefined, {
-      headers: { Authorization: 'Bearer token' },
+    await cancelRun('run_1');
+    await resumeRun('run_1', {
+      hitl_token: 'hitl_1',
+      answer: '丹瑾',
+      idempotency_key: 'resume_1',
     });
-    expect(api.post).toHaveBeenNthCalledWith(
-      2,
-      '/v1/runs/run_1/resume',
-      {
-        hitl_token: 'hitl_1',
-        answer: '丹瑾',
-        idempotency_key: 'resume_1',
-      },
-      { headers: { Authorization: 'Bearer token' } }
-    );
-  });
 
-  it('normalizes transport failures before exposing them to callers', async () => {
-    vi.mocked(api.get).mockRejectedValue(new TypeError('secret socket detail'));
-
-    await expect(getRun('run_1', 'token')).rejects.toMatchObject({
-      code: 'NETWORK_UNAVAILABLE',
-      retryable: true,
-      message: '无法连接服务，请检查网络后重试',
+    expect(api.post).toHaveBeenNthCalledWith(1, '/v1/runs/run_1/cancel');
+    expect(api.post).toHaveBeenNthCalledWith(2, '/v1/runs/run_1/resume', {
+      hitl_token: 'hitl_1',
+      answer: '丹瑾',
+      idempotency_key: 'resume_1',
     });
   });
 });

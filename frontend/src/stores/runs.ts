@@ -240,7 +240,7 @@ export const useRunsStore = defineStore('runs', {
       const { idempotencyKey, request } = beginCreateAttempt(this.pendingCreates, command);
 
       try {
-        const response = await createRun(command.threadId, request, command.token);
+        const response = await createRun(command.threadId, request);
         delete this.pendingCreates[command.threadId];
         const state = this.ensure(response.run.id, response.run.thread_id);
         state.idempotencyKey = idempotencyKey;
@@ -341,13 +341,13 @@ export const useRunsStore = defineStore('runs', {
       }
     },
 
-    async get(runId: string, token?: string): Promise<RunRecord> {
-      const response = await getRun(runId, authToken(token));
+    async get(runId: string): Promise<RunRecord> {
+      const response = await getRun(runId);
       this.hydrate(runId, response);
       return response;
     },
 
-    async replay(runId: string, threadId: string, token?: string): Promise<RunEventState> {
+    async replay(runId: string, threadId: string): Promise<RunEventState> {
       let current = this.ensure(runId, threadId);
       if (current.lastSequence === 0 && current.terminal) {
         const idempotencyKey = current.idempotencyKey;
@@ -359,7 +359,7 @@ export const useRunsStore = defineStore('runs', {
       }
 
       while (true) {
-        const response = await getRunEvents(runId, authToken(token), {
+        const response = await getRunEvents(runId, {
           after: current.lastSequence,
           limit: 1000,
         });
@@ -491,15 +491,11 @@ export const useRunsStore = defineStore('runs', {
       this.resumeInFlight = { ...this.resumeInFlight, [runId]: true };
 
       try {
-        const response = await resumeRun(
-          runId,
-          {
-            hitl_token: command.hitlToken,
-            answer: command.answer,
-            idempotency_key: idempotencyKey,
-          },
-          command.token
-        );
+        const response = await resumeRun(runId, {
+          hitl_token: command.hitlToken,
+          answer: command.answer,
+          idempotency_key: idempotencyKey,
+        });
         this.hydrate(runId, response.run);
         await this.connect(runId, command.token);
         return response;
@@ -511,7 +507,7 @@ export const useRunsStore = defineStore('runs', {
       }
     },
 
-    async cancel(runId: string, token?: string): Promise<RunRecord> {
+    async cancel(runId: string): Promise<RunRecord> {
       const current = this.byId[runId];
       const previous = current
         ? {
@@ -522,7 +518,7 @@ export const useRunsStore = defineStore('runs', {
         : null;
       if (current && !current.terminal) current.status = 'cancelling';
       try {
-        const response = await cancelRun(runId, authToken(token));
+        const response = await cancelRun(runId);
         this.hydrate(runId, response);
         return response;
       } catch (error) {

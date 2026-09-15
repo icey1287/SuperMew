@@ -1,4 +1,4 @@
-import api, { getPublicError } from '@/utils/api';
+import api from '@/utils/api';
 import { requireThreadId } from '@/threads/threadId';
 import type {
   RunCreateRequest,
@@ -21,80 +21,47 @@ export function createIdempotencyKey(scope: 'run' | 'resume' = 'run'): string {
   return `${scope}_${Date.now().toString(36)}_${fallbackKeySequence.toString(36)}_${random}`;
 }
 
-function authorization(token: string) {
-  return {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  };
-}
-
-async function publicRequest<T>(request: Promise<{ data: T }>): Promise<T> {
-  try {
-    return (await request).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
-}
-
 export async function createRun(
   threadId: string,
-  request: RunCreateRequest,
-  token: string
+  request: RunCreateRequest
 ): Promise<RunCreateResponse> {
-  const response = await publicRequest(
-    api.post<RunCreateResponse>(
+  const response = (
+    await api.post<RunCreateResponse>(
       `/v1/threads/${encodeURIComponent(requireThreadId(threadId))}/runs`,
-      request,
-      authorization(token)
+      request
     )
-  );
+  ).data;
   requireThreadId(response.run.thread_id);
   return response;
 }
 
-export function getRun(runId: string, token: string): Promise<RunRecord> {
-  return publicRequest(
-    api.get<RunRecord>(`/v1/runs/${encodeURIComponent(runId)}`, authorization(token))
-  );
+export async function getRun(runId: string): Promise<RunRecord> {
+  return (await api.get<RunRecord>(`/v1/runs/${encodeURIComponent(runId)}`)).data;
 }
 
-export function getRunEvents(
+export async function getRunEvents(
   runId: string,
-  token: string,
   options: { after?: number; limit?: number } = {}
 ): Promise<RunEventsResponse> {
-  return publicRequest(
-    api.get<RunEventsResponse>(`/v1/runs/${encodeURIComponent(runId)}/events`, {
-      ...authorization(token),
+  return (
+    await api.get<RunEventsResponse>(`/v1/runs/${encodeURIComponent(runId)}/events`, {
       params: {
         after: Math.max(options.after || 0, 0),
         limit: Math.min(Math.max(options.limit || 500, 1), 1000),
       },
     })
-  );
+  ).data;
 }
 
-export function cancelRun(runId: string, token: string): Promise<RunRecord> {
-  return publicRequest(
-    api.post<RunRecord>(
-      `/v1/runs/${encodeURIComponent(runId)}/cancel`,
-      undefined,
-      authorization(token)
-    )
-  );
+export async function cancelRun(runId: string): Promise<RunRecord> {
+  return (await api.post<RunRecord>(`/v1/runs/${encodeURIComponent(runId)}/cancel`)).data;
 }
 
-export function resumeRun(
+export async function resumeRun(
   runId: string,
-  request: RunResumeRequest,
-  token: string
+  request: RunResumeRequest
 ): Promise<RunResumeResponse> {
-  return publicRequest(
-    api.post<RunResumeResponse>(
-      `/v1/runs/${encodeURIComponent(runId)}/resume`,
-      request,
-      authorization(token)
-    )
-  );
+  return (
+    await api.post<RunResumeResponse>(`/v1/runs/${encodeURIComponent(runId)}/resume`, request)
+  ).data;
 }

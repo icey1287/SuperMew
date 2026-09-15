@@ -75,7 +75,7 @@ describe('durable runs store', () => {
     vi.mocked(createIdempotencyKey).mockImplementation((scope) => `${scope}_generated_key`);
   });
 
-  it('uses the Pinia in-memory token when no explicit Run token is provided', async () => {
+  it('hydrates Run state returned by the shared client', async () => {
     authSession.installAuthSession({
       access_token: 'memory-token',
       username: 'alice',
@@ -86,7 +86,7 @@ describe('durable runs store', () => {
 
     await store.get('run_1');
 
-    expect(getRun).toHaveBeenCalledWith('run_1', 'memory-token');
+    expect(store.byId.run_1.status).toBe('running');
   });
 
   it('refreshes once and reconnects an expired Run stream from the latest sequence', async () => {
@@ -218,8 +218,7 @@ describe('durable runs store', () => {
         multitask_strategy: 'reject',
         on_disconnect: 'continue',
         approved_tools: [],
-      }),
-      'token'
+      })
     );
   });
 
@@ -407,7 +406,7 @@ describe('durable runs store', () => {
 
     const connected = store.connect('run_1', 'token');
     await Promise.resolve();
-    await store.cancel('run_1', 'token');
+    await store.cancel('run_1');
 
     expect(streamOptions.signal?.aborted).toBe(false);
     expect(store.byId.run_1.status).toBe('cancelling');
@@ -424,7 +423,7 @@ describe('durable runs store', () => {
     store.ensure('run_1', 'thread-1').status = 'waiting_input';
     vi.mocked(cancelRun).mockResolvedValue(runRecord('cancelled'));
 
-    await store.cancel('run_1', 'token');
+    await store.cancel('run_1');
     expect(store.byId.run_1.terminal).toBe(true);
     expect(store.byId.run_1.terminalSequence).toBeNull();
 
@@ -440,7 +439,7 @@ describe('durable runs store', () => {
     const cancelResponse = deferred<any>();
     vi.mocked(cancelRun).mockReturnValue(cancelResponse.promise);
 
-    const cancelling = store.cancel('run_1', 'token');
+    const cancelling = store.cancel('run_1');
     store.apply(event(1, 'run.completed'));
     cancelResponse.resolve(runRecord('cancelling'));
     await cancelling;
@@ -457,7 +456,7 @@ describe('durable runs store', () => {
       next_after: 2,
     });
 
-    const replayed = await store.replay('run_1', 'thread-1', 'token');
+    const replayed = await store.replay('run_1', 'thread-1');
     expect(getRun).not.toHaveBeenCalled();
     expect(replayed.status).toBe('running');
     expect(replayed.lastSequence).toBe(2);

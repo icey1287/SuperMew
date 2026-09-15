@@ -1,4 +1,4 @@
-import api, { getPublicError } from '@/utils/api';
+import api from '@/utils/api';
 import type {
   CapabilityCatalogResponse,
   CapabilityControlPlane,
@@ -9,75 +9,69 @@ import type {
 } from '@/types/capabilities';
 
 export async function getCapabilityCatalog(): Promise<CapabilityCatalogResponse> {
-  try {
-    return (await api.get<CapabilityCatalogResponse>('/v1/capabilities')).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
+  return (await api.get<CapabilityCatalogResponse>('/v1/capabilities')).data;
 }
 
-async function controlRequest<T>(request: Promise<{ data: T }>): Promise<T> {
-  try {
-    return (await request).data;
-  } catch (error) {
-    throw getPublicError(error);
-  }
+export async function getCapabilityControlPlane(): Promise<CapabilityControlPlane> {
+  return (await api.get<CapabilityControlPlane>('/v1/capabilities/control-plane')).data;
 }
 
-export function getCapabilityControlPlane(): Promise<CapabilityControlPlane> {
-  return controlRequest(api.get<CapabilityControlPlane>('/v1/capabilities/control-plane'));
-}
-
-export function createManagedSkill(
+export async function createManagedSkill(
   payload: ManagedSkillPayload & { name: string }
 ): Promise<CapabilityControlPlane> {
-  return controlRequest(api.post<CapabilityControlPlane>('/v1/capabilities/skills', payload));
+  return (await api.post<CapabilityControlPlane>('/v1/capabilities/skills', payload)).data;
 }
 
-export function updateManagedSkill(
+export async function updateManagedSkill(
   name: string,
   payload: ManagedSkillPayload
 ): Promise<CapabilityControlPlane> {
-  return controlRequest(
-    api.put<CapabilityControlPlane>(`/v1/capabilities/skills/${encodeURIComponent(name)}`, payload)
-  );
+  return (
+    await api.put<CapabilityControlPlane>(
+      `/v1/capabilities/skills/${encodeURIComponent(name)}`,
+      payload
+    )
+  ).data;
 }
 
-export function deleteManagedSkill(name: string): Promise<CapabilityDeleteResponse> {
-  return controlRequest(
-    api.delete<CapabilityDeleteResponse>(`/v1/capabilities/skills/${encodeURIComponent(name)}`)
-  );
+export async function deleteManagedSkill(name: string): Promise<CapabilityDeleteResponse> {
+  return (
+    await api.delete<CapabilityDeleteResponse>(
+      `/v1/capabilities/skills/${encodeURIComponent(name)}`
+    )
+  ).data;
 }
 
-export function createManagedTool(
+export async function createManagedTool(
   payload: ManagedHttpToolPayload & { name: string }
 ): Promise<CapabilityControlPlane> {
-  return controlRequest(api.post<CapabilityControlPlane>('/v1/capabilities/tools', payload));
+  return (await api.post<CapabilityControlPlane>('/v1/capabilities/tools', payload)).data;
 }
 
-export function updateManagedTool(
+export async function updateManagedTool(
   name: string,
   payload: ManagedHttpToolPayload
 ): Promise<CapabilityControlPlane> {
-  return controlRequest(
-    api.put<CapabilityControlPlane>(`/v1/capabilities/tools/${encodeURIComponent(name)}`, payload)
-  );
+  return (
+    await api.put<CapabilityControlPlane>(
+      `/v1/capabilities/tools/${encodeURIComponent(name)}`,
+      payload
+    )
+  ).data;
 }
 
-export function deleteManagedTool(name: string): Promise<CapabilityDeleteResponse> {
-  return controlRequest(
-    api.delete<CapabilityDeleteResponse>(`/v1/capabilities/tools/${encodeURIComponent(name)}`)
-  );
+export async function deleteManagedTool(name: string): Promise<CapabilityDeleteResponse> {
+  return (
+    await api.delete<CapabilityDeleteResponse>(`/v1/capabilities/tools/${encodeURIComponent(name)}`)
+  ).data;
 }
 
-export function updateSqlAssistantConfig(
+export async function updateSqlAssistantConfig(
   payload: SqlAssistantConfigPayload
 ): Promise<CapabilityControlPlane> {
-  return controlRequest(api.put<CapabilityControlPlane>('/v1/capabilities/sql-assistant', payload));
+  return (await api.put<CapabilityControlPlane>('/v1/capabilities/sql-assistant', payload)).data;
 }
 
-export function updateWebResearchConfig(enabled: boolean): Promise<CapabilityControlPlane> {
-  return controlRequest(
-    api.put<CapabilityControlPlane>('/v1/capabilities/web-research', { enabled })
-  );
+export async function updateWebResearchConfig(enabled: boolean): Promise<CapabilityControlPlane> {
+  return (await api.put<CapabilityControlPlane>('/v1/capabilities/web-research', { enabled })).data;
 }
