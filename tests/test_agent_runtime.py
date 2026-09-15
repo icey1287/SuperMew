@@ -183,6 +183,7 @@ class ModelRegistryTests(unittest.TestCase):
                 MODEL="answer-model",
                 FAST_MODEL="fast-model",
                 GRADE_MODEL="",
+                EVALUATION_MODEL="",
                 MODEL_TIMEOUT_SECONDS=12.5,
             )
         )

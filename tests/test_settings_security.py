@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from pydantic import SecretStr, ValidationError
 
@@ -301,6 +302,7 @@ class SettingsSecurityTests(unittest.TestCase):
             storage.upload_dir,
         )
 
+    @patch.dict("os.environ", {}, clear=True)
     def test_sql_assistant_is_disabled_and_secretless_by_default(self):
         sql = SqlAssistantSettings(_env_file=None)
 
