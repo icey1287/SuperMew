@@ -22,10 +22,6 @@ uv run --no-sync python scripts/generate_contract_types.py --check
 uv run --no-sync python scripts/generate_rag_eval_schemas.py --check
 uv run --no-sync python -m backend.tools.registry_cli validate
 uv run --no-sync pytest -q \
-  tests/test_migrations.py \
-  tests/test_document_catalog_migration.py \
-  tests/test_indexing_worker_migration.py
-uv run --no-sync pytest -q \
   --cov=backend \
   --cov=scripts \
   --cov-report=term-missing:skip-covered \
@@ -75,8 +71,8 @@ AUTH_POSTGRES_TEST_URL=<专用 PostgreSQL DSN> \
   uv run --no-sync pytest -q tests/test_auth_postgres_integration.py
 ```
 
-SQLite 测试覆盖迁移中的数据转换与升级链。Document Version identity 收敛迁移不可逆，发布门禁
-必须验证 `upgrade head` 成功，并验证 downgrade 明确 fail-closed。PostgreSQL smoke 应连接专用
+SQLite 迁移测试随全量 pytest 执行一次，覆盖迁移中的数据转换与升级链。
+Document Version identity 收敛迁移不可逆，发布门禁必须验证 `upgrade head` 成功，并验证 downgrade 明确 fail-closed。PostgreSQL smoke 应连接专用
 临时数据库，不能指向共享或生产数据库：
 
 ```bash

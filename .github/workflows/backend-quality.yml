@@ -67,13 +67,6 @@ jobs:
       - name: Validate Skill and Tool Registry
         run: uv run --no-sync python -m backend.tools.registry_cli validate
 
-      - name: Exercise SQLite migration compatibility tests
-        run: >-
-          uv run --no-sync pytest -q
-          tests/test_migrations.py
-          tests/test_document_catalog_migration.py
-          tests/test_indexing_worker_migration.py
-
       - name: Exercise production Alembic chain on PostgreSQL
         env:
           DATABASE_URL: postgresql+psycopg2://supermew_ci:ci-only-password@127.0.0.1:5432/supermew_ci
