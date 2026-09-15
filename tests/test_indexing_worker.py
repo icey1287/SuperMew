@@ -1011,9 +1011,12 @@ def test_atomic_retirement_scope_is_revoked_and_cleanup_is_immediately_claimable
         version.cleanup_after == database_clock
         for version in retirement.cleanup_versions
     )
-    assert catalog_env.catalog.list_documents(
-        tenant_id="tenant-a", knowledge_base_id=catalog_env.knowledge_base.id
-    ) == []
+    assert (
+        catalog_env.catalog.list_documents(
+            tenant_id="tenant-a", knowledge_base_id=catalog_env.knowledge_base.id
+        )
+        == []
+    )
     due = retirement.cleanup_versions[0].cleanup_after
     claimed = catalog_env.catalog.claim_cleanup_job(
         worker_id="cleanup-worker-a",

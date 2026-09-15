@@ -75,7 +75,9 @@ class RagSettings(_EnvSettings):
     auto_merge_enabled: bool = Field(
         default=True, validation_alias="AUTO_MERGE_ENABLED"
     )
-    auto_merge_threshold: int = Field(default=2, validation_alias="AUTO_MERGE_THRESHOLD")
+    auto_merge_threshold: int = Field(
+        default=2, validation_alias="AUTO_MERGE_THRESHOLD"
+    )
     leaf_retrieve_level: int = Field(default=3, validation_alias="LEAF_RETRIEVE_LEVEL")
     vector_timeout_seconds: float = Field(
         default=10.0, gt=0, validation_alias="VECTOR_TIMEOUT_SECONDS"

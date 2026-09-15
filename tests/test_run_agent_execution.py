@@ -564,7 +564,9 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.runtime_factory.tool_ceiling = frozenset(
             {"search_knowledge_base", "web_search", "web_fetch"}
         )
-        self.threads.create_thread(username="alice", thread_id="thread-current-version-web-skill")
+        self.threads.create_thread(
+            username="alice", thread_id="thread-current-version-web-skill"
+        )
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-current-version-web-skill",
@@ -673,7 +675,9 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             attempts=2,
             max_attempts=2,
         )
-        self.threads.create_thread(username="alice", thread_id="thread-provider-failure")
+        self.threads.create_thread(
+            username="alice", thread_id="thread-provider-failure"
+        )
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-provider-failure",
@@ -721,7 +725,9 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             thread_limit=None,
             run_limit=4,
         )
-        self.threads.create_thread(username="alice", thread_id="thread-model-call-limit")
+        self.threads.create_thread(
+            username="alice", thread_id="thread-model-call-limit"
+        )
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-model-call-limit",
@@ -1367,7 +1373,9 @@ class RunAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             run_service=self.service,
             access_validator=runtime_factory.validate_resume_access,
         )
-        self.threads.create_thread(username="alice", thread_id="thread-hitl-post-claim-revoke")
+        self.threads.create_thread(
+            username="alice", thread_id="thread-hitl-post-claim-revoke"
+        )
         reservation = self.service.create_run(
             username="alice",
             thread_id="thread-hitl-post-claim-revoke",

@@ -113,7 +113,9 @@ def load_utils(env):
         patch.object(provider_runtime, "embedding_service", embedding_service),
         patch.object(milvus_client, "get_milvus_store", return_value=milvus_store),
         patch.object(parent_chunk_store, "ParentChunkStore", ParentChunkStore),
-        patch.object(retrieval_module, "DocumentRetrievalScope", DocumentRetrievalScope),
+        patch.object(
+            retrieval_module, "DocumentRetrievalScope", DocumentRetrievalScope
+        ),
     ):
         spec.loader.exec_module(module)
 

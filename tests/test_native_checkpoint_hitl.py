@@ -635,7 +635,9 @@ class NativeCheckpointRepositoryTests(unittest.TestCase):
 
     def test_runner_supports_two_cross_process_clarifications_and_replay(self):
         pipeline, calls = NativeCheckpointGraphTests._pipeline(clarify_rounds=2)
-        self.threads.create_thread(username="alice", thread_id="thread-two-clarifications")
+        self.threads.create_thread(
+            username="alice", thread_id="thread-two-clarifications"
+        )
         reservation = self.run_service.create_run(
             username="alice",
             thread_id="thread-two-clarifications",

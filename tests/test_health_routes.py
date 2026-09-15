@@ -95,7 +95,9 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(health, "document_catalog", _catalog()),
             patch.object(
-                health, "capability_control_service", SimpleNamespace(active_runtime=None)
+                health,
+                "capability_control_service",
+                SimpleNamespace(active_runtime=None),
             ),
         ):
             response = await health.ready()
