@@ -314,7 +314,8 @@ WEB_RESEARCH_FETCH_RUN_TOTAL_MAX_BYTES=12288
 Search 与 Fetch 使用独立模型可见预算；Search 不消耗 Fetch 的 Run 累计额度。Runtime 只连接固定
 Tavily `/search` 与 `/extract`。Extract 固定使用 `chunks_per_source=3`、`extract_depth=basic`，每个
 chunk 在进入模型上下文前限制为约 500 字符。
-模型用 `[S1]` 就近引用，服务端终态把已知 Source ID 渲染为对应链接。完整上线、预算与事件响应见
+模型用 `[S1]` 就近引用，服务端终态把已知 Source ID 渲染为对应链接；前端将引用链接显示为
+`[1]`、`[2]` 等数字标记，点击可打开原始来源。完整上线、预算与事件响应见
 [Web Research Runbook](docs/runbooks/web-research.md)。
 
 ### Guardrail 与 Sandbox

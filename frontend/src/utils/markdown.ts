@@ -97,6 +97,9 @@ function sanitizeMarkdownHtml(html: string): string {
     }
     anchor.setAttribute('target', '_blank');
     anchor.setAttribute('rel', 'noopener noreferrer');
+    // Keep Run-local Source IDs in the message; format only their visible link labels.
+    const sourceId = /^S([1-9]\d*)$/.exec(anchor.textContent || '');
+    if (sourceId) anchor.textContent = `[${sourceId[1]}]`;
   });
   return template.innerHTML;
 }
