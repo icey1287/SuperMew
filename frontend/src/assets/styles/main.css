@@ -2388,7 +2388,7 @@ html[data-theme='light'] .context-source-card:hover {
 
 .source-item {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 10px;
   border: 1px solid var(--line);
@@ -2397,6 +2397,10 @@ html[data-theme='light'] .context-source-card:hover {
   transition:
     border-color 180ms ease,
     background 180ms ease;
+}
+
+.references-list > .source-item {
+  grid-template-columns: 24px minmax(0, 1fr);
 }
 
 .source-item.highlight-chunk {
@@ -2463,6 +2467,7 @@ html[data-theme='light'] .context-source-card:hover {
   color: var(--muted);
   font-size: 8px;
   line-height: 1.58;
+  overflow-wrap: anywhere;
 }
 
 .reasoning-content {

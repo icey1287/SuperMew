@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { RetrievedChunk } from '../src/types/chat';
 
 async function mockCapabilityCatalog(page: Page, role: 'user' | 'admin' = 'user') {
   const isAdmin = role === 'admin';
@@ -93,6 +94,19 @@ test('renders the unauthenticated application shell and registration mode', asyn
 
 test('projects a durable Run event stream into the chat UI', async ({ page }) => {
   const runId = 'run-e2e-1';
+  const chunk: RetrievedChunk = {
+    filename: 'arkr',
+    page_number: 1,
+    rrf_rank: 1,
+    rerank_score: 0,
+    text: `明日方舟中文干员详情（优化版） Page 1。${'这是一段用于检查检索结果换行的中文正文。'.repeat(8)} ${'long_document_identifier_'.repeat(20)}`,
+    chunk_id: 'chunk-e2e-1',
+    document_id: 'document-e2e-1',
+    document_version_id: 'version-e2e-1',
+    section_id: 'section-e2e-1',
+    index_version: 'index-e2e-1',
+    content_hash: 'b'.repeat(64),
+  };
   let createRequest: Record<string, unknown> | null = null;
   let createThreadRequest: Record<string, unknown> | null = null;
   let createdThreadId = '';
@@ -138,7 +152,18 @@ test('projects a durable Run event stream into the chat UI', async ({ page }) =>
     const events = [
       ['run.created', { status: 'queued', user_message_id: 101, assistant_message_id: 102 }],
       ['run.started', {}],
-      ['message.completed', { content: '这是来自持久化 Run 的回答。', status: 'completed' }],
+      [
+        'message.completed',
+        {
+          content: '这是来自持久化 Run 的回答。',
+          status: 'completed',
+          rag_trace: {
+            initial_retrieved_chunks: [chunk],
+            rewrite_retrieved_chunks: [{ ...chunk, filename: '长文档名称'.repeat(30) }],
+            retrieved_chunks: [chunk],
+          },
+        },
+      ],
       ['run.completed', {}],
     ];
     const body = events
@@ -189,6 +214,42 @@ test('projects a durable Run event stream into the chat UI', async ({ page }) =>
   expect(createdThreadId).toBe('thread_e2e_1');
   expect(lastEventId).toBe('0');
   expect(await page.evaluate(() => Object.keys(localStorage))).toEqual(['supermew-theme']);
+
+  await page.locator('.reasoning-details > summary').click();
+  await page.locator('.references-title').click();
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const traceCards = page.locator('.reasoning-details .source-item');
+    await expect(traceCards).toHaveCount(2);
+    for (const card of await traceCards.all()) {
+      await expect(card).toContainText('RRF名次：#1');
+      await expect(card).toContainText('Rerank分数：0.0000');
+      const layout = await card.evaluate((element) => {
+        const title = element.querySelector('.source-title-line')!.getBoundingClientRect();
+        const meta = element.querySelector('.source-meta-line')!.getBoundingClientRect();
+        const excerpt = element.querySelector('.source-excerpt')!.getBoundingClientRect();
+        return {
+          cardWidth: element.clientWidth,
+          excerptWidth: excerpt.width,
+          titleBottom: title.bottom,
+          metaTop: meta.top,
+          metaBottom: meta.bottom,
+          excerptTop: excerpt.top,
+          overflows: element.scrollWidth > element.clientWidth,
+        };
+      });
+      expect(layout.excerptWidth).toBeGreaterThan(layout.cardWidth * 0.8);
+      expect(layout.metaTop).toBeGreaterThanOrEqual(layout.titleBottom);
+      expect(layout.excerptTop).toBeGreaterThanOrEqual(layout.metaBottom);
+      expect(layout.overflows).toBe(false);
+    }
+    const reference = page.locator('.references-list .source-item');
+    const index = await reference.locator('.ref-index').boundingBox();
+    const content = await reference.locator('.source-content').boundingBox();
+    expect(index).not.toBeNull();
+    expect(content).not.toBeNull();
+    expect(content!.x).toBeGreaterThanOrEqual(index!.x + index!.width);
+  }
 });
 
 test('silently restores an HttpOnly refresh session without rendering the login panel', async ({
