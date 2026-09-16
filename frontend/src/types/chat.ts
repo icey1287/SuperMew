@@ -165,7 +165,6 @@ export interface Message {
   text: string;
   isUser: boolean;
   isThinking?: boolean;
-  thinkingStartedAt?: number;
   runActiveDurationMs?: number;
   runActiveStartedAt?: string | null;
   isHitlRequest?: boolean;

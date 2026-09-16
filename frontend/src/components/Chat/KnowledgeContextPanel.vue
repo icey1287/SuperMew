@@ -84,6 +84,7 @@ import { useChatStore } from '@/stores/chat';
 import ExecutionTimeline from '@/components/Run/ExecutionTimeline.vue';
 import ArtifactShelf from '@/components/Artifacts/ArtifactShelf.vue';
 import type { RetrievedChunk } from '@/types/chat';
+import { runActiveDurationMs } from '@/utils/runDuration';
 import emptyEvidence from '@/assets/images/empty-evidence.webp';
 
 const emit = defineEmits<{
@@ -149,18 +150,8 @@ const confidenceDescription = computed(() => {
 });
 
 const totalDuration = computed(() => {
-  const recordedDuration = latestMessage.value?.runActiveDurationMs;
-  if (recordedDuration !== undefined) {
-    const activeStartedAt = latestMessage.value?.runActiveStartedAt;
-    const activeStartedTimestamp = activeStartedAt ? Date.parse(activeStartedAt) : Number.NaN;
-    const activeElapsed = Number.isFinite(activeStartedTimestamp)
-      ? Math.max(currentTime.value - activeStartedTimestamp, 0)
-      : 0;
-    const total = Math.max(recordedDuration, 0) + activeElapsed;
-    return total > 0 ? formatMilliseconds(total) : '';
-  }
-
-  return '';
+  const total = runActiveDurationMs(latestMessage.value, currentTime.value);
+  return total > 0 ? formatMilliseconds(total) : '';
 });
 
 const formatMilliseconds = (milliseconds: number) => {

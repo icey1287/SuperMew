@@ -39,6 +39,7 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
   最终权威结果，Redis 只负责低延迟通知。
 - **同一 Run 的 HITL 与真实取消**：Checkpoint、Run、Thread 和 assistant Message 身份在暂停与
   恢复期间保持不变；Stop 会请求取消后端 Run，关闭浏览器或 SSE 只停止观察，不冒充执行终止。
+  检索步骤显示各自的阶段耗时；顶部累计运行时间保留 HITL 前后的执行耗时，不计等待用户补充的时间。
 - **Document Version 两阶段发布**：Index Job 在隔离 candidate scope 构建并核验 exact
   manifest，随后使用 PostgreSQL CAS 原子切换当前版本；构建失败不会影响已发布版本。
 - **混合检索与精排**：稠密向量与 Milvus 原生 BM25 稀疏向量经 RRF 融合，在完整候选池上完成

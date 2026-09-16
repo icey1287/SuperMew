@@ -8,7 +8,7 @@
       </div>
       <span v-if="!msg.ragSteps || !msg.ragSteps.length" class="thinking-text">正在思考中...</span>
       <span v-else class="thinking-text">{{ msg.ragSteps[msg.ragSteps.length - 1].label }}</span>
-      <span class="thinking-elapsed">已等待 {{ elapsedSeconds }} 秒</span>
+      <span class="thinking-elapsed">累计运行 {{ elapsedSeconds }} 秒</span>
     </div>
 
     <div v-if="waitingHint" class="thinking-hint">{{ waitingHint }}</div>
@@ -29,8 +29,8 @@
               <span class="thinking-trace-icon">{{ step.icon || '▶' }}</span>
               <span class="thinking-trace-label">{{ step.label }}</span>
               <span v-if="step.detail" class="thinking-trace-detail">{{ step.detail }}</span>
-              <span v-if="step.elapsed_ms != null" class="thinking-trace-time">{{
-                formatElapsed(step.elapsed_ms)
+              <span v-if="step.stage_elapsed_ms != null" class="thinking-trace-time">{{
+                formatElapsed(step.stage_elapsed_ms)
               }}</span>
             </div>
           </div>
@@ -46,8 +46,8 @@
             <span class="thinking-trace-icon">{{ step.icon || '▶' }}</span>
             <span class="thinking-trace-label">{{ step.label }}</span>
             <span v-if="step.detail" class="thinking-trace-detail">{{ step.detail }}</span>
-            <span v-if="step.elapsed_ms != null" class="thinking-trace-time">{{
-              formatElapsed(step.elapsed_ms)
+            <span v-if="step.stage_elapsed_ms != null" class="thinking-trace-time">{{
+              formatElapsed(step.stage_elapsed_ms)
             }}</span>
           </div>
         </template>
@@ -60,6 +60,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useChatStore } from '@/stores/chat';
 import type { Message } from '@/types/chat';
+import { runActiveDurationMs } from '@/utils/runDuration';
 
 const props = defineProps<{
   msg: Message;
@@ -67,12 +68,14 @@ const props = defineProps<{
 }>();
 
 const chatStore = useChatStore();
-const elapsedSeconds = ref(0);
+const currentTime = ref(Date.now());
+const elapsedSeconds = computed(() =>
+  Math.floor(runActiveDurationMs(props.msg, currentTime.value) / 1000)
+);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const updateElapsed = () => {
-  const startedAt = props.msg.thinkingStartedAt || Date.now();
-  elapsedSeconds.value = Math.max(Math.floor((Date.now() - startedAt) / 1000), 0);
+  currentTime.value = Date.now();
 };
 
 const waitingHint = computed(() => {

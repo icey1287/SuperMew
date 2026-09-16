@@ -742,7 +742,6 @@ export const useChatStore = defineStore('chat', {
           text: '',
           isUser: false,
           isThinking: true,
-          thinkingStartedAt: Date.now(),
           status: 'creating',
           skillName: selectedSkillName,
           skillVersion: selectedSkillVersion,
