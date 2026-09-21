@@ -50,3 +50,12 @@ uv run python scripts/evaluate_rag.py run \
 最终生产门禁应至少有 200 条人工标注 case，覆盖：单事实、定义、参数、跨文档综合、对比、多跳、时间/版本、表格、代码、歧义/HITL、无知识、来源冲突、近似实体、错别字、长问题和文档提示注入。当前 `prompt_injection` case 带有 `retrieval_only` 标签，只验证安全说明能被正确检索；在结构化答案与泄密探针接入前，不得据此宣称完整 Guardrail 已通过。
 
 新增或修改 Dataset 后 fingerprint 会变化，旧 Observation 与 baseline 会被拒绝。真实 corpus/index identity 应在 PR-15 后切换到 DocumentVersion 与 IndexManifest hash。
+
+## 调整指标与门禁
+
+Gate 是质量政策。修改阈值需要可审查的质量理由，不能仅为消除测试或评测失败而放宽门禁、
+删除失败 Case 或手工改写 baseline。新增 Case 应补足缺失场景，不为当前实现量身定制答案。
+
+指标方向、聚合或切片语义变化属于评测契约变更，应同步更新相关 ADR、schema、测试和
+确定性生成的 baseline。源码清理本身不要求更新 baseline，参见
+[ADR-0027](../../docs/adr/0027-remove-rag-source-fingerprint.md)。

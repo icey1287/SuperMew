@@ -1024,6 +1024,9 @@ docker compose -f docker-compose.prod.yml config
 
 ## 文档索引
 
+ADR 保留已接受决策的历史：同一决策内的实施细节可更新；实质性反转或替代应新增取代旧决策的
+ADR，并在旧文档标记被取代。当前操作步骤维护在 Runbook 中，避免把历史方案继续作为操作指引。
+
 - [领域语言](CONTEXT.md)
 - [生产部署](docs/runbooks/deployment.md)
 - [RAG 评测说明](evals/rag/README.md)
