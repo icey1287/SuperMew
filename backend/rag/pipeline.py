@@ -103,7 +103,7 @@ EVIDENCE_GRADE_PROMPT = (
     "- relevance: none 表示主题不相关；weak 表示主题接近但证据弱；strong 表示主题明确相关。\n"
     "- answerability: none 表示不能回答；partial 表示有部分线索但不足以给确定答案；"
     "sufficient 表示片段能直接或组合支撑答案。\n"
-    "- ambiguity: missing_slot 表示缺少角色名、版本、文件类型、模块名、产品线等关键条件；"
+    "- ambiguity: missing_slot 表示缺少确定问题所指对象或适用范围所必需的条件；"
     "multiple_candidates 表示多个候选方向都可能相关；none 表示无明显歧义。\n"
     "- route 只能选择：answer、rewrite、clarify、scope_select、no_knowledge。\n"
     "  answer: relevance=strong 且 answerability=sufficient。\n"
@@ -111,7 +111,10 @@ EVIDENCE_GRADE_PROMPT = (
     "  clarify: 缺少关键条件，需要用户补充。\n"
     "  scope_select: 多个候选方向都相关，需要用户选择。\n"
     "  no_knowledge: 无召回或主题不相关。\n"
-    "- 如果 route 是 clarify 或 scope_select，请给 hitl_prompt；如果能列出选项，请给 hitl_options。"
+    "- missing_slots、hitl_prompt 和 hitl_options 必须依据当前问题与检索片段生成，"
+    "不得预设业务领域、实体类别或必填字段；不要把单纯的证据不足当成用户缺少条件。\n"
+    "- 如果 route 是 clarify 或 scope_select，请给 hitl_prompt；"
+    "hitl_options 只能列出检索片段支持的候选项。"
 )
 
 
@@ -509,33 +512,6 @@ def _grade_for_no_docs() -> EvidenceGrade:
     )
 
 
-_SCOPE_SELECTION_HINTS = (
-    "版本",
-    "型号",
-    "方案",
-    "套餐",
-    "范围",
-    "选项",
-    "环境",
-    "区域",
-    "地区",
-    "version",
-    "model",
-    "plan",
-    "tier",
-    "scope",
-    "option",
-    "environment",
-    "region",
-)
-
-
-def _question_requests_scope_selection(state: RAGState) -> bool:
-    question = str(state.get("original_question") or state.get("question") or "")
-    normalized = question.casefold()
-    return any(hint in normalized for hint in _SCOPE_SELECTION_HINTS)
-
-
 def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     docs = state.get("docs") or []
     rewrite_count = int(state.get("rewrite_count") or 0)
@@ -545,22 +521,10 @@ def _resolve_route(grade: EvidenceGrade, state: RAGState) -> str:
     if not docs or grade.relevance == "none":
         return "no_knowledge"
 
-    selectable_options = tuple(
-        dict.fromkeys(option.strip() for option in grade.hitl_options if option.strip())
-    )
-    if grade.ambiguity == "multiple_candidates":
+    if grade.ambiguity == "multiple_candidates" or grade.route == "scope_select":
         return "scope_select"
     if grade.ambiguity == "missing_slot" or grade.missing_slots:
-        if len(selectable_options) >= 2 and _question_requests_scope_selection(state):
-            return "scope_select"
         return "clarify"
-
-    if grade.route == "scope_select" or (
-        grade.route == "clarify"
-        and len(selectable_options) >= 2
-        and _question_requests_scope_selection(state)
-    ):
-        return "scope_select"
 
     answer_is_supported = (
         grade.relevance == "strong" and grade.answerability == "sufficient"
@@ -816,7 +780,8 @@ def retrieve_rewritten(state: RAGState) -> RAGState:
 # ---------------------------------------------------------------------------
 
 COMPLEXITY_PROMPT = (
-    "你是一个问题复杂度规划器。请判断用户问题的复杂度。\n\n"
+    "你是一个问题复杂度规划器。请根据当前问题表达的检索需求判断复杂度，"
+    "不要预设业务领域、实体类别或属性。\n\n"
     "【简单问题】：事实查询、定义查询、单一信息点查询、明确的二选一问题、"
     "某个具体属性/参数/规格的查询。\n"
     "【复杂问题】：需要跨文档综合、多角度分析、比较对比、多步骤推理、"
@@ -824,28 +789,6 @@ COMPLEXITY_PROMPT = (
     "用户问题：{question}\n\n"
     "如果是复杂问题，请同时给出 2-4 个互不重叠、可独立检索的子问题；"
     "如果是简单问题，sub_questions 留空。"
-)
-
-_SIMPLE_QUERY_MARKERS = (
-    "是什么",
-    "是谁",
-    "哪里",
-    "何时",
-    "多少",
-    "是否",
-    "哪个",
-    "哪种",
-    "属性",
-    "参数",
-    "规格",
-    "定义",
-    "含义",
-    "what is",
-    "who is",
-    "where is",
-    "when is",
-    "how many",
-    "which",
 )
 
 _SIMPLE_INTERROGATIVE_MARKERS = (
@@ -902,21 +845,6 @@ _COMPLEX_QUERY_MARKERS = (
     "complex",
 )
 
-_QUERY_DIMENSION_MARKERS = (
-    "属性",
-    "武器",
-    "定位",
-    "技能",
-    "机制",
-    "参数",
-    "规格",
-    "性能",
-    "价格",
-    "优点",
-    "缺点",
-    "作用",
-)
-
 
 def _simple_question_fast_path_reason(question: str) -> Optional[str]:
     """Return a reason only when a local rule can confidently classify a simple query."""
@@ -927,18 +855,16 @@ def _simple_question_fast_path_reason(question: str) -> Optional[str]:
         return None
     if sum(normalized.count(marker) for marker in _SIMPLE_INTERROGATIVE_MARKERS) > 1:
         return None
-    if "、" in normalized:
+    if any(mark in normalized for mark in ("、", ",", "，", ";", "；")):
         return None
     if re.search(r"[\u4e00-\u9fff]", normalized) and normalized.count(" ") >= 3:
         return None
-    if sum(marker in normalized for marker in _QUERY_DIMENSION_MARKERS) >= 2:
-        return None
     if sum(normalized.count(mark) for mark in ("?", "？", ";", "；")) > 1:
         return None
-    if any(marker in normalized for marker in _SIMPLE_QUERY_MARKERS):
+    if any(marker in normalized for marker in _SIMPLE_INTERROGATIVE_MARKERS):
         return "obvious_simple_fast_path:single_fact_marker"
-    if len(normalized.rstrip("?？。.!！")) <= 18:
-        return "obvious_simple_fast_path:short_single_intent"
+    # Short keyword queries can contain any number of domain-specific fields.
+    # Leave their meaning to the planner instead of maintaining a field vocabulary.
     return None
 
 

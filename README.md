@@ -50,9 +50,9 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
 - **有界的 Rerank 降级**：Rerank 未配置时直接保留融合后的候选排序；已配置的 Rerank Provider
   在完成自身有限重试后仍失败时，回退到 RRF / Auto-merging 结果，并把错误码、尝试次数和
   `rerank_fallback_applied` 写入 RAG Trace，不触发另一套检索实现。
-- **低延迟复杂度规划**：明显的短单事实问题由本地规则直接进入检索；其余问题由 Fast 模型一次
-  完成复杂度判断。复杂问题同时生成 2-4 个子问题，通过 LangGraph `Send` 并行执行检索与证据
-  评判，最终在 Synthesis 节点去重合成。
+- **低延迟复杂度规划**：具有明确单事实问句结构的短问题由本地规则直接进入检索；其余问题由
+  Fast 模型一次完成复杂度判断。复杂问题同时生成 2-4 个子问题，通过 LangGraph `Send` 并行
+  执行检索与证据评判，最终在 Synthesis 节点去重合成。
 - **纠错型 RAG 与单选重写**：Grader 一次结构化判断相关性、可回答性、歧义与 route。证据不足
   时，Fast 模型只选择 Step-back 或 HyDE 中的一种，并只执行一次重写检索和一次复评。
 - **Agent 循环与预算保护**：固定中间件链约束模型调用、Tool 调用、递归、deadline、上下文预算
@@ -511,8 +511,9 @@ npm run build
 ### 2. RAG 全链路
 
 1. **复杂度规划：`classify_complexity`**
-   - 明显的短单事实问题由本地规则直接判为 simple，不调用规划模型。
-   - 其余问题由 Model Snapshot 中的 Fast 角色一次完成 simple/complex 判断。
+   - 具有明确单事实问句结构的短问题由本地规则直接判为 simple，不调用规划模型。
+   - 本地规则不维护业务实体或属性词表；关键词式查询及其余问题由 Model Snapshot 中的 Fast
+     角色一次完成 simple/complex 判断。
    - complex 结果同时给出最多 `RAG_MAX_SUBQUERIES` 个子问题，不再追加一次拆题模型调用。
 2. **检索执行**
    - simple：进入 `retrieve_initial`，执行一次标准检索。
@@ -525,7 +526,8 @@ npm run build
    - 在完整候选池上执行 L3 → L2 → L1 Auto-merging，父块从版本绑定的 ParentChunk Store 读取。
    - 合并后进入 Rerank；未配置或 Provider 失败时保留已有排序并记录明确 trace。
 3. **证据评判：`grade_documents`**
-   - Grader 一次输出相关性、可回答性、歧义、置信度与 route。
+   - Grader 一次输出相关性、可回答性、歧义、置信度与 route。缺失条件和候选项依据当前问题与
+     Evidence 生成；澄清或范围选择依据结构化评分结果，不按领域关键词覆盖。
    - route 只进入回答、一次重写、HITL 澄清/范围选择或无知识结束。
    - 评判 Provider 失败会返回明确错误，不切换另一套 grader。
 4. **单选重写：`rewrite_question`**

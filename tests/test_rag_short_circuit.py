@@ -385,7 +385,7 @@ class RagShortCircuitTests(unittest.TestCase):
         self.assertEqual("simple", result.get("complexity"))
         self.assertIn("fast_path", result.get("complexity_reason", ""))
 
-    def test_entity_version_attribute_query_skips_complexity_model(self):
+    def test_keyword_query_uses_complexity_model_even_when_short(self):
         def retrieve(query, top_k=5):
             return {"docs": [_doc("Orion V2 外壳规格")], "meta": _meta(1)}
 
@@ -412,9 +412,54 @@ class RagShortCircuitTests(unittest.TestCase):
         finally:
             ctx.close()
 
-        complexity_model.assert_not_called()
+        complexity_model.assert_called_once()
         self.assertEqual("simple", result.get("complexity"))
-        self.assertIn("fast_path", result.get("complexity_reason", ""))
+        self.assertEqual("model", result.get("complexity_reason"))
+
+    def test_single_fact_routing_does_not_depend_on_domain_vocabulary(self):
+        pipeline = load_pipeline(retrieve_documents=lambda *_: {})
+        pipeline._get_complexity_model = Mock(
+            side_effect=AssertionError("single fact should skip planner")
+        )
+        for question in (
+            "武器技能是什么？",
+            "报销币种是什么？",
+            "样本批号是什么？",
+            "设备量程是多少？",
+        ):
+            with self.subTest(question=question):
+                result = pipeline.classify_complexity({"question": question})
+                self.assertEqual("simple", result["complexity"])
+                self.assertIn("fast_path", result["complexity_reason"])
+        pipeline._get_complexity_model.assert_not_called()
+
+    def test_keyword_and_list_queries_are_planned_across_domains(self):
+        pipeline = load_pipeline(retrieve_documents=lambda *_: {})
+        for question, sub_questions in (
+            ("丹瑾属性武器", ["丹瑾属性", "丹瑾武器"]),
+            ("发票税率币种", ["发票税率", "发票币种"]),
+            ("样本批号浓度", ["样本批号", "样本浓度"]),
+            ("设备量程精度", ["设备量程", "设备精度"]),
+            ("发票税率，币种是多少？", ["发票税率", "发票币种"]),
+            ("invoice currency, tax rate", ["invoice currency", "invoice tax rate"]),
+        ):
+            with self.subTest(question=question):
+
+                def plan(schema, prompt):
+                    self.assertIn(question, prompt)
+                    return {
+                        "complexity": "complex",
+                        "reason": "multiple requested facts",
+                        "sub_questions": sub_questions,
+                    }
+
+                pipeline._get_complexity_model = Mock(
+                    return_value=FakeStructuredModel(plan)
+                )
+                result = pipeline.classify_complexity({"question": question})
+                pipeline._get_complexity_model.assert_called_once()
+                self.assertEqual("complex", result["complexity"])
+                self.assertEqual(sub_questions, result["sub_questions"])
 
     def test_multi_dimension_keyword_query_still_uses_complexity_model(self):
         def retrieve(query, top_k=5):
@@ -902,7 +947,7 @@ class RagShortCircuitTests(unittest.TestCase):
                 "relevance": "strong",
                 "answerability": "partial",
                 "ambiguity": "missing_slot",
-                "route": "clarify",
+                "route": "scope_select",
                 "confidence": 0.8,
                 "missing_slots": ["版本"],
                 "hitl_prompt": "请选择版本",
@@ -926,6 +971,59 @@ class RagShortCircuitTests(unittest.TestCase):
 
         self.assertEqual("scope_select", result.get("route"))
         self.assertEqual("needs_scope_selection", result.get("retrieval_status"))
+
+    def test_hitl_routing_uses_grade_instead_of_scope_keyword_list(self):
+        pipeline = load_pipeline(retrieve_documents=lambda *_: {})
+        for question, slot in (
+            ("请按当前版本回答", "版本"),
+            ("请按样本批号回答", "批号"),
+            ("请按结算币种回答", "币种"),
+        ):
+            for route in ("clarify", "scope_select"):
+                with self.subTest(question=question, route=route):
+                    grade = pipeline.EvidenceGrade(
+                        relevance="strong",
+                        answerability="partial",
+                        ambiguity="missing_slot",
+                        route=route,
+                        missing_slots=[slot],
+                        hitl_options=["A", "B"],
+                    )
+                    self.assertEqual(
+                        route,
+                        pipeline._resolve_route(
+                            grade, {"question": question, "docs": [_doc("A / B")]}
+                        ),
+                    )
+
+    def test_grader_receives_current_domain_without_fixed_slot_examples(self):
+        pipeline = load_pipeline(retrieve_documents=lambda *_: {})
+        for question, evidence, slot in (
+            ("这个样本的浓度是多少？", "样本有甲、乙两个批号。", "样本批号"),
+            ("这张发票的税率是多少？", "发票有甲、乙两个税目。", "发票税目"),
+        ):
+            with self.subTest(question=question):
+
+                def grade(schema, prompt):
+                    self.assertIn(question, prompt)
+                    self.assertIn(evidence, prompt)
+                    for fixed_example in ("角色名", "武器", "技能", "产品线", "模块名"):
+                        self.assertNotIn(fixed_example, prompt)
+                    return {
+                        "relevance": "strong",
+                        "answerability": "partial",
+                        "ambiguity": "missing_slot",
+                        "route": "clarify",
+                        "missing_slots": [slot],
+                    }
+
+                pipeline._get_grader_model = lambda *_: FakeStructuredModel(grade)
+                result = pipeline.grade_documents_node(
+                    {"question": question, "docs": [_doc(evidence)]}
+                )
+                self.assertEqual("clarify", result["route"])
+                self.assertEqual([slot], result["missing_slots"])
+                self.assertIn(slot, result["hitl_prompt"])
 
     def test_complex_sub_agents_keep_partial_docs_without_rewrite(self):
         calls = {"retrieve": [], "step_back": 0}
